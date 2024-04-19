@@ -1,15 +1,16 @@
 pub mod app;
-pub mod component;
+pub mod listener;
 pub mod resource;
 
 pub mod prelude {
     pub use crate::{
-        component::{listener::Listener, Constraints},
+        app::constraints::Constraints,
+        listener::Listener,
         resource::{NamespacedId, NamespacedIdRef, Resource},
     };
 
-    pub(crate) use crate::component::input::Error as InputError;
-    pub(crate) use crate::{app::App, Message};
+    pub(crate) use crate::listener::input::Error as InputError;
+    pub(crate) use crate::{app::App, listener, Message};
 
     pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;
@@ -30,6 +31,6 @@ pub trait Message: Clone + Send + 'static {
 macro_rules! bake_message {
     ($message:ty) => {
         pub type App = $crate::app::App<$message>;
-        pub type Get<T> = $crate::component::input::Get<$message, T>;
+        pub type Get<T> = $crate::listener::input::Get<$message, T>;
     };
 }

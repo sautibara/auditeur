@@ -3,12 +3,13 @@ use std::any::Any;
 use log::{debug, error};
 use tokio::sync::broadcast::Receiver;
 
-use crate::component::listener;
 use crate::prelude::*;
+
+pub mod constraints;
 
 pub struct App<M> {
     sender: Sender<M>,
-    listeners: Vec<Box<dyn listener::SimpleObject<M>>>,
+    listeners: Vec<Box<dyn listener::Simple<M>>>,
 }
 
 impl<M: Message> App<M> {
@@ -28,7 +29,7 @@ impl<M: Message> App<M> {
         &mut self,
         listener: impl Listener<M> + Send + 'static,
     ) -> Result<&mut Self, InputError> {
-        let simple = listener::Simple::create(listener, self)?;
+        let simple = listener::Mapped::create(listener, self)?;
         self.listeners.push(simple);
         Ok(self)
     }
@@ -50,10 +51,7 @@ impl<M: Message> App<M> {
     }
 
     /// Listen to only a single `listener`
-    async fn listen_single(
-        mut listener: Box<dyn listener::SimpleObject<M>>,
-        mut reciever: Receiver<M>,
-    ) {
+    async fn listen_single(mut listener: Box<dyn listener::Simple<M>>, mut reciever: Receiver<M>) {
         let name = listener.ident();
         // send startup message
         let res = Self::handle(&mut listener, M::startup()).await;
@@ -75,10 +73,7 @@ impl<M: Message> App<M> {
     }
 
     /// Handle a single `message` with a `listener`
-    async fn handle(
-        listener: &mut Box<dyn listener::SimpleObject<M>>,
-        message: M,
-    ) -> ControlFlow<()> {
+    async fn handle(listener: &mut Box<dyn listener::Simple<M>>, message: M) -> ControlFlow<()> {
         listener.handle(message).await.unwrap_or_else(|err| {
             error!("{} failed to handle message: {err}", listener.ident());
             ControlFlow::Continue(())
@@ -90,8 +85,8 @@ impl<M: Message> App<M> {
         self.listeners.iter().find_map(|listener| {
             // for some reason rust doesn't recognize that listener is an Any unless this is done
             let any: &dyn Any = listener;
-            any.downcast_ref::<listener::Simple<M, T>>()
-                .map(listener::Simple::listener)
+            any.downcast_ref::<listener::Mapped<M, T>>()
+                .map(listener::Mapped::listener)
                 .cloned()
         })
     }

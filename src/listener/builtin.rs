@@ -2,6 +2,19 @@ use log::trace;
 
 use crate::prelude::*;
 
+#[resource("auditeur:logger")]
+pub struct Logger;
+
+#[async_trait]
+impl<M: Message + std::fmt::Debug> Listener<M> for Logger {
+    type Input = ();
+
+    async fn handle(&mut self, message: M, (): &mut ()) -> anyhow::Result<ControlFlow<()>> {
+        trace!("{:?}", message);
+        Ok(ControlFlow::Continue(()))
+    }
+}
+
 // /// A way to queue messages for when the listeners are set up
 // #[derive(Default)]
 // #[resource("core:queuer")]
@@ -43,16 +56,3 @@ use crate::prelude::*;
 //         Ok(res)
 //     }
 // }
-
-#[resource("auditeur:logger")]
-pub struct Logger;
-
-#[async_trait]
-impl<M: Message + std::fmt::Debug> Listener<M> for Logger {
-    type Input = ();
-
-    async fn handle(&mut self, message: M, (): &mut ()) -> anyhow::Result<ControlFlow<()>> {
-        trace!("{:?}", message);
-        Ok(ControlFlow::Continue(()))
-    }
-}

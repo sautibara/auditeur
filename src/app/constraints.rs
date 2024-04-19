@@ -1,15 +1,4 @@
-use async_trait::async_trait;
-
 use crate::prelude::*;
-
-pub mod builtin;
-pub mod input;
-pub mod listener;
-
-#[async_trait]
-pub trait Plugin<M>: Resource {
-    async fn init(&self, app: &mut App<M>);
-}
 
 pub struct Constraints {
     constraints: Vec<Constraint>,
