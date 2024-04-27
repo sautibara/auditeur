@@ -16,7 +16,7 @@ pub mod prelude {
         listener::Listener,
         resource::{NamespacedId, NamespacedIdRef, Resource},
         watcher::Watcher,
-        Error as AuditeurError, Plugin,
+        Error as AuditeurError, Exit, Exiter, Plugin,
     };
 
     pub(crate) use crate::Error;
@@ -29,13 +29,7 @@ pub mod prelude {
     pub use auditeur_macros::{ident, resource};
 }
 
-pub trait Message: Clone + Send + 'static {
-    fn startup() -> Self;
-    fn exit() -> Self;
-
-    /// Returns `true` if `self` matches `Self::exit()`
-    fn is_exit(&self) -> bool;
-}
+pub trait Message: Clone + Send + 'static {}
 
 #[macro_export]
 macro_rules! bake_message {
@@ -44,6 +38,38 @@ macro_rules! bake_message {
         pub type Registry = $crate::app::Registry<$message>;
         pub type Get<T> = $crate::input::Get<$message, T>;
     };
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Exit;
+
+#[derive(Clone, Debug)]
+pub struct Exiter {
+    exiter: tokio::sync::broadcast::Sender<Exit>,
+}
+
+impl Exiter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            exiter: tokio::sync::broadcast::Sender::new(1),
+        }
+    }
+
+    pub fn exit(&self) {
+        let _ = self.exiter.send(Exit);
+    }
+
+    #[must_use]
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Exit> {
+        self.exiter.subscribe()
+    }
+}
+
+impl Default for Exiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Error, Debug)]

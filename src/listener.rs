@@ -14,6 +14,17 @@ pub trait Listener<M: Message>: Resource + Send {
         input: &mut <Self::Input as Input<M>>::Output,
     ) -> Result<ControlFlow<()>>;
 
+    async fn startup(
+        &mut self,
+        _input: &mut <Self::Input as Input<M>>::Output,
+    ) -> Result<ControlFlow<()>> {
+        Ok(ControlFlow::Continue(()))
+    }
+
+    async fn exit(&mut self, _input: &mut <Self::Input as Input<M>>::Output) -> Result<()> {
+        Ok(())
+    }
+
     fn constraints(&self) -> Constraints {
         Self::Input::constraints()
     }

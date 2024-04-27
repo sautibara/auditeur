@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::broadcast::Receiver;
 
-use crate::{prelude::*, watcher::Watcher};
+use crate::{prelude::*, Exiter};
 
 use self::{constraints::Constraint, loader::Loader, runnable::Runnable};
 
@@ -12,6 +12,7 @@ mod runnable;
 
 pub struct App<M> {
     sender: Sender<M>,
+    exit_handle: Exiter,
     loaders: HashMap<NamespacedId, Box<dyn Loader<M>>>,
 }
 
@@ -19,8 +20,10 @@ impl<M: Message> App<M> {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         let sender = Sender::new(capacity);
+        let exit_handle = Exiter::new();
         Self {
             sender,
+            exit_handle,
             loaders: HashMap::new(),
         }
     }
@@ -33,6 +36,16 @@ impl<M: Message> App<M> {
     #[must_use]
     pub fn subscribe(&self) -> Receiver<M> {
         self.sender.subscribe()
+    }
+
+    #[must_use]
+    pub fn exiter(&self) -> Exiter {
+        self.exit_handle.clone()
+    }
+
+    #[must_use]
+    pub fn exiter_subscribe(&self) -> Receiver<Exit> {
+        self.exit_handle.subscribe()
     }
 
     pub fn add<L: Loader<M> + 'static>(&mut self, loader: L) -> &mut Self {
@@ -83,7 +96,7 @@ impl<M: Message> App<M> {
     /// - If one of the loaders failed to build
     /// - If a dependency was not found
     pub async fn run(mut self) -> Result<(), Error> {
-        let mut registry = Registry::new(self.sender.clone());
+        let mut registry = Registry::new(self.sender.clone(), self.exit_handle.clone());
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
@@ -129,13 +142,15 @@ pub struct NotFound;
 
 pub struct Registry<M: Message> {
     sender: Sender<M>,
+    exit_handle: Exiter,
     resources: HashMap<NamespacedId, Box<dyn Runnable<M>>>,
 }
 
 impl<M: Message> Registry<M> {
-    fn new(sender: Sender<M>) -> Self {
+    fn new(sender: Sender<M>, exit_handle: Exiter) -> Self {
         Self {
             sender,
+            exit_handle,
             resources: HashMap::new(),
         }
     }
@@ -148,6 +163,16 @@ impl<M: Message> Registry<M> {
     #[must_use]
     pub(crate) fn subscribe(&self) -> Receiver<M> {
         self.sender.subscribe()
+    }
+
+    #[must_use]
+    pub fn exiter(&self) -> Exiter {
+        self.exit_handle.clone()
+    }
+
+    #[must_use]
+    pub fn exit_signal(&self) -> Receiver<Exit> {
+        self.exit_handle.subscribe()
     }
 
     #[must_use]

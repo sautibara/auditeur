@@ -26,6 +26,14 @@ impl<M: Message> Input<M> for Sender<M> {
     }
 }
 
+impl<M: Message> Input<M> for Exiter {
+    type Output = Self;
+
+    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+        Ok(registry.exiter())
+    }
+}
+
 pub struct Get<M: Message, T: Listener<M> + Clone> {
     phantom_data: PhantomData<(M, T)>,
 }

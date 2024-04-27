@@ -1,5 +1,7 @@
 use std::any::Any;
 
+use futures::pin_mut;
+use tokio::select;
 use tokio::sync::broadcast::Receiver;
 
 use crate::prelude::*;
@@ -22,6 +24,7 @@ pub trait Runnable<M: Message>: ResourceTrait + Send {
 pub struct Listener<M: Message, L: ListenerTrait<M>> {
     inner: L,
     input: <L::Input as Input<M>>::Output,
+    exit_signal: Receiver<Exit>,
     receiver: Receiver<M>,
 }
 
@@ -29,9 +32,11 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     pub fn build(listener: L, registry: &mut Registry<M>) -> Result<Self, Error> {
         let input = <L::Input as Input<M>>::create(registry)?;
         let receiver = registry.subscribe();
+        let exit_signal = registry.exit_signal();
         Ok(Self {
             inner: listener,
             input,
+            exit_signal,
             receiver,
         })
     }
@@ -39,8 +44,32 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     async fn handle(&mut self, message: M) -> ControlFlow<()> {
         match self.inner.handle(message, &mut self.input).await {
             Ok(flow) => flow,
-            Err(_err) => todo!(),
+            Err(err) => {
+                self.handle_err(err);
+                ControlFlow::Continue(())
+            }
         }
+    }
+
+    async fn on_exit(&mut self) {
+        if let Err(err) = self.inner.exit(&mut self.input).await {
+            self.handle_err(err);
+        }
+    }
+
+    async fn startup(&mut self) -> ControlFlow<()> {
+        match self.inner.startup(&mut self.input).await {
+            Ok(flow) => flow,
+            Err(err) => {
+                self.handle_err(err);
+                ControlFlow::Continue(())
+            }
+        }
+    }
+
+    fn handle_err(&self, err: anyhow::Error) {
+        drop(err);
+        todo!()
     }
 }
 
@@ -65,13 +94,27 @@ impl<M: Message, L: ListenerTrait<M>> Runnable<M> for Listener<M, L> {
 
     async fn run(&mut self) {
         // send startup message
-        if self.handle(M::startup()).await.is_break() {
+        if self.startup().await.is_break() {
             return;
         }
-        while let Ok(message) = self.receiver.recv().await {
-            let message_is_exit = message.is_exit();
-            if self.handle(message).await.is_break() || message_is_exit {
-                break;
+
+        // listen to the exit signal, calling it out here to avoid remaking the future
+        let mut exit_signal = self.exit_signal.resubscribe();
+        let exit_signal = exit_signal.recv();
+        pin_mut!(exit_signal);
+
+        loop {
+            tokio::select! {
+                message = self.receiver.recv() => {
+                    let Ok(message) = message else { break; };
+                    if self.handle(message).await.is_break() {
+                        break;
+                    }
+                },
+                _ = &mut exit_signal => {
+                    self.on_exit().await;
+                    break;
+                }
             }
         }
     }
@@ -116,15 +159,24 @@ impl<R: ResourceTrait> ResourceTrait for Resource<R> {
 pub struct Watcher<M: Message, W: WatcherTrait<M>> {
     inner: W,
     input: <W::Input as Input<M>>::Output,
+    exit_signal: Receiver<Exit>,
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     pub fn build(watcher: W, registry: &mut Registry<M>) -> Result<Self, Error> {
         let input = <W::Input as Input<M>>::create(registry)?;
+        let exit_signal = registry.exit_signal();
         Ok(Self {
             inner: watcher,
+            exit_signal,
             input,
         })
+    }
+
+    fn handle_result(&self, res: anyhow::Result<()>) {
+        if let Err(_err) = res {
+            todo!();
+        }
     }
 }
 
@@ -135,9 +187,14 @@ impl<M: Message, W: WatcherTrait<M>> Runnable<M> for Watcher<M, W> {
     }
 
     async fn run(&mut self) {
-        let res = self.inner.run(&mut self.input).await;
-        if let Err(_err) = res {
-            todo!()
+        select! {
+            res = self.inner.run(&mut self.input) => {
+                self.handle_result(res);
+            },
+            _ = self.exit_signal.recv() => {
+                let res = self.inner.exit(&mut self.input).await;
+                self.handle_result(res);
+            }
         }
     }
 }
