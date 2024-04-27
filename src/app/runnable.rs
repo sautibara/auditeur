@@ -1,7 +1,9 @@
 use std::any::Any;
 
 use futures::pin_mut;
+use log::{debug, error};
 use tokio::select;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 
 use crate::prelude::*;
@@ -41,11 +43,23 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         })
     }
 
-    async fn handle(&mut self, message: M) -> ControlFlow<()> {
+    async fn handle(&mut self, message: Result<M, RecvError>) -> ControlFlow<()> {
+        let message = match message {
+            Ok(message) => message,
+            Err(err) => {
+                let recoverable = matches!(err, RecvError::Lagged(_));
+                Self::handle_err(anyhow::Error::from(err).context("failed to recieve message"));
+                return if recoverable {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                };
+            }
+        };
         match self.inner.handle(message, &mut self.input).await {
             Ok(flow) => flow,
             Err(err) => {
-                self.handle_err(err);
+                Self::handle_err(err);
                 ControlFlow::Continue(())
             }
         }
@@ -53,7 +67,7 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
 
     async fn on_exit(&mut self) {
         if let Err(err) = self.inner.exit(&mut self.input).await {
-            self.handle_err(err);
+            Self::handle_err(err);
         }
     }
 
@@ -61,15 +75,14 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         match self.inner.startup(&mut self.input).await {
             Ok(flow) => flow,
             Err(err) => {
-                self.handle_err(err);
+                Self::handle_err(err);
                 ControlFlow::Continue(())
             }
         }
     }
 
-    fn handle_err(&self, err: anyhow::Error) {
-        drop(err);
-        todo!()
+    fn handle_err(err: impl Into<anyhow::Error>) {
+        error!("{:?}", err.into());
     }
 }
 
@@ -106,17 +119,19 @@ impl<M: Message, L: ListenerTrait<M>> Runnable<M> for Listener<M, L> {
         loop {
             tokio::select! {
                 message = self.receiver.recv() => {
-                    let Ok(message) = message else { break; };
                     if self.handle(message).await.is_break() {
                         break;
                     }
                 },
                 _ = &mut exit_signal => {
-                    self.on_exit().await;
                     break;
                 }
             }
         }
+
+        self.on_exit().await;
+
+        debug!("'{}' exited", self.ident());
     }
 }
 

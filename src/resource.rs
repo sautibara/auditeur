@@ -1,4 +1,8 @@
-use std::{any::Any, fmt::Display, str::FromStr};
+use std::{
+    any::Any,
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
 use thiserror::Error;
 
@@ -9,7 +13,7 @@ pub trait Resource: Any + Send {
         Self: Sized;
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub struct NamespacedId {
     pub namespace: String,
     pub id: String,
@@ -19,6 +23,12 @@ impl NamespacedId {
     #[must_use]
     pub fn into_ref(&self) -> NamespacedIdRef<'_> {
         self.into()
+    }
+}
+
+impl Debug for NamespacedId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, r#"NamespacedId "{self}""#)
     }
 }
 
@@ -45,7 +55,7 @@ impl FromStr for NamespacedId {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct NamespacedIdRef<'a> {
     pub namespace: &'a str,
     pub id: &'a str,
@@ -55,6 +65,12 @@ impl NamespacedIdRef<'_> {
     #[must_use]
     pub fn into_owned(self) -> NamespacedId {
         self.into()
+    }
+}
+
+impl Debug for NamespacedIdRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, r#"NamespacedIdRef "{self}""#)
     }
 }
 

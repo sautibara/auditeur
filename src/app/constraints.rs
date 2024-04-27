@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Constraints {
     constraints: Vec<Constraint>,
 }
@@ -40,6 +40,7 @@ impl IntoIterator for Constraints {
     }
 }
 
+#[derive(Debug)]
 pub enum Constraint {
     After { id: NamespacedId },
 }

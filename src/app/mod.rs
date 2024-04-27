@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
 use tokio::sync::broadcast::Receiver;
 
@@ -87,6 +87,11 @@ impl<M: Message> App<M> {
 
     pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> &mut Self {
         self.add(loader::Watcher::new(watcher))
+    }
+
+    #[must_use]
+    pub fn loaders(&self) -> Vec<&dyn Loader<M>> {
+        self.loaders.values().map(Deref::deref).collect()
     }
 
     /// Listen to all messages until [`M::Exit`] is sent
