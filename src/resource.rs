@@ -1,15 +1,15 @@
-use std::{fmt::Display, str::FromStr};
+use std::{any::Any, fmt::Display, str::FromStr};
 
 use thiserror::Error;
 
-pub trait Resource {
+pub trait Resource: Any + Send {
     fn ident(&self) -> NamespacedIdRef<'static>;
     fn const_ident() -> NamespacedIdRef<'static>
     where
         Self: Sized;
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct NamespacedId {
     pub namespace: String,
     pub id: String,

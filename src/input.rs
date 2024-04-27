@@ -4,13 +4,13 @@ use bevy_utils_proc_macros::all_tuples;
 
 use crate::prelude::*;
 
-pub trait Input<M> {
+pub trait Input<M: Message>: Send + 'static {
     type Output: Send;
 
     /// # Errors
     ///
     /// - If the input failed to gather the resources necessary
-    fn create(app: &mut App<M>) -> Result<Self::Output, Error>;
+    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error>;
 
     #[must_use]
     fn constraints() -> Constraints {
@@ -21,30 +21,27 @@ pub trait Input<M> {
 impl<M: Message> Input<M> for Sender<M> {
     type Output = Self;
 
-    fn create(app: &mut App<M>) -> Result<Self::Output, Error> {
-        Ok(app.sender())
+    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+        Ok(registry.sender())
     }
 }
 
-pub struct Get<M, T: Listener<M> + Clone> {
+pub struct Get<M: Message, T: Listener<M> + Clone> {
     phantom_data: PhantomData<(M, T)>,
 }
 
 impl<M: Message, T: Listener<M> + Clone> Input<M> for Get<M, T> {
     type Output = T;
 
-    fn create(app: &mut App<M>) -> Result<Self::Output, Error> {
-        app.get().ok_or(Error::GetNotFound)
+    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+        registry.get().cloned().ok_or_else(|| Error::NotFound {
+            id: T::const_ident().into(),
+        })
     }
 
     fn constraints() -> Constraints {
         Constraints::empty().run_after(T::const_ident())
     }
-}
-
-#[non_exhaustive]
-pub enum Error {
-    GetNotFound,
 }
 
 macro_rules! impl_input {
@@ -53,8 +50,8 @@ macro_rules! impl_input {
             type Output = ($($T::Output,)*);
 
             #[allow(unused_variables)]
-            fn create(app: &mut App<M>) -> Result<Self::Output, InputError> {
-                Ok(($($T::create(app)?,)*))
+            fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+                Ok(($($T::create(registry)?,)*))
             }
 
             fn constraints() -> Constraints {

@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+#[derive(Default)]
 pub struct Constraints {
     constraints: Vec<Constraint>,
 }
@@ -22,6 +23,20 @@ impl Constraints {
     pub fn extend(mut self, other: Self) -> Self {
         self.constraints.extend(other.constraints);
         self
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.constraints.is_empty()
+    }
+}
+
+impl IntoIterator for Constraints {
+    type Item = Constraint;
+    type IntoIter = std::vec::IntoIter<Constraint>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.constraints.into_iter()
     }
 }
 

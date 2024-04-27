@@ -1,15 +1,18 @@
-use std::any::Any;
+use std::collections::HashMap;
 
-use log::{debug, error};
 use tokio::sync::broadcast::Receiver;
 
 use crate::prelude::*;
 
+use self::{constraints::Constraint, loader::Loader, runnable::Runnable};
+
 pub mod constraints;
+mod loader;
+mod runnable;
 
 pub struct App<M> {
     sender: Sender<M>,
-    listeners: Vec<Box<dyn listener::Simple<M>>>,
+    loaders: HashMap<NamespacedId, Box<dyn Loader<M>>>,
 }
 
 impl<M: Message> App<M> {
@@ -18,20 +21,8 @@ impl<M: Message> App<M> {
         let sender = Sender::new(capacity);
         Self {
             sender,
-            listeners: vec![],
+            loaders: HashMap::new(),
         }
-    }
-
-    /// # Errors
-    ///
-    /// - If the plugin's input had an error when initializing
-    pub fn register(
-        &mut self,
-        listener: impl Listener<M> + Send + 'static,
-    ) -> Result<&mut Self, InputError> {
-        let simple = listener::Mapped::create(listener, self)?;
-        self.listeners.push(simple);
-        Ok(self)
     }
 
     #[must_use]
@@ -39,55 +30,149 @@ impl<M: Message> App<M> {
         self.sender.clone()
     }
 
+    #[must_use]
+    pub fn subscribe(&self) -> Receiver<M> {
+        self.sender.subscribe()
+    }
+
+    pub fn add<L: Loader<M> + 'static>(&mut self, loader: L) -> &mut Self {
+        self.loaders
+            .insert(L::const_ident().into(), Box::new(loader));
+        self
+    }
+
+    pub fn add_listener<L: Listener<M>>(&mut self, listener: L) -> &mut Self {
+        self.add(loader::Listener::new(listener))
+    }
+
+    pub fn add_listener_with<I: Input<M>, L: Listener<M>>(
+        &mut self,
+        func: impl FnOnce(I::Output) -> L + Send + 'static,
+    ) -> &mut Self {
+        self.add(loader::With::<I, M, runnable::Listener<M, L>, _>::new(
+            |output, registry| runnable::Listener::build(func(output), registry),
+        ))
+    }
+
+    pub fn add_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
+        self.add(loader::Resource::new(resource))
+    }
+
+    pub fn add_resource_with<I: Input<M>, R: Resource>(
+        &mut self,
+        func: impl FnOnce(I::Output) -> R + Send + 'static,
+    ) -> &mut Self {
+        self.add(loader::With::<I, M, runnable::Resource<R>, _>::new(
+            |output, _| Ok(runnable::Resource::new(func(output))),
+        ))
+    }
+
     /// Listen to all messages until [`M::Exit`] is sent
-    pub async fn listen(self) {
-        let sender = self.sender;
-        let futures: Vec<_> = self
-            .listeners
-            .into_iter()
-            .map(|listener| Self::listen_single(listener, sender.subscribe()))
-            .collect(); // collect early so all recievers subscibe now
-        futures::future::join_all(futures).await;
+    ///
+    /// # Errors
+    ///
+    /// - If one of the loaders failed to build
+    /// - If a dependency was not found
+    pub async fn run(mut self) -> Result<(), Error> {
+        let mut registry = Registry::new(self.sender.clone());
+        // the collect is needed so that the immutable reference to the keys doesn't mess with the
+        // mutable references used by resolving
+        #[allow(clippy::needless_collect)]
+        for id in self.loaders.keys().cloned().collect::<Vec<_>>() {
+            self.resolve(&id, &mut registry)?;
+        }
+        registry.run().await;
+        Ok(())
     }
 
-    /// Listen to only a single `listener`
-    async fn listen_single(mut listener: Box<dyn listener::Simple<M>>, mut reciever: Receiver<M>) {
-        let name = listener.ident();
-        // send startup message
-        let res = Self::handle(&mut listener, M::startup()).await;
-        // some listeners only run on startup and immediately break (Queuer)
-        if res.is_break() {
-            return;
-        }
-        // listen to other messages
-        while let Ok(message) = reciever.recv().await {
-            // check if the message is an exit message
-            // if it is, then the listener will exit after handling it
-            let to_exit = message.is_exit();
-            let res = Self::handle(&mut listener, message).await;
-            if to_exit || res.is_break() {
-                break;
-            }
-        }
-        debug!("{name} exited");
-    }
+    fn resolve(&mut self, id: &NamespacedId, registry: &mut Registry<M>) -> Result<(), Error> {
+        let loader = self
+            .loaders
+            .get_mut(id)
+            .ok_or_else(|| Error::NotFound { id: id.clone() })?;
 
-    /// Handle a single `message` with a `listener`
-    async fn handle(listener: &mut Box<dyn listener::Simple<M>>, message: M) -> ControlFlow<()> {
-        listener.handle(message).await.unwrap_or_else(|err| {
-            error!("{} failed to handle message: {err}", listener.ident());
-            ControlFlow::Continue(())
-        })
+        // if it's already finished, then early return
+        if loader.is_finished() {
+            return Ok(());
+        }
+
+        // if there are no constraints, we can just load it now and return
+        let constraints = loader.constraints();
+        if constraints.is_empty() {
+            return loader.load(registry);
+        }
+
+        // if there are constraints, we must load them first
+        for Constraint::After { id } in constraints {
+            self.resolve(&id, registry)?;
+        }
+
+        // then we have to get the loader again because the mutable reference is invalidated by
+        // loading the other constraints
+        self.loaders
+            .get_mut(id)
+            .expect("the loader should never be deleted by resolving other loaders")
+            .load(registry)
+    }
+}
+
+pub struct NotFound;
+
+pub struct Registry<M: Message> {
+    sender: Sender<M>,
+    resources: HashMap<NamespacedId, Box<dyn Runnable<M>>>,
+}
+
+impl<M: Message> Registry<M> {
+    fn new(sender: Sender<M>) -> Self {
+        Self {
+            sender,
+            resources: HashMap::new(),
+        }
     }
 
     #[must_use]
-    pub fn get<T: Listener<M> + Clone>(&self) -> Option<T> {
-        self.listeners.iter().find_map(|listener| {
-            // for some reason rust doesn't recognize that listener is an Any unless this is done
-            let any: &dyn Any = listener;
-            any.downcast_ref::<listener::Mapped<M, T>>()
-                .map(listener::Mapped::listener)
-                .cloned()
-        })
+    pub fn sender(&self) -> Sender<M> {
+        self.sender.clone()
+    }
+
+    #[must_use]
+    pub(crate) fn subscribe(&self) -> Receiver<M> {
+        self.sender.subscribe()
+    }
+
+    #[must_use]
+    pub fn get<R: Resource>(&self) -> Option<&R> {
+        let id = R::const_ident().into();
+        let runnable = self.resources.get(&id)?;
+        runnable.inner().downcast_ref()
+    }
+
+    pub fn add<R: Runnable<M>>(&mut self, runnable: R) -> &mut Self {
+        self.resources
+            .insert(R::const_ident().into(), Box::new(runnable));
+        self
+    }
+
+    /// # Errors
+    ///
+    /// - If `listener`'s input failed to build
+    pub fn add_listener<L: Listener<M>>(&mut self, listener: L) -> Result<&mut Self, Error> {
+        let erased = runnable::Listener::build(listener, self)?;
+        Ok(self.add(erased))
+    }
+
+    pub fn add_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
+        self.add(runnable::Resource::new(resource))
+    }
+
+    /// Listen to all messages until [`M::exit`] is sent
+    pub async fn run(mut self) {
+        let futures = self
+            .resources
+            .values_mut()
+            .filter(|runnable| runnable.is_runnable())
+            .map(|runnable| runnable.run());
+        futures::future::join_all(futures).await;
     }
 }

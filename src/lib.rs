@@ -1,4 +1,9 @@
+use app::App;
+use resource::NamespacedId;
+use thiserror::Error;
+
 pub mod app;
+pub mod input;
 pub mod listener;
 pub mod resource;
 
@@ -7,10 +12,11 @@ pub mod prelude {
         app::constraints::Constraints,
         listener::Listener,
         resource::{NamespacedId, NamespacedIdRef, Resource},
+        Error as AuditeurError, Plugin,
     };
 
-    pub(crate) use crate::listener::input::Error as InputError;
-    pub(crate) use crate::{app::App, listener, Message};
+    pub(crate) use crate::Error;
+    pub(crate) use crate::{app::Registry, input::Input, Message};
 
     pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;
@@ -31,6 +37,17 @@ pub trait Message: Clone + Send + 'static {
 macro_rules! bake_message {
     ($message:ty) => {
         pub type App = $crate::app::App<$message>;
-        pub type Get<T> = $crate::listener::input::Get<$message, T>;
+        pub type Registry = $crate::app::Registry<$message>;
+        pub type Get<T> = $crate::input::Get<$message, T>;
     };
+}
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("dependency '{id}' not found, has it been loaded?")]
+    NotFound { id: NamespacedId },
+}
+
+pub trait Plugin<M: Message> {
+    fn apply(&mut self, app: &mut App<M>);
 }
