@@ -1,3 +1,5 @@
+use std::ops::DerefMut;
+
 use app::App;
 use resource::NamespacedId;
 use thiserror::Error;
@@ -6,12 +8,14 @@ pub mod app;
 pub mod input;
 pub mod listener;
 pub mod resource;
+pub mod watcher;
 
 pub mod prelude {
     pub use crate::{
         app::constraints::Constraints,
         listener::Listener,
         resource::{NamespacedId, NamespacedIdRef, Resource},
+        watcher::Watcher,
         Error as AuditeurError, Plugin,
     };
 
@@ -50,4 +54,10 @@ pub enum Error {
 
 pub trait Plugin<M: Message> {
     fn apply(&mut self, app: &mut App<M>);
+}
+
+impl<M: Message> Plugin<M> for Box<dyn Plugin<M>> {
+    fn apply(&mut self, app: &mut App<M>) {
+        self.deref_mut().apply(app);
+    }
 }

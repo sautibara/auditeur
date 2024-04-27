@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::broadcast::Receiver;
 
-use crate::prelude::*;
+use crate::{prelude::*, watcher::Watcher};
 
 use self::{constraints::Constraint, loader::Loader, runnable::Runnable};
 
@@ -65,6 +65,15 @@ impl<M: Message> App<M> {
         self.add(loader::With::<I, M, runnable::Resource<R>, _>::new(
             |output, _| Ok(runnable::Resource::new(func(output))),
         ))
+    }
+
+    pub fn add_plugin<P: Plugin<M>>(&mut self, plugin: &mut P) -> &mut Self {
+        plugin.apply(self);
+        self
+    }
+
+    pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> &mut Self {
+        self.add(loader::Watcher::new(watcher))
     }
 
     /// Listen to all messages until [`M::Exit`] is sent
@@ -164,6 +173,14 @@ impl<M: Message> Registry<M> {
 
     pub fn add_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
         self.add(runnable::Resource::new(resource))
+    }
+
+    /// # Errors
+    ///
+    /// - If `listener`'s input failed to build
+    pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> Result<&mut Self, Error> {
+        let erased = runnable::Watcher::build(watcher, self)?;
+        Ok(self.add(erased))
     }
 
     /// Listen to all messages until [`M::exit`] is sent

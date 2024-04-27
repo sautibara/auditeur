@@ -4,6 +4,7 @@ use crate::prelude::*;
 
 use crate::listener::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
+use crate::watcher::Watcher as WatcherTrait;
 
 use super::runnable::Runnable;
 
@@ -100,6 +101,50 @@ impl<R: ResourceTrait> ResourceTrait for Resource<R> {
 
     fn ident(&self) -> NamespacedIdRef<'static> {
         R::const_ident()
+    }
+}
+
+pub struct Watcher<M: Message, W: WatcherTrait<M>> {
+    watcher: Option<W>,
+    message: PhantomData<M>,
+}
+
+impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
+    pub const fn new(watcher: W) -> Self {
+        Self {
+            watcher: Some(watcher),
+            message: PhantomData,
+        }
+    }
+}
+
+impl<M: Message, W: WatcherTrait<M>> Loader<M> for Watcher<M, W> {
+    fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
+        if let Some(watcher) = self.watcher.take() {
+            registry.add_watcher(watcher)?;
+        }
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.watcher.is_none()
+    }
+
+    fn constraints(&self) -> Constraints {
+        Constraints::empty()
+    }
+}
+
+impl<M: Message, W: WatcherTrait<M>> ResourceTrait for Watcher<M, W> {
+    fn const_ident() -> NamespacedIdRef<'static>
+    where
+        Self: Sized,
+    {
+        W::const_ident()
+    }
+
+    fn ident(&self) -> NamespacedIdRef<'static> {
+        W::const_ident()
     }
 }
 

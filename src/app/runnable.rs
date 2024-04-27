@@ -6,6 +6,7 @@ use crate::prelude::*;
 
 use crate::listener::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
+use crate::watcher::Watcher as WatcherTrait;
 
 #[async_trait]
 pub trait Runnable<M: Message>: ResourceTrait + Send {
@@ -109,5 +110,47 @@ impl<R: ResourceTrait> ResourceTrait for Resource<R> {
         Self: Sized,
     {
         R::const_ident()
+    }
+}
+
+pub struct Watcher<M: Message, W: WatcherTrait<M>> {
+    inner: W,
+    input: <W::Input as Input<M>>::Output,
+}
+
+impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
+    pub fn build(watcher: W, registry: &mut Registry<M>) -> Result<Self, Error> {
+        let input = <W::Input as Input<M>>::create(registry)?;
+        Ok(Self {
+            inner: watcher,
+            input,
+        })
+    }
+}
+
+#[async_trait]
+impl<M: Message, W: WatcherTrait<M>> Runnable<M> for Watcher<M, W> {
+    fn inner(&self) -> &dyn Any {
+        &self.inner
+    }
+
+    async fn run(&mut self) {
+        let res = self.inner.run(&mut self.input).await;
+        if let Err(_err) = res {
+            todo!()
+        }
+    }
+}
+
+impl<M: Message, W: WatcherTrait<M>> ResourceTrait for Watcher<M, W> {
+    fn ident(&self) -> NamespacedIdRef<'static> {
+        self.inner.ident()
+    }
+
+    fn const_ident() -> NamespacedIdRef<'static>
+    where
+        Self: Sized,
+    {
+        W::const_ident()
     }
 }
