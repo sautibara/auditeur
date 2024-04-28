@@ -24,7 +24,7 @@ pub mod prelude {
 
     pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;
-    pub use tokio::sync::broadcast::Sender;
+    pub(crate) use tokio::sync::broadcast::Sender;
 
     pub use auditeur_macros::{ident, resource};
 }

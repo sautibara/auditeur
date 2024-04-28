@@ -80,13 +80,22 @@ impl<M: Message> App<M> {
         ))
     }
 
+    pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> &mut Self {
+        self.add(loader::Watcher::new(watcher))
+    }
+
+    pub fn add_watcher_with<I: Input<M>, W: Watcher<M>>(
+        &mut self,
+        func: impl FnOnce(I::Output) -> W + Send + 'static,
+    ) -> &mut Self {
+        self.add(loader::With::<I, M, runnable::Watcher<M, W>, _>::new(
+            |output, registry| runnable::Watcher::build(func(output), registry),
+        ))
+    }
+
     pub fn add_plugin<P: Plugin<M>>(&mut self, plugin: &mut P) -> &mut Self {
         plugin.apply(self);
         self
-    }
-
-    pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> &mut Self {
-        self.add(loader::Watcher::new(watcher))
     }
 
     #[must_use]
