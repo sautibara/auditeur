@@ -13,7 +13,7 @@ use crate::resource::Resource as ResourceTrait;
 use crate::watcher::Watcher as WatcherTrait;
 
 #[async_trait]
-pub trait Runnable<M: Message>: ResourceTrait + Send {
+pub trait Runner<M: Message>: ResourceTrait + Send {
     async fn run(&mut self);
 
     fn is_runnable(&self) -> bool {
@@ -100,7 +100,7 @@ impl<M: Message, L: ListenerTrait<M>> ResourceTrait for Listener<M, L> {
 }
 
 #[async_trait]
-impl<M: Message, L: ListenerTrait<M>> Runnable<M> for Listener<M, L> {
+impl<M: Message, L: ListenerTrait<M>> Runner<M> for Listener<M, L> {
     fn inner(&self) -> &dyn Any {
         &self.inner
     }
@@ -146,7 +146,7 @@ impl<R: ResourceTrait> Resource<R> {
 }
 
 #[async_trait]
-impl<M: Message, R: ResourceTrait> Runnable<M> for Resource<R> {
+impl<M: Message, R: ResourceTrait> Runner<M> for Resource<R> {
     fn is_runnable(&self) -> bool {
         false
     }
@@ -196,7 +196,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
 }
 
 #[async_trait]
-impl<M: Message, W: WatcherTrait<M>> Runnable<M> for Watcher<M, W> {
+impl<M: Message, W: WatcherTrait<M>> Runner<M> for Watcher<M, W> {
     fn inner(&self) -> &dyn Any {
         &self.inner
     }

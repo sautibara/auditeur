@@ -4,11 +4,11 @@ use tokio::sync::broadcast::Receiver;
 
 use crate::{prelude::*, Exiter};
 
-use self::{constraints::Constraint, loader::Loader, runnable::Runnable};
+use self::{constraints::Constraint, loader::Loader, runner::Runner};
 
 pub mod constraints;
 mod loader;
-mod runnable;
+mod runner;
 
 pub struct App<M> {
     sender: Sender<M>,
@@ -62,8 +62,8 @@ impl<M: Message> App<M> {
         &mut self,
         func: impl FnOnce(I::Output) -> L + Send + 'static,
     ) -> &mut Self {
-        self.add(loader::With::<I, M, runnable::Listener<M, L>, _>::new(
-            |output, registry| runnable::Listener::build(func(output), registry),
+        self.add(loader::With::<I, M, runner::Listener<M, L>, _>::new(
+            |output, registry| runner::Listener::build(func(output), registry),
         ))
     }
 
@@ -75,8 +75,8 @@ impl<M: Message> App<M> {
         &mut self,
         func: impl FnOnce(I::Output) -> R + Send + 'static,
     ) -> &mut Self {
-        self.add(loader::With::<I, M, runnable::Resource<R>, _>::new(
-            |output, _| Ok(runnable::Resource::new(func(output))),
+        self.add(loader::With::<I, M, runner::Resource<R>, _>::new(
+            |output, _| Ok(runner::Resource::new(func(output))),
         ))
     }
 
@@ -88,8 +88,8 @@ impl<M: Message> App<M> {
         &mut self,
         func: impl FnOnce(I::Output) -> W + Send + 'static,
     ) -> &mut Self {
-        self.add(loader::With::<I, M, runnable::Watcher<M, W>, _>::new(
-            |output, registry| runnable::Watcher::build(func(output), registry),
+        self.add(loader::With::<I, M, runner::Watcher<M, W>, _>::new(
+            |output, registry| runner::Watcher::build(func(output), registry),
         ))
     }
 
@@ -157,7 +157,7 @@ pub struct NotFound;
 pub struct Registry<M: Message> {
     sender: Sender<M>,
     exit_handle: Exiter,
-    resources: HashMap<NamespacedId, Box<dyn Runnable<M>>>,
+    resources: HashMap<NamespacedId, Box<dyn Runner<M>>>,
 }
 
 impl<M: Message> Registry<M> {
@@ -192,13 +192,13 @@ impl<M: Message> Registry<M> {
     #[must_use]
     pub fn get<R: Resource>(&self) -> Option<&R> {
         let id = R::const_ident().into();
-        let runnable = self.resources.get(&id)?;
-        runnable.inner().downcast_ref()
+        let runner = self.resources.get(&id)?;
+        runner.inner().downcast_ref()
     }
 
-    pub fn add<R: Runnable<M>>(&mut self, runnable: R) -> &mut Self {
+    pub fn add<R: Runner<M>>(&mut self, runner: R) -> &mut Self {
         self.resources
-            .insert(R::const_ident().into(), Box::new(runnable));
+            .insert(R::const_ident().into(), Box::new(runner));
         self
     }
 
@@ -206,19 +206,19 @@ impl<M: Message> Registry<M> {
     ///
     /// - If `listener`'s input failed to build
     pub fn add_listener<L: Listener<M>>(&mut self, listener: L) -> Result<&mut Self, Error> {
-        let erased = runnable::Listener::build(listener, self)?;
+        let erased = runner::Listener::build(listener, self)?;
         Ok(self.add(erased))
     }
 
     pub fn add_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        self.add(runnable::Resource::new(resource))
+        self.add(runner::Resource::new(resource))
     }
 
     /// # Errors
     ///
     /// - If `listener`'s input failed to build
     pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> Result<&mut Self, Error> {
-        let erased = runnable::Watcher::build(watcher, self)?;
+        let erased = runner::Watcher::build(watcher, self)?;
         Ok(self.add(erased))
     }
 
@@ -227,8 +227,8 @@ impl<M: Message> Registry<M> {
         let futures = self
             .resources
             .values_mut()
-            .filter(|runnable| runnable.is_runnable())
-            .map(|runnable| runnable.run());
+            .filter(|runner| runner.is_runnable())
+            .map(|runner| runner.run());
         futures::future::join_all(futures).await;
     }
 }

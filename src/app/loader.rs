@@ -6,7 +6,7 @@ use crate::listener::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::watcher::Watcher as WatcherTrait;
 
-use super::runnable::Runnable;
+use super::runner::Runner;
 
 pub trait Loader<M: Message>: ResourceTrait + Send {
     fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error>;
@@ -152,7 +152,7 @@ pub struct With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runnable<M>,
+    R: Runner<M>,
     F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     func: Option<F>,
@@ -163,7 +163,7 @@ impl<I, R, M, F> With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runnable<M>,
+    R: Runner<M>,
     F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     pub const fn new(func: F) -> Self {
@@ -178,7 +178,7 @@ impl<I, M, R, F> Loader<M> for With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runnable<M>,
+    R: Runner<M>,
     F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
@@ -203,7 +203,7 @@ impl<I, M, R, F> ResourceTrait for With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runnable<M>,
+    R: Runner<M>,
     F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     fn ident(&self) -> NamespacedIdRef<'static> {
