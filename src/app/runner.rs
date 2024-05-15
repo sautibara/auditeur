@@ -8,9 +8,9 @@ use tokio::sync::broadcast::Receiver;
 
 use crate::prelude::*;
 
-use crate::listener::Listener as ListenerTrait;
+use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
-use crate::watcher::Watcher as WatcherTrait;
+use crate::resource::Watcher as WatcherTrait;
 
 #[async_trait]
 pub trait Runner<M: Message>: ResourceTrait + Send {

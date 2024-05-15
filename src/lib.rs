@@ -6,16 +6,12 @@ use thiserror::Error;
 
 pub mod app;
 pub mod input;
-pub mod listener;
 pub mod resource;
-pub mod watcher;
 
 pub mod prelude {
     pub use crate::{
         app::constraints::Constraints,
-        listener::Listener,
-        resource::{NamespacedId, NamespacedIdRef, Resource},
-        watcher::Watcher,
+        resource::{Listener, NamespacedId, NamespacedIdRef, Resource, Watcher},
         Error as AuditeurError, Exit, Exiter, Plugin,
     };
 

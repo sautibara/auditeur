@@ -6,6 +6,12 @@ use std::{
 
 use thiserror::Error;
 
+pub mod listener;
+pub mod watcher;
+
+pub use listener::Listener;
+pub use watcher::Watcher;
+
 pub trait Resource: Any + Send {
     fn ident(&self) -> NamespacedIdRef<'static>;
     fn const_ident() -> NamespacedIdRef<'static>
