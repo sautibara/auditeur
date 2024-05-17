@@ -131,7 +131,10 @@ impl<M: Message, W: WatcherTrait<M>> Loader<M> for Watcher<M, W> {
     }
 
     fn constraints(&self) -> Constraints {
-        Constraints::empty()
+        self.watcher
+            .as_ref()
+            .map(WatcherTrait::constraints)
+            .unwrap_or_default()
     }
 }
 
