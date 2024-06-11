@@ -93,7 +93,7 @@ impl<M: Message> App<M> {
         ))
     }
 
-    pub fn add_plugin<P: Plugin<M>>(&mut self, plugin: &mut P) -> &mut Self {
+    pub fn add_plugin<P: Plugin<M> + ?Sized>(&mut self, plugin: &P) -> &mut Self {
         plugin.apply(self);
         self
     }
