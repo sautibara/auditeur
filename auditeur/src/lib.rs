@@ -1,5 +1,3 @@
-use std::ops::DerefMut;
-
 use app::App;
 use resource::NamespacedId;
 use thiserror::Error;
@@ -75,11 +73,5 @@ pub enum Error {
 }
 
 pub trait Plugin<M: Message> {
-    fn apply(&mut self, app: &mut App<M>);
-}
-
-impl<M: Message> Plugin<M> for Box<dyn Plugin<M>> {
-    fn apply(&mut self, app: &mut App<M>) {
-        self.deref_mut().apply(app);
-    }
+    fn apply(&self, app: &mut App<M>);
 }
