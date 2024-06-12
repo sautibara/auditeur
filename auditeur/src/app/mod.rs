@@ -103,7 +103,7 @@ impl<M: Message> App<M> {
         self.loaders.values().map(Deref::deref).collect()
     }
 
-    /// Listen to all messages until [`M::Exit`] is sent
+    /// Listen to all messages until [an exit message](Exiter) is sent
     ///
     /// # Errors
     ///
@@ -222,8 +222,7 @@ impl<M: Message> Registry<M> {
         Ok(self.add(erased))
     }
 
-    /// Listen to all messages until [`M::exit`] is sent
-    pub async fn run(mut self) {
+    async fn run(mut self) {
         let futures = self
             .resources
             .values_mut()
