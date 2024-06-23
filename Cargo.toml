@@ -3,5 +3,7 @@
 members = [
   "auditeur",
   "auditeur-macros",
+  "auditeur-plugin",
+  "auditeur-plugin-macros",
 ]
 resolver = "2"

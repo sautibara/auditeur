@@ -6,9 +6,12 @@ pub mod app;
 pub mod input;
 pub mod resource;
 
+pub use auditeur_macros::{ident, resource};
+
 pub mod prelude {
     pub use crate::{
         app::constraints::Constraints,
+        ident, resource,
         resource::{Listener, NamespacedId, NamespacedIdRef, Resource, Watcher},
         Error as AuditeurError, Exit, Exiter, Plugin,
     };
@@ -19,8 +22,6 @@ pub mod prelude {
     pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;
     pub(crate) use tokio::sync::broadcast::Sender;
-
-    pub use auditeur_macros::{ident, resource};
 }
 
 pub trait Message: Clone + Send + 'static {}
