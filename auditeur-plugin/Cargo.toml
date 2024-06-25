@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 auditeur = { version = "0.1.0", path = "../auditeur" }
 auditeur-plugin-macros = { version = "0.1.0", path = "../auditeur-plugin-macros" }
-stabby = "5.1.0"
+stabby-macros = "5.1.0"
