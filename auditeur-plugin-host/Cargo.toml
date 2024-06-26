@@ -1,0 +1,11 @@
+[package]
+name = "auditeur-plugin-host"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+git2 = "0.19.0"
+serde = { version = "1.0.203", features = ["derive"] }
+stabby = { version = "5.1.0", features = ["libloading"] }
