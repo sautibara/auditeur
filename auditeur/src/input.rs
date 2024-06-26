@@ -10,7 +10,7 @@ pub trait Input<M: Message>: Send + 'static {
     /// # Errors
     ///
     /// - If the input failed to gather the resources necessary
-    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error>;
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error>;
 
     #[must_use]
     fn constraints() -> Constraints {
@@ -21,7 +21,7 @@ pub trait Input<M: Message>: Send + 'static {
 impl<M: Message> Input<M> for Sender<M> {
     type Output = Self;
 
-    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
         Ok(registry.sender())
     }
 }
@@ -29,7 +29,7 @@ impl<M: Message> Input<M> for Sender<M> {
 impl<M: Message> Input<M> for Exiter {
     type Output = Self;
 
-    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
         Ok(registry.exiter())
     }
 }
@@ -41,7 +41,7 @@ pub struct Get<M: Message, T: Listener<M> + Clone> {
 impl<M: Message, T: Listener<M> + Clone> Input<M> for Get<M, T> {
     type Output = T;
 
-    fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
         registry.get().cloned().ok_or_else(|| Error::NotFound {
             id: T::const_ident().into(),
         })
@@ -58,7 +58,7 @@ macro_rules! impl_input {
             type Output = ($($T::Output,)*);
 
             #[allow(unused_variables)]
-            fn create(registry: &mut Registry<M>) -> Result<Self::Output, Error> {
+            fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
                 Ok(($($T::create(registry)?,)*))
             }
 

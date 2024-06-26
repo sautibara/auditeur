@@ -31,7 +31,7 @@ pub struct Listener<M: Message, L: ListenerTrait<M>> {
 }
 
 impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
-    pub fn build(listener: L, registry: &mut Registry<M>) -> Result<Self, Error> {
+    pub fn build(listener: L, registry: &Registry<M>) -> Result<Self, Error> {
         let input = <L::Input as Input<M>>::create(registry)?;
         let receiver = registry.subscribe();
         let exit_signal = registry.exit_signal();
@@ -178,7 +178,7 @@ pub struct Watcher<M: Message, W: WatcherTrait<M>> {
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
-    pub fn build(watcher: W, registry: &mut Registry<M>) -> Result<Self, Error> {
+    pub fn build(watcher: W, registry: &Registry<M>) -> Result<Self, Error> {
         let input = <W::Input as Input<M>>::create(registry)?;
         let exit_signal = registry.exit_signal();
         Ok(Self {
