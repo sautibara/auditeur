@@ -6,46 +6,36 @@ use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
+use super::runner;
 use super::runner::Runner;
 
 pub trait Loader<M: Message>: ResourceTrait + Send {
-    fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error>;
-    fn is_finished(&self) -> bool;
-
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error>;
     fn constraints(&self) -> Constraints;
 }
 
 pub struct Listener<M: Message, L: ListenerTrait<M>> {
-    listener: Option<L>,
+    listener: L,
     message: PhantomData<M>,
 }
 
 impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     pub const fn new(listener: L) -> Self {
         Self {
-            listener: Some(listener),
+            listener,
             message: PhantomData,
         }
     }
 }
 
 impl<M: Message, L: ListenerTrait<M>> Loader<M> for Listener<M, L> {
-    fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
-        if let Some(listener) = self.listener.take() {
-            registry.add_listener(listener)?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.listener.is_none()
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
+        let runner = runner::Listener::build(self.listener, registry)?;
+        Ok(Box::new(runner))
     }
 
     fn constraints(&self) -> Constraints {
-        self.listener
-            .as_ref()
-            .map(ListenerTrait::constraints)
-            .unwrap_or_default()
+        self.listener.constraints()
     }
 }
 
@@ -63,27 +53,18 @@ impl<M: Message, L: ListenerTrait<M>> ResourceTrait for Listener<M, L> {
 }
 
 pub struct Resource<R: ResourceTrait> {
-    resource: Option<R>,
+    resource: R,
 }
 
 impl<R: ResourceTrait> Resource<R> {
     pub const fn new(resource: R) -> Self {
-        Self {
-            resource: Some(resource),
-        }
+        Self { resource }
     }
 }
 
 impl<M: Message, R: ResourceTrait> Loader<M> for Resource<R> {
-    fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
-        if let Some(resource) = self.resource.take() {
-            registry.add_resource(resource);
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.resource.is_none()
+    fn load(self: Box<Self>, _: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
+        Ok(Box::new(runner::Resource::new(self.resource)))
     }
 
     fn constraints(&self) -> Constraints {
@@ -105,36 +86,27 @@ impl<R: ResourceTrait> ResourceTrait for Resource<R> {
 }
 
 pub struct Watcher<M: Message, W: WatcherTrait<M>> {
-    watcher: Option<W>,
+    watcher: W,
     message: PhantomData<M>,
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     pub const fn new(watcher: W) -> Self {
         Self {
-            watcher: Some(watcher),
+            watcher,
             message: PhantomData,
         }
     }
 }
 
 impl<M: Message, W: WatcherTrait<M>> Loader<M> for Watcher<M, W> {
-    fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
-        if let Some(watcher) = self.watcher.take() {
-            registry.add_watcher(watcher)?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.watcher.is_none()
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
+        let runner = super::runner::Watcher::build(self.watcher, registry)?;
+        Ok(Box::new(runner))
     }
 
     fn constraints(&self) -> Constraints {
-        self.watcher
-            .as_ref()
-            .map(WatcherTrait::constraints)
-            .unwrap_or_default()
+        self.watcher.constraints()
     }
 }
 
@@ -156,9 +128,9 @@ where
     I: Input<M>,
     M: Message,
     R: Runner<M>,
-    F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
+    F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
-    func: Option<F>,
+    func: F,
     phantom_data: PhantomData<(I, R, M)>,
 }
 
@@ -167,11 +139,11 @@ where
     I: Input<M>,
     M: Message,
     R: Runner<M>,
-    F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
+    F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     pub const fn new(func: F) -> Self {
         Self {
-            func: Some(func),
+            func,
             phantom_data: PhantomData,
         }
     }
@@ -182,19 +154,12 @@ where
     I: Input<M>,
     M: Message,
     R: Runner<M>,
-    F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
+    F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
-    fn load(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
-        if let Some(func) = self.func.take() {
-            let input = I::create(registry)?;
-            let resource = func(input, registry)?;
-            registry.add(resource);
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.func.is_none()
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
+        let input = I::create(registry)?;
+        let resource = (self.func)(input, registry)?;
+        Ok(Box::new(resource))
     }
 
     fn constraints(&self) -> Constraints {
@@ -207,7 +172,7 @@ where
     I: Input<M>,
     M: Message,
     R: Runner<M>,
-    F: FnOnce(I::Output, &mut Registry<M>) -> Result<R, Error> + Send + 'static,
+    F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     fn ident(&self) -> NamespacedIdRef<'static> {
         R::const_ident()

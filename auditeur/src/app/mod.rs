@@ -13,7 +13,7 @@ mod runner;
 pub struct App<M> {
     sender: Sender<M>,
     exit_handle: Exiter,
-    loaders: HashMap<NamespacedId, Box<dyn Loader<M>>>,
+    loaders: HashMap<NamespacedId, Option<Box<dyn Loader<M>>>>,
 }
 
 impl<M: Message> App<M> {
@@ -50,7 +50,7 @@ impl<M: Message> App<M> {
 
     pub fn add<L: Loader<M> + 'static>(&mut self, loader: L) -> &mut Self {
         self.loaders
-            .insert(L::const_ident().into(), Box::new(loader));
+            .insert(L::const_ident().into(), Some(Box::new(loader)));
         self
     }
 
@@ -100,7 +100,11 @@ impl<M: Message> App<M> {
 
     #[must_use]
     pub fn loaders(&self) -> Vec<&dyn Loader<M>> {
-        self.loaders.values().map(Deref::deref).collect()
+        self.loaders
+            .values()
+            .filter_map(Option::as_ref)
+            .map(Deref::deref)
+            .collect()
     }
 
     /// Listen to all messages until [an exit message](Exiter) is sent
@@ -128,27 +132,19 @@ impl<M: Message> App<M> {
             .ok_or_else(|| Error::NotFound { id: id.clone() })?;
 
         // if it's already finished, then early return
-        if loader.is_finished() {
+        let Some(loader) = loader.take() else {
             return Ok(());
-        }
-
-        // if there are no constraints, we can just load it now and return
-        let constraints = loader.constraints();
-        if constraints.is_empty() {
-            return loader.load(registry);
-        }
+        };
 
         // if there are constraints, we must load them first
-        for Constraint::After { id } in constraints {
+        for Constraint::After { id } in loader.constraints() {
             self.resolve(&id, registry)?;
         }
 
-        // then we have to get the loader again because the mutable reference is invalidated by
-        // loading the other constraints
-        self.loaders
-            .get_mut(id)
-            .expect("the loader should never be deleted by resolving other loaders")
-            .load(registry)
+        // then we can finally load the loader
+        let runnable = loader.load(registry)?;
+        registry.add_boxed(runnable);
+        Ok(())
     }
 }
 
@@ -196,30 +192,9 @@ impl<M: Message> Registry<M> {
         runner.inner().downcast_ref()
     }
 
-    pub fn add<R: Runner<M>>(&mut self, runner: R) -> &mut Self {
-        self.resources
-            .insert(R::const_ident().into(), Box::new(runner));
+    fn add_boxed(&mut self, runner: Box<dyn Runner<M>>) -> &mut Self {
+        self.resources.insert(runner.ident().into(), runner);
         self
-    }
-
-    /// # Errors
-    ///
-    /// - If `listener`'s input failed to build
-    pub fn add_listener<L: Listener<M>>(&mut self, listener: L) -> Result<&mut Self, Error> {
-        let erased = runner::Listener::build(listener, self)?;
-        Ok(self.add(erased))
-    }
-
-    pub fn add_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        self.add(runner::Resource::new(resource))
-    }
-
-    /// # Errors
-    ///
-    /// - If `listener`'s input failed to build
-    pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> Result<&mut Self, Error> {
-        let erased = runner::Watcher::build(watcher, self)?;
-        Ok(self.add(erased))
     }
 
     async fn run(mut self) {
