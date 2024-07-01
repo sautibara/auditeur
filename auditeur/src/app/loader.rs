@@ -101,7 +101,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
 
 impl<M: Message, W: WatcherTrait<M>> Loader<M> for Watcher<M, W> {
     fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
-        let runner = super::runner::Watcher::build(self.watcher, registry)?;
+        let runner = runner::Watcher::build(self.watcher, registry)?;
         Ok(Box::new(runner))
     }
 
