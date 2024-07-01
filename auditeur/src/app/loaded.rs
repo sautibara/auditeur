@@ -12,15 +12,21 @@ use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
+/// A [resource](mod@crate::resource) that has already been loaded into a [`Registry`]
+#[allow(clippy::module_name_repetitions)] // without Loaded, it would conflict with Resource
+pub trait LoadedResource: ResourceTrait + Send {
+    /// Optionally provide a [`Runner`] to run in the main loop
+    fn runner(&mut self) -> Option<&mut dyn Runner>;
+    /// Obtain a reference to the original resource, wrapped in an [`Any`]
+    ///
+    /// This allows [`Registry::get`] to give a cloned version of the resource
+    fn resource(&self) -> &dyn Any;
+}
+
+/// An object that can run a simple async function, see [`LoadedResource::runner`]
 #[async_trait]
-pub trait Runner<M: Message>: ResourceTrait + Send {
+pub trait Runner {
     async fn run(&mut self);
-
-    fn is_runnable(&self) -> bool {
-        true
-    }
-
-    fn inner(&self) -> &dyn Any;
 }
 
 pub struct Listener<M: Message, L: ListenerTrait<M>> {
@@ -99,12 +105,18 @@ impl<M: Message, L: ListenerTrait<M>> ResourceTrait for Listener<M, L> {
     }
 }
 
-#[async_trait]
-impl<M: Message, L: ListenerTrait<M>> Runner<M> for Listener<M, L> {
-    fn inner(&self) -> &dyn Any {
+impl<M: Message, L: ListenerTrait<M>> LoadedResource for Listener<M, L> {
+    fn resource(&self) -> &dyn Any {
         &self.inner
     }
 
+    fn runner(&mut self) -> Option<&mut dyn Runner> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
     async fn run(&mut self) {
         // send startup message
         if self.startup().await.is_break() {
@@ -145,15 +157,12 @@ impl<R: ResourceTrait> Resource<R> {
     }
 }
 
-#[async_trait]
-impl<M: Message, R: ResourceTrait> Runner<M> for Resource<R> {
-    fn is_runnable(&self) -> bool {
-        false
+impl<R: ResourceTrait> LoadedResource for Resource<R> {
+    fn runner(&mut self) -> Option<&mut dyn Runner> {
+        None
     }
 
-    async fn run(&mut self) {}
-
-    fn inner(&self) -> &dyn Any {
+    fn resource(&self) -> &dyn Any {
         &self.resource
     }
 }
@@ -195,12 +204,18 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     }
 }
 
-#[async_trait]
-impl<M: Message, W: WatcherTrait<M>> Runner<M> for Watcher<M, W> {
-    fn inner(&self) -> &dyn Any {
+impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
+    fn resource(&self) -> &dyn Any {
         &self.inner
     }
 
+    fn runner(&mut self) -> Option<&mut dyn Runner> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     async fn run(&mut self) {
         select! {
             res = self.inner.run(&mut self.input) => {

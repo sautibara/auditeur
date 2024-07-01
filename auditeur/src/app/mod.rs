@@ -4,11 +4,15 @@ use tokio::sync::broadcast::Receiver;
 
 use crate::{prelude::*, Exiter};
 
-use self::{constraints::Constraint, loader::Loader, runner::Runner};
+use self::constraints::Constraint;
 
 pub mod constraints;
+mod loaded;
 mod loader;
-mod runner;
+
+pub use loaded::LoadedResource;
+pub use loaded::Runner;
+pub use loader::Loader;
 
 pub struct App<M> {
     sender: Sender<M>,
@@ -62,8 +66,8 @@ impl<M: Message> App<M> {
         &mut self,
         func: impl FnOnce(I::Output) -> L + Send + 'static,
     ) -> &mut Self {
-        self.add(loader::With::<I, M, runner::Listener<M, L>, _>::new(
-            |output, registry| runner::Listener::build(func(output), registry),
+        self.add(loader::With::<I, M, loaded::Listener<M, L>, _>::new(
+            |output, registry| loaded::Listener::build(func(output), registry),
         ))
     }
 
@@ -75,8 +79,8 @@ impl<M: Message> App<M> {
         &mut self,
         func: impl FnOnce(I::Output) -> R + Send + 'static,
     ) -> &mut Self {
-        self.add(loader::With::<I, M, runner::Resource<R>, _>::new(
-            |output, _| Ok(runner::Resource::new(func(output))),
+        self.add(loader::With::<I, M, loaded::Resource<R>, _>::new(
+            |output, _| Ok(loaded::Resource::new(func(output))),
         ))
     }
 
@@ -88,8 +92,8 @@ impl<M: Message> App<M> {
         &mut self,
         func: impl FnOnce(I::Output) -> W + Send + 'static,
     ) -> &mut Self {
-        self.add(loader::With::<I, M, runner::Watcher<M, W>, _>::new(
-            |output, registry| runner::Watcher::build(func(output), registry),
+        self.add(loader::With::<I, M, loaded::Watcher<M, W>, _>::new(
+            |output, registry| loaded::Watcher::build(func(output), registry),
         ))
     }
 
@@ -153,7 +157,7 @@ pub struct NotFound;
 pub struct Registry<M: Message> {
     sender: Sender<M>,
     exit_handle: Exiter,
-    resources: HashMap<NamespacedId, Box<dyn Runner<M>>>,
+    resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
 }
 
 impl<M: Message> Registry<M> {
@@ -189,10 +193,10 @@ impl<M: Message> Registry<M> {
     pub fn get<R: Resource>(&self) -> Option<&R> {
         let id = R::const_ident().into();
         let runner = self.resources.get(&id)?;
-        runner.inner().downcast_ref()
+        runner.resource().downcast_ref()
     }
 
-    fn add_boxed(&mut self, runner: Box<dyn Runner<M>>) -> &mut Self {
+    pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
         self.resources.insert(runner.ident().into(), runner);
         self
     }
@@ -201,8 +205,8 @@ impl<M: Message> Registry<M> {
         let futures = self
             .resources
             .values_mut()
-            .filter(|runner| runner.is_runnable())
-            .map(|runner| runner.run());
+            .filter_map(|loaded| loaded.runner())
+            .map(Runner::run);
         futures::future::join_all(futures).await;
     }
 }

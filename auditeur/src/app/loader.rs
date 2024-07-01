@@ -6,11 +6,24 @@ use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
-use super::runner;
-use super::runner::Runner;
+use super::loaded;
+use super::loaded::LoadedResource;
 
+/// An object that can be loaded with a [`Registry`] to return a finished [`LoadedResource`]
+///
+/// This trait and its delayed execution is the thing that allows for the "trait magic" of
+/// [inputs](Input). When loading, inputs are taken from the [Registry]. Resources are ensured to
+/// already be loaded through the [`Constraints`] of each input, which is why delayed execution is
+/// necessary.
 pub trait Loader<M: Message>: ResourceTrait + Send {
-    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error>;
+    /// Consume the loader and create a [`LoadedResource`], resolving inputs using `registry`
+    ///
+    /// # Errors
+    ///
+    /// - If the inputs return any errors
+    ///   - If any resources are not found
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error>;
+    /// Return a list of [`Constraints`] that must be satisfied before loading
     fn constraints(&self) -> Constraints;
 }
 
@@ -29,8 +42,8 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
 }
 
 impl<M: Message, L: ListenerTrait<M>> Loader<M> for Listener<M, L> {
-    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
-        let runner = runner::Listener::build(self.listener, registry)?;
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error> {
+        let runner = loaded::Listener::build(self.listener, registry)?;
         Ok(Box::new(runner))
     }
 
@@ -63,8 +76,8 @@ impl<R: ResourceTrait> Resource<R> {
 }
 
 impl<M: Message, R: ResourceTrait> Loader<M> for Resource<R> {
-    fn load(self: Box<Self>, _: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
-        Ok(Box::new(runner::Resource::new(self.resource)))
+    fn load(self: Box<Self>, _: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error> {
+        Ok(Box::new(loaded::Resource::new(self.resource)))
     }
 
     fn constraints(&self) -> Constraints {
@@ -100,8 +113,8 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
 }
 
 impl<M: Message, W: WatcherTrait<M>> Loader<M> for Watcher<M, W> {
-    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
-        let runner = runner::Watcher::build(self.watcher, registry)?;
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error> {
+        let runner = loaded::Watcher::build(self.watcher, registry)?;
         Ok(Box::new(runner))
     }
 
@@ -127,7 +140,7 @@ pub struct With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runner<M>,
+    R: LoadedResource,
     F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     func: F,
@@ -138,7 +151,7 @@ impl<I, R, M, F> With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runner<M>,
+    R: LoadedResource,
     F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     pub const fn new(func: F) -> Self {
@@ -153,10 +166,10 @@ impl<I, M, R, F> Loader<M> for With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runner<M>,
+    R: LoadedResource,
     F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
-    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn Runner<M>>, Error> {
+    fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error> {
         let input = I::create(registry)?;
         let resource = (self.func)(input, registry)?;
         Ok(Box::new(resource))
@@ -171,7 +184,7 @@ impl<I, M, R, F> ResourceTrait for With<I, M, R, F>
 where
     I: Input<M>,
     M: Message,
-    R: Runner<M>,
+    R: LoadedResource,
     F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     fn ident(&self) -> NamespacedIdRef<'static> {
