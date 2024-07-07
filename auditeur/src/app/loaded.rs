@@ -79,8 +79,8 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         }
     }
 
-    async fn startup(&mut self) -> ControlFlow<()> {
-        match self.inner.startup(&mut self.input).await {
+    async fn init(&mut self) -> ControlFlow<()> {
+        match self.inner.init(&mut self.input).await {
             Ok(flow) => flow,
             Err(err) => {
                 Self::handle_err(err);
@@ -121,7 +121,7 @@ impl<M: Message, L: ListenerTrait<M>> LoadedResource for Listener<M, L> {
 impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
     async fn run(mut self: Box<Self>) {
         // send startup message
-        if self.startup().await.is_break() {
+        if self.init().await.is_break() {
             return;
         }
 
