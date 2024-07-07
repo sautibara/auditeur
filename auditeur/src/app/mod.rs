@@ -102,15 +102,6 @@ impl<M: Message> App<M> {
         self
     }
 
-    #[must_use]
-    pub fn loaders(&self) -> Vec<&dyn Loader<M>> {
-        self.loaders
-            .values()
-            .filter_map(Option::as_ref)
-            .map(Deref::deref)
-            .collect()
-    }
-
     /// Listen to all messages until [an exit message](Exiter) is sent
     ///
     /// # Errors
@@ -149,6 +140,30 @@ impl<M: Message> App<M> {
         let runnable = loader.load(registry)?;
         registry.add_boxed(runnable);
         Ok(())
+    }
+
+    /// Clone the app with the same message channel and exit handle, but with a new set of
+    /// resources
+    #[must_use]
+    pub fn remake(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            exit_handle: self.exit_handle.clone(),
+            loaders: HashMap::new(),
+        }
+    }
+
+    pub fn into_loaders(self) -> impl Iterator<Item = Box<dyn Loader<M>>> {
+        self.loaders.into_values().flatten()
+    }
+}
+
+impl<M: Message> Extend<Box<dyn Loader<M>>> for App<M> {
+    fn extend<T: IntoIterator<Item = Box<dyn Loader<M>>>>(&mut self, iter: T) {
+        self.loaders.extend(
+            iter.into_iter()
+                .map(|loader| (loader.ident().into_owned(), Some(loader))),
+        );
     }
 }
 
