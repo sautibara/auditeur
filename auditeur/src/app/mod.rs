@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref};
+use std::collections::HashMap;
 
 use tokio::sync::broadcast::Receiver;
 
@@ -207,8 +207,8 @@ impl<M: Message> Registry<M> {
     #[must_use]
     pub fn get<R: Resource>(&self) -> Option<&R> {
         let id = R::const_ident().into();
-        let runner = self.resources.get(&id)?;
-        runner.resource().downcast_ref()
+        let loaded = self.resources.get(&id)?;
+        loaded.resource().downcast_ref()
     }
 
     pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
@@ -216,11 +216,11 @@ impl<M: Message> Registry<M> {
         self
     }
 
-    async fn run(mut self) {
+    async fn run(self) {
         let futures = self
             .resources
-            .values_mut()
-            .filter_map(|loaded| loaded.runner())
+            .into_values()
+            .filter_map(LoadedResource::runner)
             .map(Runner::run);
         futures::future::join_all(futures).await;
     }
