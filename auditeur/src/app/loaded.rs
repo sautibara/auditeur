@@ -147,17 +147,18 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
 
         loop {
             tokio::select! {
-                message = self.receiver.recv() => {
-                    self.handle(message).await;
-                },
+                biased;
+                _ = &mut exit_signal => {
+                    break;
+                }
                 meta = self.meta_receiver.recv() => {
                     if self.handle_meta(meta).await.is_break() {
                         break;
                     }
                 }
-                _ = &mut exit_signal => {
-                    break;
-                }
+                message = self.receiver.recv() => {
+                    self.handle(message).await;
+                },
             }
         }
 
@@ -238,13 +239,14 @@ impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
 impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     async fn run(mut self: Box<Self>) {
         select! {
-            res = self.inner.run(&mut self.input) => {
-                self.handle_result(res);
-            },
+            biased;
             _ = self.exit_signal.recv() => {
                 let res = self.inner.exit(&mut self.input).await;
                 self.handle_result(res);
             }
+            res = self.inner.run(&mut self.input) => {
+                self.handle_result(res);
+            },
         }
     }
 }
