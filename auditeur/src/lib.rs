@@ -10,10 +10,10 @@ pub use auditeur_macros::{ident, resource};
 
 pub mod prelude {
     pub use crate::{
-        app::constraints::Constraints,
+        app::{constraints::Constraints, Exiter, Stopper},
         ident, resource,
         resource::{Listener, NamespacedId, NamespacedIdRef, Resource, Watcher},
-        Error as AuditeurError, Exit, Exiter, Plugin,
+        Error as AuditeurError, Plugin,
     };
 
     pub(crate) use crate::Error;
@@ -33,38 +33,6 @@ macro_rules! bake_message {
         pub type Registry = $crate::app::Registry<$message>;
         pub type Get<T> = $crate::input::Get<$message, T>;
     };
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Exit;
-
-#[derive(Clone, Debug)]
-pub struct Exiter {
-    exiter: tokio::sync::broadcast::Sender<Exit>,
-}
-
-impl Exiter {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            exiter: tokio::sync::broadcast::Sender::new(1),
-        }
-    }
-
-    pub fn exit(&self) {
-        let _ = self.exiter.send(Exit);
-    }
-
-    #[must_use]
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Exit> {
-        self.exiter.subscribe()
-    }
-}
-
-impl Default for Exiter {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[derive(Error, Debug)]

@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{app::RegistryMessage, prelude::*};
 
 use anyhow::Result;
 use log::trace;
@@ -7,21 +7,28 @@ use log::trace;
 pub trait Listener<M: Message>: Resource + Send {
     type Input: Input<M>;
 
-    /// Handle a `M` for any reason
     async fn handle(
         &mut self,
         message: M,
         input: &mut <Self::Input as Input<M>>::Output,
-    ) -> Result<ControlFlow<()>>;
+    ) -> Result<()>;
 
-    async fn init(
-        &mut self,
-        _input: &mut <Self::Input as Input<M>>::Output,
-    ) -> Result<ControlFlow<()>> {
-        Ok(ControlFlow::Continue(()))
+    async fn init(&mut self, input: &mut <Self::Input as Input<M>>::Output) -> Result<()> {
+        let _ = input;
+        Ok(())
     }
 
-    async fn exit(&mut self, _input: &mut <Self::Input as Input<M>>::Output) -> Result<()> {
+    async fn exit(&mut self, input: &mut <Self::Input as Input<M>>::Output) -> Result<()> {
+        let _ = input;
+        Ok(())
+    }
+
+    async fn meta(
+        &mut self,
+        message: RegistryMessage,
+        input: &mut <Self::Input as Input<M>>::Output,
+    ) -> Result<()> {
+        let _ = (message, input);
         Ok(())
     }
 
@@ -37,9 +44,9 @@ pub struct Logger;
 impl<M: Message + std::fmt::Debug> Listener<M> for Logger {
     type Input = ();
 
-    async fn handle(&mut self, message: M, (): &mut ()) -> anyhow::Result<ControlFlow<()>> {
+    async fn handle(&mut self, message: M, (): &mut ()) -> anyhow::Result<()> {
         trace!("{:?}", message);
-        Ok(ControlFlow::Continue(()))
+        Ok(())
     }
 }
 

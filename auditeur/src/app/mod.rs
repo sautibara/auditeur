@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::broadcast::Receiver;
 
-use crate::{prelude::*, Exiter};
+use crate::prelude::*;
 
 use self::constraints::Constraint;
 
@@ -167,10 +167,85 @@ impl<M: Message> Extend<Box<dyn Loader<M>>> for App<M> {
     }
 }
 
+/// Messages from the [`Registry`] about different loaded resources
+#[non_exhaustive]
+#[derive(Clone)]
+pub enum RegistryMessage {
+    /// `id` has been loaded
+    ///
+    /// Note: this only is emitted for [listeners](crate::resource::Listener) and
+    /// [watchers](crate::resource::Watcher), as resources are never loaded
+    Loaded { id: NamespacedId },
+    /// `id` has exited
+    ///
+    /// Note: this only is emitted for [listeners](crate::resource::Listener) and
+    /// [watchers](crate::resource::Watcher), as resources are never loaded, so they can't exit
+    Exited { id: NamespacedId },
+    /// `from` accessed `to` through a [`Get<_>`](crate::input::Get) input
+    Access {
+        from: NamespacedId,
+        to: NamespacedId,
+    },
+    /// Stop `id`, making it exit
+    ///
+    /// Note: this is automatically handled for both [listeners](crate::resource::Listener) and
+    /// [watchers](crate::resource::Watcher)
+    Stop { id: NamespacedId },
+}
+
+pub struct Stopper {
+    sender: Sender<RegistryMessage>,
+}
+
+impl Stopper {
+    #[inline]
+    pub fn stop<R: Resource>(&self) {
+        self.stop_id(R::const_ident());
+    }
+
+    pub fn stop_id(&self, id: NamespacedIdRef<'_>) {
+        let id = id.into_owned();
+        let _ = self.sender.send(RegistryMessage::Stop { id });
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Exit;
+
+#[derive(Clone, Debug)]
+pub struct Exiter {
+    exiter: tokio::sync::broadcast::Sender<Exit>,
+}
+
+impl Exiter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            exiter: tokio::sync::broadcast::Sender::new(1),
+        }
+    }
+
+    pub fn exit(&self) {
+        let _ = self.exiter.send(Exit);
+    }
+
+    #[must_use]
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Exit> {
+        self.exiter.subscribe()
+    }
+}
+
+impl Default for Exiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct NotFound;
 
 pub struct Registry<M: Message> {
     sender: Sender<M>,
+    meta_sender: Sender<RegistryMessage>,
     exit_handle: Exiter,
     resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
 }
@@ -179,6 +254,7 @@ impl<M: Message> Registry<M> {
     fn new(sender: Sender<M>, exit_handle: Exiter) -> Self {
         Self {
             sender,
+            meta_sender: Sender::new(256),
             exit_handle,
             resources: HashMap::new(),
         }
@@ -200,8 +276,25 @@ impl<M: Message> Registry<M> {
     }
 
     #[must_use]
-    pub fn exit_signal(&self) -> Receiver<Exit> {
+    pub(crate) fn exit_signal(&self) -> Receiver<Exit> {
         self.exit_handle.subscribe()
+    }
+
+    #[must_use]
+    pub fn meta_receiver(&self) -> Receiver<RegistryMessage> {
+        self.meta_sender.subscribe()
+    }
+
+    #[must_use]
+    pub(crate) fn meta_sender(&self) -> Sender<RegistryMessage> {
+        self.meta_sender.clone()
+    }
+
+    #[must_use]
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            sender: self.meta_sender(),
+        }
     }
 
     #[must_use]
