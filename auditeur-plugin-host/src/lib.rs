@@ -21,6 +21,8 @@ use libloading::Library;
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
 
+mod wrappers;
+
 #[doc(hidden)]
 pub use stabby::export as stabby_export;
 
