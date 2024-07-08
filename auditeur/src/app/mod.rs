@@ -173,6 +173,9 @@ impl<M: Message> Extend<Box<dyn Loader<M>>> for App<M> {
 pub enum RegistryMessage {
     /// `id` has been loaded
     ///
+    /// This doesn't necessarily mean that the resource is currently running, only that it will
+    /// eventually be run
+    ///
     /// Note: this only is emitted for [listeners](crate::resource::Listener) and
     /// [watchers](crate::resource::Watcher), as resources are never loaded
     Loaded { id: NamespacedId },
@@ -318,3 +321,33 @@ impl<M: Message> Registry<M> {
         futures::future::join_all(futures).await;
     }
 }
+
+// PluginRegistry
+// /// this only holds the listeners and watchers that are currently running
+// /// they're the roots of what stays loaded
+// - running: HashMap<NamespacedId, Arc<ResourceInfo>>
+// /// this holds everything, including resources that are currently running and resources that are
+// /// unloaded
+// - loaded: HashMap<NamespacedId, Weak<ResourceInfo>>
+//
+// ResourceInfo
+// - id: NamespacedId
+// - type: ResourceType
+// - library: Option<PluginLibrary>
+// - dependencies: Vec<Arc<ResourceInfo>>
+// - dependents: Vec<NamespacedId>
+//
+// ResourceType
+// - Resource
+// - Plugin
+//
+// This automatically allows for keeping alive both plugins and resources in a safe manner, and
+// provides information that is necessary to unloading plugins. (why does this writing seem like
+// I'm writing for the HR of a multinational corporation it's so dry)
+//
+// When creating the registry, all resources have to stay loaded in an Arc
+// When running, resources and plugins that aren't currently running should be stored in a Weak, so
+// that they aren't kept alive even though they shouldn't be
+//
+// Plugins will be stored in resources' dependencies (the plugin's code is a dependency for the
+// resource), and as such you can see the resources in a plugin by viewing its dependents.

@@ -23,6 +23,17 @@ const fn then_continue(conditional: bool) -> ControlFlow<()> {
     }
 }
 
+fn handle_recv_error<T>(
+    err: RecvError,
+    handle_err: impl FnOnce(anyhow::Result<T>),
+) -> ControlFlow<()> {
+    let closed = matches!(err, RecvError::Closed);
+    handle_err(Err(
+        anyhow::Error::from(err).context("failed to recieve message")
+    ));
+    then_continue(!closed)
+}
+
 /// A [resource](mod@crate::resource) that has already been loaded into a [`Registry`]
 #[allow(clippy::module_name_repetitions)] // without Loaded, it would conflict with Resource
 pub trait LoadedResource: ResourceTrait + Send {
@@ -62,20 +73,12 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         })
     }
 
-    fn handle_recv_error(err: RecvError) -> ControlFlow<()> {
-        let closed = matches!(err, RecvError::Closed);
-        Self::handle_err(anyhow::Error::from(err).context("failed to recieve message"));
-        then_continue(!closed)
-    }
-
     async fn handle(&mut self, message: Result<M, RecvError>) -> ControlFlow<()> {
         let message = match message {
             Ok(message) => message,
-            Err(err) => return Self::handle_recv_error(err),
+            Err(err) => return handle_recv_error(err, Self::handle_result),
         };
-        if let Err(err) = self.inner.handle(message, &mut self.input).await {
-            Self::handle_err(err);
-        }
+        Self::handle_result(self.inner.handle(message, &mut self.input).await);
         ControlFlow::Continue(())
     }
 
@@ -85,29 +88,25 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     ) -> ControlFlow<()> {
         let message = match message {
             Ok(message) => message,
-            Err(err) => return Self::handle_recv_error(err),
+            Err(err) => return handle_recv_error(err, Self::handle_result),
         };
         let to_exit = matches!(message, RegistryMessage::Stop { ref id } if *id == self.ident());
-        if let Err(err) = self.inner.meta(message, &mut self.input).await {
-            Self::handle_err(err);
-        }
+        Self::handle_result(self.inner.meta(message, &mut self.input).await);
         then_continue(!to_exit)
     }
 
     async fn on_exit(&mut self) {
-        if let Err(err) = self.inner.exit(&mut self.input).await {
-            Self::handle_err(err);
-        }
+        Self::handle_result(self.inner.exit(&mut self.input).await);
     }
 
     async fn init(&mut self) {
-        if let Err(err) = self.inner.init(&mut self.input).await {
-            Self::handle_err(err);
-        }
+        Self::handle_result(self.inner.init(&mut self.input).await);
     }
 
-    fn handle_err(err: impl Into<anyhow::Error>) {
-        error!("{:?}", err.into());
+    fn handle_result(result: Result<(), impl Into<anyhow::Error>>) {
+        if let Err(err) = result {
+            error!("{:?}", err.into());
+        }
     }
 }
 
@@ -205,20 +204,31 @@ pub struct Watcher<M: Message, W: WatcherTrait<M>> {
     inner: W,
     input: <W::Input as Input<M>>::Output,
     exit_signal: Receiver<Exit>,
+    meta_receiver: Receiver<RegistryMessage>,
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     pub fn build(watcher: W, registry: &Registry<M>) -> Result<Self, Error> {
         let input = <W::Input as Input<M>>::create(registry)?;
-        let exit_signal = registry.exit_signal();
         Ok(Self {
             inner: watcher,
-            exit_signal,
+            exit_signal: registry.exit_signal(),
             input,
+            meta_receiver: registry.meta_receiver(),
         })
     }
 
-    fn handle_result(&self, res: anyhow::Result<()>) {
+    fn handle_meta(message: Result<RegistryMessage, RecvError>) -> ControlFlow<()> {
+        let message = match message {
+            Ok(message) => message,
+            Err(err) => return handle_recv_error(err, Self::handle_result),
+        };
+        let to_exit =
+            matches!(message, RegistryMessage::Stop { ref id } if *id == W::const_ident());
+        then_continue(!to_exit)
+    }
+
+    fn handle_result(res: anyhow::Result<()>) {
         if let Err(_err) = res {
             todo!();
         }
@@ -238,14 +248,26 @@ impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
 #[async_trait]
 impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     async fn run(mut self: Box<Self>) {
+        let mut meta_receiver = self.meta_receiver.resubscribe();
+        let meta_loop = async move {
+            loop {
+                let message = meta_receiver.recv().await;
+                let res = Self::handle_meta(message);
+                if res.is_break() {
+                    break;
+                }
+            }
+        };
+        pin_mut!(meta_loop);
         select! {
             biased;
             _ = self.exit_signal.recv() => {
                 let res = self.inner.exit(&mut self.input).await;
-                self.handle_result(res);
-            }
+                Self::handle_result(res);
+            },
+            () = &mut meta_loop => { }
             res = self.inner.run(&mut self.input) => {
-                self.handle_result(res);
+                Self::handle_result(res);
             },
         }
     }
