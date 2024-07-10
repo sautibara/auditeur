@@ -4,16 +4,20 @@ use tokio::sync::broadcast::Receiver;
 
 use crate::prelude::*;
 
-use self::constraints::Constraint;
-
-pub mod bundle;
-pub mod constraints;
+mod bundle;
+mod constraints;
 mod loaded;
 mod loader;
+
+pub use bundle::Bundle;
+pub use bundle::Supplier as BundleSupplier;
 
 pub use loaded::LoadedResource;
 pub use loaded::Runner;
 pub use loader::Loader;
+
+pub use constraints::Constraint;
+pub use constraints::Constraints;
 
 // TODO: separate NamespacedId into ResourceId and BundleId
 
@@ -27,55 +31,47 @@ struct BuiltBundle {
     parent: Option<NamespacedId>,
 }
 
+/// The main entry-point for the application: the thing that runs resources
+///
+/// The app handles loading [resources](crate::resource::Resource),
+/// [listeners](crate::resource::Listener), and [watchers](crate::resource::Watcher), giving them
+/// the correct [inputs](crate::input::Input) (including [each other](crate::input::Get)), and
+/// [running them](Self::run) asynchronously. It also makes sure they are loaded in the correct
+/// order, through [constraints](Constraints), allowing them to have other dependencies.
+///
+/// The main container for resources is the [`Bundle`], and all resources that are added to an
+/// `App` must be contained within one. As such, only bundles are allowed to be added to the main
+/// app builder, although resources may be added to each bundles.
 #[must_use = "An app does nothing unless it is run"]
 pub struct App<M: Message> {
-    sender: Sender<M>,
-    exit_handle: Exiter,
+    capacity: usize,
     loaders: HashMap<NamespacedId, Option<BundledLoader<M>>>,
     bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
 }
 
 impl<M: Message> App<M> {
+    /// Create a new app with a specified `capacity` of messages for each channel
     pub fn new(capacity: usize) -> Self {
-        let sender = Sender::new(capacity);
-        let exit_handle = Exiter::new();
         Self {
-            sender,
-            exit_handle,
+            capacity,
             loaders: HashMap::new(),
             bundles: HashMap::new(),
         }
     }
 
+    /// Add a [`Bundle`] to the app, supplied by a [`Supplier`](bundle::Supplier)
+    ///
+    /// This takes ownership of the [`App`], allowing for usage closer to a builder pattern
     pub fn with_bundle(mut self, bundle: impl bundle::Supplier<M>) -> Self {
         self.add_bundle(bundle);
         self
     }
 
+    /// Add a [`Bundle`] to the app, supplied by a [`Supplier`](bundle::Supplier)
     pub fn add_bundle(&mut self, bundle: impl bundle::Supplier<M>) -> &mut Self {
         let bundle = bundle.build();
         bundle.apply_to(self, None);
         self
-    }
-
-    #[must_use]
-    pub fn sender(&self) -> Sender<M> {
-        self.sender.clone()
-    }
-
-    #[must_use]
-    pub fn subscribe(&self) -> Receiver<M> {
-        self.sender.subscribe()
-    }
-
-    #[must_use]
-    pub fn exiter(&self) -> Exiter {
-        self.exit_handle.clone()
-    }
-
-    #[must_use]
-    pub fn exiter_subscribe(&self) -> Receiver<Exit> {
-        self.exit_handle.subscribe()
     }
 
     fn add_loader(&mut self, loader: Box<dyn Loader<M>>, bundle: NamespacedId) {
@@ -100,22 +96,33 @@ impl<M: Message> App<M> {
         );
     }
 
-    /// Listen to all messages until [an exit message](Exiter) is sent
+    /// [Build](Self::build) the `App` and run all [runners](Runner) to completion
     ///
     /// # Errors
     ///
     /// - If one of the loaders failed to build
-    /// - If a dependency was not found
-    pub async fn run(mut self) -> Result<(), Error> {
-        let mut registry = Registry::new(self.sender.clone(), self.exit_handle.clone());
+    /// - If a dependency wasn't found
+    pub async fn run(self) -> Result<(), Error> {
+        let registry = self.build()?;
+        registry.run().await;
+        Ok(())
+    }
+
+    /// Build the `App` into a [`Registry`], without running it
+    ///
+    /// # Errors
+    ///
+    /// - If one of the loaders failed to build
+    /// - If a dependency wasn't found
+    pub fn build(mut self) -> Result<Registry<M>, Error> {
+        let mut registry = Registry::new(self.capacity);
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for id in self.loaders.keys().cloned().collect::<Vec<_>>() {
             self.resolve_loader(&mut registry, &id)?;
         }
-        registry.run().await;
-        Ok(())
+        Ok(registry)
     }
 
     fn resolve_loader(
@@ -174,6 +181,7 @@ impl<M: Message> App<M> {
 
         Ok(())
     }
+
     fn resolve_constraints(
         &mut self,
         registry: &mut Registry<M>,
@@ -189,10 +197,108 @@ impl<M: Message> App<M> {
     }
 }
 
-/// Messages from the [`Registry`] about different loaded resources
+/// A list of registered and loaded [resources](LoadedResource), built from an [`App`], that can be run as a main loop
+///
+/// A registry is built from an [`App`] declaration, which handles loading things in the correct
+/// order. This allows resources to access other resources through [`Self::get`], or, much more
+/// commonly, [`Get<_>`](crate::input::Get). It is the main thing that [inputs](crate::input)
+/// interact with, allowing resources to automatically get a large amount of information about the
+/// app. As such, most channels shown below are also able to be used as inputs (they implement
+/// [`Input`]).
+///
+/// There are many bundled channels for notification passing:
+/// - To tell all runners to exit at the same time, use an [`Exiter`] through [`Self::exiter`]
+/// - To tell only one resource to exit, use a [`Stopper`] through [`Self::stopper`]
+/// - To recieve notifications about what happens to the registry, use [`Self::meta_receiver`]
+/// - To listen to messages, use [`Self::message_reciever`]
+pub struct Registry<M: Message> {
+    message_sender: Sender<M>,
+    meta_sender: Sender<RegistryEvent>,
+    exit_handle: Exiter,
+    resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
+}
+
+impl<M: Message> Registry<M> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            message_sender: Sender::new(capacity),
+            meta_sender: Sender::new(capacity),
+            exit_handle: Exiter::new(),
+            resources: HashMap::new(),
+        }
+    }
+
+    /// Asynchronously run each [`Runner`] that has been registered, until they all exit
+    pub async fn run(self) {
+        let futures = self
+            .resources
+            .into_values()
+            .filter_map(LoadedResource::runner)
+            .map(Runner::run);
+        futures::future::join_all(futures).await;
+    }
+
+    /// Add an already-loaded resource to the registry. The resource can be accessed through
+    /// [`Self::get`], and if it provides a [`Runner`], that will be run in the main loop.
+    pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
+        self.resources.insert(runner.ident().into(), runner);
+        self
+    }
+
+    /// Get a reference to a loaded resource. This uses [`Any`](std::any::Any) in order to get the
+    /// contained object if it exists. If the object is cloneable, that can also be used.
+    #[must_use]
+    pub fn get<R: Resource>(&self) -> Option<&R> {
+        let id = R::const_ident().into();
+        let loaded = self.resources.get(&id)?;
+        loaded.resource().downcast_ref()
+    }
+}
+
+/// These are methods to access the various channels that the registry contains
+impl<M: Message> Registry<M> {
+    #[must_use]
+    pub fn message_sender(&self) -> Sender<M> {
+        self.message_sender.clone()
+    }
+
+    #[must_use]
+    pub fn message_reciever(&self) -> Receiver<M> {
+        self.message_sender.subscribe()
+    }
+
+    #[must_use]
+    pub fn exiter(&self) -> Exiter {
+        self.exit_handle.clone()
+    }
+
+    #[must_use]
+    pub fn exit_reciever(&self) -> Receiver<Exit> {
+        self.exit_handle.subscribe()
+    }
+
+    #[must_use]
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            sender: self.meta_sender(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn meta_sender(&self) -> Sender<RegistryEvent> {
+        self.meta_sender.clone()
+    }
+
+    #[must_use]
+    pub fn meta_receiver(&self) -> Receiver<RegistryEvent> {
+        self.meta_sender.subscribe()
+    }
+}
+
+/// Messages from the [`Registry`] about different events, such as loading or unloading resources
 #[non_exhaustive]
-#[derive(Clone)]
-pub enum RegistryMessage {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RegistryEvent {
     /// `id` has been loaded
     ///
     /// This doesn't necessarily mean that the resource is currently running, only that it will
@@ -218,44 +324,50 @@ pub enum RegistryMessage {
     Stop { id: NamespacedId },
 }
 
+/// A handle on a [`Registry`] that can be used to stop one single resource
+#[derive(Clone, Debug)]
 pub struct Stopper {
-    sender: Sender<RegistryMessage>,
+    sender: Sender<RegistryEvent>,
 }
 
 impl Stopper {
+    /// Stop the resource `R`, if it exists
     #[inline]
     pub fn stop<R: Resource>(&self) {
         self.stop_id(R::const_ident());
     }
 
+    /// Stop the resource with id `id`, if it exists
     pub fn stop_id(&self, id: NamespacedIdRef<'_>) {
         let id = id.into_owned();
-        let _ = self.sender.send(RegistryMessage::Stop { id });
+        let _ = self.sender.send(RegistryEvent::Stop { id });
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Exit;
 
+/// A handle on a [`Registry`] that can be used to exit the entire program
 #[derive(Clone, Debug)]
 pub struct Exiter {
-    exiter: tokio::sync::broadcast::Sender<Exit>,
+    exiter: Sender<Exit>,
 }
 
 impl Exiter {
     #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
-            exiter: tokio::sync::broadcast::Sender::new(1),
+            exiter: Sender::new(1),
         }
     }
 
+    /// Tell all resources in the [`Registry`] to exit
     pub fn exit(&self) {
         let _ = self.exiter.send(Exit);
     }
 
     #[must_use]
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Exit> {
+    pub fn subscribe(&self) -> Receiver<Exit> {
         self.exiter.subscribe()
     }
 }
@@ -263,84 +375,6 @@ impl Exiter {
 impl Default for Exiter {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct NotFound;
-
-pub struct Registry<M: Message> {
-    sender: Sender<M>,
-    meta_sender: Sender<RegistryMessage>,
-    exit_handle: Exiter,
-    resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
-}
-
-impl<M: Message> Registry<M> {
-    fn new(sender: Sender<M>, exit_handle: Exiter) -> Self {
-        Self {
-            sender,
-            meta_sender: Sender::new(256),
-            exit_handle,
-            resources: HashMap::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn sender(&self) -> Sender<M> {
-        self.sender.clone()
-    }
-
-    #[must_use]
-    pub(crate) fn subscribe(&self) -> Receiver<M> {
-        self.sender.subscribe()
-    }
-
-    #[must_use]
-    pub fn exiter(&self) -> Exiter {
-        self.exit_handle.clone()
-    }
-
-    #[must_use]
-    pub(crate) fn exit_signal(&self) -> Receiver<Exit> {
-        self.exit_handle.subscribe()
-    }
-
-    #[must_use]
-    pub fn meta_receiver(&self) -> Receiver<RegistryMessage> {
-        self.meta_sender.subscribe()
-    }
-
-    #[must_use]
-    pub(crate) fn meta_sender(&self) -> Sender<RegistryMessage> {
-        self.meta_sender.clone()
-    }
-
-    #[must_use]
-    pub fn stopper(&self) -> Stopper {
-        Stopper {
-            sender: self.meta_sender(),
-        }
-    }
-
-    #[must_use]
-    pub fn get<R: Resource>(&self) -> Option<&R> {
-        let id = R::const_ident().into();
-        let loaded = self.resources.get(&id)?;
-        loaded.resource().downcast_ref()
-    }
-
-    pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
-        self.resources.insert(runner.ident().into(), runner);
-        self
-    }
-
-    async fn run(self) {
-        let futures = self
-            .resources
-            .into_values()
-            .filter_map(LoadedResource::runner)
-            .map(Runner::run);
-        futures::future::join_all(futures).await;
     }
 }
 

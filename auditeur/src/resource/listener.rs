@@ -1,4 +1,4 @@
-use crate::{app::RegistryMessage, prelude::*};
+use crate::{app::RegistryEvent, prelude::*};
 
 use anyhow::Result;
 use log::trace;
@@ -25,7 +25,7 @@ pub trait Listener<M: Message>: Resource + Send {
 
     async fn meta(
         &mut self,
-        message: RegistryMessage,
+        message: RegistryEvent,
         input: &mut <Self::Input as Input<M>>::Output,
     ) -> Result<()> {
         let _ = (message, input);

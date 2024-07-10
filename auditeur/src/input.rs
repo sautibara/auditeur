@@ -22,7 +22,7 @@ impl<M: Message> Input<M> for Sender<M> {
     type Output = Self;
 
     fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-        Ok(registry.sender())
+        Ok(registry.message_sender())
     }
 }
 

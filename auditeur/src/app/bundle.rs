@@ -7,10 +7,19 @@ use super::{constraints::Constraint, loaded, loader, Loader};
 #[allow(clippy::module_name_repetitions)]
 macro_rules! new_bundle {
     ($str:tt) => {
-        $crate::app::bundle::Bundle::new($crate::ident!($str))
+        $crate::app::Bundle::new($crate::ident!($str))
     };
 }
 
+/// A group of [resources](mod@crate::resource) and potential [other bundles](Self) under a common id
+///
+/// A bundle is the main container for resources to be put into an [`App`]. They're able to be
+/// combined - by putting bundles within other bundles - allowing for hierarchies of functionality.
+/// In a sense, they're a bit like rust modules, separating functions into multiple levels.
+///
+/// Each bundle has a unique [identifier](NamespacedId) in order to differentiate them. As such,
+/// care should be taken to prevent identifier collisions.
+///
 #[must_use = "A bundle does nothing unless it is applied to an App - try App::with_bundle"]
 pub struct Bundle<M: Message> {
     id: NamespacedId,
@@ -109,6 +118,39 @@ impl<M: Message> Bundle<M> {
     }
 }
 
+/// Any way to supply a [`Bundle`] to an [`App`]
+///
+/// # Examples
+///
+/// ```
+/// use auditeur::prelude::*;
+/// #
+/// # #[derive(Clone)]
+/// # struct Message;
+/// # impl auditeur::Message for Message {}
+/// # auditeur::bake_message!(Message);
+/// #
+/// # // In the ident! calls in new_bundle!, proc_macro_crate messes up and thinks that auditeur
+/// # // should be referred to as `crate` even though we're in a separate crate for testing. To
+/// # // avoid this, we can just import auditeur::resource here so that crate::resource resolves to
+/// # // it.
+/// # use auditeur::resource;
+/// #
+/// # fn main() {
+///
+/// // this is a simple function that creates an empty bundle
+/// fn create_bundle() -> Bundle {
+///     new_bundle!("from:function")
+/// }
+///
+/// let mut app = App::new(32);
+///
+/// // bundles can either be given directly as an expression
+/// app.add_bundle(new_bundle!("from:expression"));
+/// // or from a function
+/// app.add_bundle(create_bundle);
+/// # }
+/// ```
 pub trait Supplier<M: Message> {
     fn build(self) -> Bundle<M>;
 }

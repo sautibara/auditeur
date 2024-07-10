@@ -13,7 +13,7 @@ use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
 use super::Exit;
-use super::RegistryMessage;
+use super::RegistryEvent;
 
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
     if conditional {
@@ -58,7 +58,7 @@ pub struct Listener<M: Message, L: ListenerTrait<M>> {
     input: <L::Input as Input<M>>::Output,
     exit_signal: Receiver<Exit>,
     receiver: Receiver<M>,
-    meta_receiver: Receiver<RegistryMessage>,
+    meta_receiver: Receiver<RegistryEvent>,
 }
 
 impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
@@ -67,8 +67,8 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         Ok(Self {
             inner: listener,
             input,
-            exit_signal: registry.exit_signal(),
-            receiver: registry.subscribe(),
+            exit_signal: registry.exit_reciever(),
+            receiver: registry.message_reciever(),
             meta_receiver: registry.meta_receiver(),
         })
     }
@@ -82,15 +82,12 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         ControlFlow::Continue(())
     }
 
-    async fn handle_meta(
-        &mut self,
-        message: Result<RegistryMessage, RecvError>,
-    ) -> ControlFlow<()> {
+    async fn handle_meta(&mut self, message: Result<RegistryEvent, RecvError>) -> ControlFlow<()> {
         let message = match message {
             Ok(message) => message,
             Err(err) => return handle_recv_error(err, Self::handle_result),
         };
-        let to_exit = matches!(message, RegistryMessage::Stop { ref id } if *id == self.ident());
+        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == self.ident());
         Self::handle_result(self.inner.meta(message, &mut self.input).await);
         then_continue(!to_exit)
     }
@@ -204,7 +201,7 @@ pub struct Watcher<M: Message, W: WatcherTrait<M>> {
     inner: W,
     input: <W::Input as Input<M>>::Output,
     exit_signal: Receiver<Exit>,
-    meta_receiver: Receiver<RegistryMessage>,
+    meta_receiver: Receiver<RegistryEvent>,
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
@@ -212,19 +209,18 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
         let input = <W::Input as Input<M>>::create(registry)?;
         Ok(Self {
             inner: watcher,
-            exit_signal: registry.exit_signal(),
+            exit_signal: registry.exit_reciever(),
             input,
             meta_receiver: registry.meta_receiver(),
         })
     }
 
-    fn handle_meta(message: Result<RegistryMessage, RecvError>) -> ControlFlow<()> {
+    fn handle_meta(message: Result<RegistryEvent, RecvError>) -> ControlFlow<()> {
         let message = match message {
             Ok(message) => message,
             Err(err) => return handle_recv_error(err, Self::handle_result),
         };
-        let to_exit =
-            matches!(message, RegistryMessage::Stop { ref id } if *id == W::const_ident());
+        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == W::const_ident());
         then_continue(!to_exit)
     }
 
