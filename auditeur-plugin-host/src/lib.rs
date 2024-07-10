@@ -16,7 +16,10 @@
 
 use std::{ffi::OsStr, sync::Arc};
 
-use auditeur::{app::App, Message};
+use auditeur::{
+    app::{bundle::Bundle, App},
+    Message,
+};
 use libloading::Library;
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
@@ -24,7 +27,7 @@ use thiserror::Error;
 #[doc(hidden)]
 pub use stabby::export as stabby_export;
 
-type PluginFn<M> = fn(&mut App<M>, PluginContext);
+type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
 
 /// A handle to a [shared library](::libloading) that contains a plugin
 ///
@@ -66,15 +69,16 @@ impl LibraryHandle {
         let handle = Self(Arc::new(library));
         let main: libloading::Symbol<PluginFn<M>> = handle
             .library()
-            .get_canaried(b"main")
-            .map_err(|err| Error::CantLoadMainFunction {
+            .get_canaried(b"init")
+            .map_err(|err| Error::CantLoadInitFunction {
                 path: path.to_string_lossy().to_string(),
                 additional_info: err.to_string(),
             })?;
         let context = PluginContext {
             handle: handle.clone(),
         };
-        main(app, context);
+        let bundle = main(context);
+        app.add_bundle(bundle);
         Ok(handle)
     }
 
@@ -108,8 +112,8 @@ pub enum Error {
     #[error("failed to load library: {0}")]
     LibLoading(#[from] libloading::Error),
     /// The plugin loader couldn't find or call the `main` function in a plugin
-    #[error("couldn't call the main function in plugin `{path}`: {additional_info}")]
-    CantLoadMainFunction {
+    #[error("couldn't call the init function in plugin `{path}`: {additional_info}")]
+    CantLoadInitFunction {
         path: String,
         additional_info: String,
     },

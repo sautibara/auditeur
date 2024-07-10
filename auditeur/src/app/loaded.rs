@@ -228,9 +228,9 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
         then_continue(!to_exit)
     }
 
-    fn handle_result(res: anyhow::Result<()>) {
-        if let Err(_err) = res {
-            todo!();
+    fn handle_result(res: Result<(), impl Into<anyhow::Error>>) {
+        if let Err(err) = res {
+            error!("{:?}", err.into());
         }
     }
 }

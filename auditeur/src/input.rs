@@ -56,7 +56,7 @@ impl<M: Message, T: Listener<M> + Clone> Input<M> for Get<M, T> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().run_after(T::const_ident())
+        Constraints::empty().after_resource(T::const_ident())
     }
 }
 

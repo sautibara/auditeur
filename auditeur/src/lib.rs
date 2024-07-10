@@ -10,8 +10,8 @@ pub use auditeur_macros::{ident, resource};
 
 pub mod prelude {
     pub use crate::{
-        app::{constraints::Constraints, Exiter, Stopper},
-        ident, resource,
+        app::{constraints::Constraints, App, Exiter, Stopper},
+        ident, new_bundle, resource,
         resource::{Listener, NamespacedId, NamespacedIdRef, Resource, Watcher},
         Error as AuditeurError, Plugin,
     };
@@ -32,6 +32,7 @@ macro_rules! bake_message {
         pub type App = $crate::app::App<$message>;
         pub type Registry = $crate::app::Registry<$message>;
         pub type Get<T> = $crate::input::Get<$message, T>;
+        pub type Bundle = $crate::app::bundle::Bundle<$message>;
     };
 }
 

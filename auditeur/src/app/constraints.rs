@@ -1,22 +1,34 @@
+use std::collections::HashSet;
+
 use crate::prelude::*;
 
 #[derive(Default, Debug)]
 pub struct Constraints {
-    constraints: Vec<Constraint>,
+    constraints: HashSet<Constraint>,
 }
 
 impl Constraints {
     #[must_use]
-    pub const fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
-            constraints: Vec::new(),
+            constraints: HashSet::new(),
         }
     }
 
     #[must_use]
-    pub fn run_after(mut self, id: impl Into<NamespacedId>) -> Self {
-        self.constraints.push(Constraint::After { id: id.into() });
+    pub fn insert(mut self, constraint: Constraint) -> Self {
+        self.constraints.insert(constraint);
         self
+    }
+
+    #[must_use]
+    pub fn after_resource(self, id: impl Into<NamespacedId>) -> Self {
+        self.insert(Constraint::AfterResource { id: id.into() })
+    }
+
+    #[must_use]
+    pub fn after_bundle(self, id: impl Into<NamespacedId>) -> Self {
+        self.insert(Constraint::AfterBundle { id: id.into() })
     }
 
     #[must_use]
@@ -33,14 +45,16 @@ impl Constraints {
 
 impl IntoIterator for Constraints {
     type Item = Constraint;
-    type IntoIter = std::vec::IntoIter<Constraint>;
+    type IntoIter = std::collections::hash_set::IntoIter<Constraint>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.constraints.into_iter()
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Constraint {
-    After { id: NamespacedId },
+    AfterResource { id: NamespacedId },
+    AfterBundle { id: NamespacedId },
 }

@@ -6,6 +6,7 @@ use crate::prelude::*;
 
 use self::constraints::Constraint;
 
+pub mod bundle;
 pub mod constraints;
 mod loaded;
 mod loader;
@@ -14,14 +15,27 @@ pub use loaded::LoadedResource;
 pub use loaded::Runner;
 pub use loader::Loader;
 
-pub struct App<M> {
+// TODO: separate NamespacedId into ResourceId and BundleId
+
+struct BundledLoader<M: Message> {
+    loader: Box<dyn Loader<M>>,
+    bundle: NamespacedId,
+}
+
+struct BuiltBundle {
+    constraints: Constraints,
+    parent: Option<NamespacedId>,
+}
+
+#[must_use = "An app does nothing unless it is run"]
+pub struct App<M: Message> {
     sender: Sender<M>,
     exit_handle: Exiter,
-    loaders: HashMap<NamespacedId, Option<Box<dyn Loader<M>>>>,
+    loaders: HashMap<NamespacedId, Option<BundledLoader<M>>>,
+    bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
 }
 
 impl<M: Message> App<M> {
-    #[must_use]
     pub fn new(capacity: usize) -> Self {
         let sender = Sender::new(capacity);
         let exit_handle = Exiter::new();
@@ -29,7 +43,19 @@ impl<M: Message> App<M> {
             sender,
             exit_handle,
             loaders: HashMap::new(),
+            bundles: HashMap::new(),
         }
+    }
+
+    pub fn with_bundle(mut self, bundle: impl bundle::Supplier<M>) -> Self {
+        self.add_bundle(bundle);
+        self
+    }
+
+    pub fn add_bundle(&mut self, bundle: impl bundle::Supplier<M>) -> &mut Self {
+        let bundle = bundle.build();
+        bundle.apply_to(self, None);
+        self
     }
 
     #[must_use]
@@ -52,54 +78,26 @@ impl<M: Message> App<M> {
         self.exit_handle.subscribe()
     }
 
-    pub fn add<L: Loader<M> + 'static>(&mut self, loader: L) -> &mut Self {
-        self.loaders
-            .insert(L::const_ident().into(), Some(Box::new(loader)));
-        self
+    fn add_loader(&mut self, loader: Box<dyn Loader<M>>, bundle: NamespacedId) {
+        self.loaders.insert(
+            loader.ident().into_owned(),
+            Some(BundledLoader { loader, bundle }),
+        );
     }
 
-    pub fn add_listener<L: Listener<M>>(&mut self, listener: L) -> &mut Self {
-        self.add(loader::Listener::new(listener))
-    }
-
-    pub fn add_listener_with<I: Input<M>, L: Listener<M>>(
+    fn add_bundle_inner(
         &mut self,
-        func: impl FnOnce(I::Output) -> L + Send + 'static,
-    ) -> &mut Self {
-        self.add(loader::With::<I, M, loaded::Listener<M, L>, _>::new(
-            |output, registry| loaded::Listener::build(func(output), registry),
-        ))
-    }
-
-    pub fn add_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        self.add(loader::Resource::new(resource))
-    }
-
-    pub fn add_resource_with<I: Input<M>, R: Resource>(
-        &mut self,
-        func: impl FnOnce(I::Output) -> R + Send + 'static,
-    ) -> &mut Self {
-        self.add(loader::With::<I, M, loaded::Resource<R>, _>::new(
-            |output, _| Ok(loaded::Resource::new(func(output))),
-        ))
-    }
-
-    pub fn add_watcher<W: Watcher<M>>(&mut self, watcher: W) -> &mut Self {
-        self.add(loader::Watcher::new(watcher))
-    }
-
-    pub fn add_watcher_with<I: Input<M>, W: Watcher<M>>(
-        &mut self,
-        func: impl FnOnce(I::Output) -> W + Send + 'static,
-    ) -> &mut Self {
-        self.add(loader::With::<I, M, loaded::Watcher<M, W>, _>::new(
-            |output, registry| loaded::Watcher::build(func(output), registry),
-        ))
-    }
-
-    pub fn add_plugin<P: Plugin<M> + ?Sized>(&mut self, plugin: &P) -> &mut Self {
-        plugin.apply(self);
-        self
+        id: NamespacedId,
+        constraints: Constraints,
+        parent: Option<NamespacedId>,
+    ) {
+        self.bundles.insert(
+            id,
+            Some(BuiltBundle {
+                constraints,
+                parent,
+            }),
+        );
     }
 
     /// Listen to all messages until [an exit message](Exiter) is sent
@@ -114,27 +112,32 @@ impl<M: Message> App<M> {
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for id in self.loaders.keys().cloned().collect::<Vec<_>>() {
-            self.resolve(&id, &mut registry)?;
+            self.resolve_loader(&mut registry, &id)?;
         }
         registry.run().await;
         Ok(())
     }
 
-    fn resolve(&mut self, id: &NamespacedId, registry: &mut Registry<M>) -> Result<(), Error> {
+    fn resolve_loader(
+        &mut self,
+        registry: &mut Registry<M>,
+        id: &NamespacedId,
+    ) -> Result<(), Error> {
         let loader = self
             .loaders
             .get_mut(id)
             .ok_or_else(|| Error::NotFound { id: id.clone() })?;
 
         // if it's already finished, then early return
-        let Some(loader) = loader.take() else {
+        let Some(BundledLoader { loader, bundle }) = loader.take() else {
             return Ok(());
         };
 
+        // bundles always have to be resolved first
+        self.resolve_bundle(registry, &bundle)?;
+
         // if there are constraints, we must load them first
-        for Constraint::After { id } in loader.constraints() {
-            self.resolve(&id, registry)?;
-        }
+        self.resolve_constraints(registry, loader.constraints())?;
 
         // then we can finally load the loader
         let runnable = loader.load(registry)?;
@@ -142,28 +145,47 @@ impl<M: Message> App<M> {
         Ok(())
     }
 
-    /// Clone the app with the same message channel and exit handle, but with a new set of
-    /// resources
-    #[must_use]
-    pub fn remake(&self) -> Self {
-        Self {
-            sender: self.sender.clone(),
-            exit_handle: self.exit_handle.clone(),
-            loaders: HashMap::new(),
+    fn resolve_bundle(
+        &mut self,
+        registry: &mut Registry<M>,
+        id: &NamespacedId,
+    ) -> Result<(), Error> {
+        let bundle = self
+            .bundles
+            .get_mut(id)
+            .ok_or_else(|| Error::NotFound { id: id.clone() })?;
+
+        // if it's already finished, then early return
+        let Some(BuiltBundle {
+            constraints,
+            parent,
+        }) = bundle.take()
+        else {
+            return Ok(());
+        };
+
+        // the bundle always has to be resolved first
+        if let Some(parent) = parent {
+            self.resolve_bundle(registry, &parent)?;
         }
-    }
 
-    pub fn into_loaders(self) -> impl Iterator<Item = Box<dyn Loader<M>>> {
-        self.loaders.into_values().flatten()
-    }
-}
+        // then the constraints also have to be resolved
+        self.resolve_constraints(registry, constraints)?;
 
-impl<M: Message> Extend<Box<dyn Loader<M>>> for App<M> {
-    fn extend<T: IntoIterator<Item = Box<dyn Loader<M>>>>(&mut self, iter: T) {
-        self.loaders.extend(
-            iter.into_iter()
-                .map(|loader| (loader.ident().into_owned(), Some(loader))),
-        );
+        Ok(())
+    }
+    fn resolve_constraints(
+        &mut self,
+        registry: &mut Registry<M>,
+        constraints: Constraints,
+    ) -> Result<(), Error> {
+        for constraint in constraints {
+            match constraint {
+                Constraint::AfterResource { id } => self.resolve_loader(registry, &id)?,
+                Constraint::AfterBundle { id } => self.resolve_bundle(registry, &id)?,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -351,3 +373,41 @@ impl<M: Message> Registry<M> {
 //
 // Plugins will be stored in resources' dependencies (the plugin's code is a dependency for the
 // resource), and as such you can see the resources in a plugin by viewing its dependents.
+
+// building plugins
+//
+// To build a plugin, you either provide a closure or function that takes in a plugin builder and
+// returns a plugin declaration.
+//
+// App
+// - add_plugin(fn(PluginBuilder<NoId>) -> PluginBuilder<HasId>)
+//
+// PluginBuilder<NoId>
+// - id
+//
+// PluginBuilder<HasId>
+// - add_listener
+// - add_watcher
+// - add_resource
+// - add_plugin
+// - load_after(id)
+
+// how to implement?
+//
+// Rename "plugins" to "bundles" - they're just groups of resources
+//
+// The main app essentially becomes its own bundle, so enforce that
+// - Only have a single add_bundle method in the app
+// - Only bundles can add loaders, not the main app
+// - Only the app can be used to run the... app
+//
+// This has a few interesting effects
+// - *All* listeners will have a parent bundle
+// - As such, listeners can be always paired with a parent bundle, no options needed
+//
+// To model bundles in the actual app,
+// - There will be two HashMaps: loaders and bundles
+// - Everything will be put into the same HashMaps, in the main app
+// - Loaders will always be paired with a bundle
+// - Bundles may also be paired with other bundles
+// - Bundles may have their own constraints, and child loaders will have to finish those first

@@ -3,19 +3,19 @@ use std::ops::Deref;
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{quote, quote_spanned, ToTokens};
-use syn::{parse_macro_input, spanned::Spanned, FnArg, ItemFn, LitStr};
+use syn::{parse_macro_input, spanned::Spanned, FnArg, ItemFn};
 use thiserror::Error;
 
 #[proc_macro_attribute]
-pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn export(_: TokenStream, item: TokenStream) -> TokenStream {
     // Most of this function deals with ensuring that the function actually has the correct
     // signature. If the function doesn't have the correct signature, it could lead loading the
     // plugin to error (in strange ways)
-    fn export(mut func: ItemFn, id: LitStr) -> Result<proc_macro2::TokenStream, ExportError> {
+    fn export(mut func: ItemFn) -> Result<proc_macro2::TokenStream, ExportError> {
         let ident = func.sig.ident.to_string();
-        if ident != "main" {
+        if ident != "init" {
             return Err(ExportError {
-                reason: ExportErrorReason::NotNamedMain(ident),
+                reason: ExportErrorReason::NotNamedInit(ident),
                 span: func.sig.ident.span(),
             });
         }
@@ -50,12 +50,12 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 _ => None,
             })
             .collect();
-        let no_return = matches!(func.sig.output, syn::ReturnType::Default);
+        let has_return = matches!(func.sig.output, syn::ReturnType::Type(_, _));
         // this is a weird way of doing it, but it's necessary due to how let else works
         // this packs all the filters together so that filtered_params is None whenever any filters fail
         // this allows later code to know that all parameters are Typed (through typed_parameters)
         // so that they can access the parameters' patterns
-        let filtered_params = (param_count == 2 && no_return)
+        let filtered_params = (param_count == 1 && has_return)
             .then_some(())
             .and(typed_parameters);
 
@@ -67,11 +67,8 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         // ensure that each parameter is the correct type
-        let parameter_types = [
-            quote! { &mut ::auditeur_plugin::auditeur::app::App<_> },
-            quote! { ::auditeur_plugin::PluginContext },
-        ];
-        let bounds = params
+        let parameter_types = [quote! { ::auditeur_plugin::PluginContext }];
+        params
             .into_iter()
             .zip(parameter_types)
             .enumerate()
@@ -100,24 +97,33 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // this gives a much better error message than anything else we could do
                 syn::parse2(quote_spanned! { span => let _: #typ = #ident; })
                     .expect("statement should parse")
-            });
-        func.block.stmts.extend(bounds);
+            })
+            .for_each(|statement| func.block.stmts.insert(0, statement));
+
+        let span = func.sig.output.span();
+        let return_type_assert = quote_spanned! { span =>
+            #[allow(unreachable_code)]
+            #[allow(clippy::diverging_sub_expression)]
+            if false {
+                // we fake-call the function in order to find the return type
+                // this is allowed since it is in an if false block, so it never gets run but still
+                // gets compiled and outputs errors
+                // since it never gets run, we can just use unimplemented! for the argument
+                let _: ::auditeur_plugin::auditeur::app::bundle::Bundle<_> = init(unimplemented!());
+            }
+        };
+        let return_type_assert = syn::parse2(return_type_assert).expect("statement should parse");
+        func.block.stmts.insert(0, return_type_assert);
 
         Ok(quote! {
             #[::auditeur_plugin::stabby_export(canaries)]
             #func
-
-            #[::auditeur_plugin::stabby_export(canaries)]
-            pub fn ident() -> ::auditeur_plugin::auditeur::resource::NamespacedIdRef<'static> {
-                ::auditeur_plugin::auditeur::ident!(#id)
-            }
         })
     }
 
     let func = parse_macro_input!(item as ItemFn);
-    let id = parse_macro_input!(attr as LitStr);
 
-    export(func, id)
+    export(func)
         .unwrap_or_else(ExportError::into_compile_error)
         .into()
 }
@@ -129,8 +135,8 @@ struct ExportError {
 
 #[derive(Debug, Error)]
 enum ExportErrorReason {
-    #[error("exported function must be named `main`, but it is named {0} instead")]
-    NotNamedMain(String),
+    #[error("exported function must be named `init`, but it is named {0} instead")]
+    NotNamedInit(String),
     #[error("exported function must be public")]
     NotPub,
     #[error("exported function must not have generics")]
@@ -138,7 +144,7 @@ enum ExportErrorReason {
     #[error("exported function must not be async")]
     IsAsync,
     #[error(
-        "exported function must have the signature of `fn(&mut App, PluginContext)`, but it has {0} instead"
+        "exported function must have the signature of `fn(_: PluginContext) -> Bundle`, but it has {0} instead"
     )]
     IncorrectSignature(proc_macro2::TokenStream),
 }
