@@ -1,9 +1,8 @@
-use app::App;
-use resource::NamespacedId;
 use thiserror::Error;
 
 pub mod app;
 pub mod input;
+pub mod namespaced_id;
 pub mod resource;
 
 pub use auditeur_macros::{ident, resource};
@@ -11,9 +10,11 @@ pub use auditeur_macros::{ident, resource};
 pub mod prelude {
     pub use crate::{
         app::{App, Bundle, Constraints, Exiter, Stopper},
-        ident, new_bundle, resource,
-        resource::{Listener, NamespacedId, NamespacedIdRef, Resource, Watcher},
-        Error as AuditeurError, Plugin,
+        ident,
+        namespaced_id::{NamespacedId, NamespacedIdRef},
+        new_bundle, resource,
+        resource::{Listener, Resource, Watcher},
+        Error as AuditeurError,
     };
 
     pub(crate) use crate::Error;
@@ -36,12 +37,10 @@ macro_rules! bake_message {
     };
 }
 
+use prelude::*;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("dependency '{id}' not found, has it been loaded?")]
     NotFound { id: NamespacedId },
-}
-
-pub trait Plugin<M: Message> {
-    fn apply(&self, app: &mut App<M>);
 }

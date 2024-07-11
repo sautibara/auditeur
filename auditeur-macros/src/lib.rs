@@ -21,10 +21,27 @@ fn get_crate(name: &str) -> Option<proc_macro2::TokenStream> {
     Some(stream)
 }
 
-fn resource_mod() -> proc_macro2::TokenStream {
-    get_crate("auditeur")
-        .map(|auditeur| quote!( #auditeur::resource ))
-        .expect("auditeur should be in Cargo.toml")
+struct Auditeur {
+    root: proc_macro2::TokenStream
+}
+
+impl Auditeur {
+    pub fn new() -> Self {
+        let root = get_crate("auditeur")
+            .expect("auditeur should be in Cargo.toml");
+
+        Self { root }
+    }
+
+    pub fn id(&self) -> proc_macro2::TokenStream {
+        let root = &self.root;
+        quote! { #root::namespaced_id }
+    }
+
+    pub fn resource(&self) -> proc_macro2::TokenStream {
+        let root = &self.root;
+        quote! { #root::resource }
+    }
 }
 
 #[proc_macro_attribute]
@@ -35,23 +52,25 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let string = parse_macro_input!(attr as LitStr);
     let id = string.value().parse();
 
-    let resource = resource_mod();
+    let auditeur = Auditeur::new();
+    let id_mod = auditeur.id();
+    let resource_mod = auditeur.resource();
 
     match id {
         Ok(NamespacedId { namespace, id }) => quote!(
-            impl #resource::Resource for #ident {
-                fn ident(&self) -> #resource::NamespacedIdRef<'static> {
-                    #resource::NamespacedIdRef {
+            impl #resource_mod::Resource for #ident {
+                fn ident(&self) -> #id_mod::NamespacedIdRef<'static> {
+                    #id_mod::NamespacedIdRef {
                         namespace: #namespace,
                         id: #id,
                     }
                 }
 
-                fn const_ident() -> #resource::NamespacedIdRef<'static>
+                fn const_ident() -> #id_mod::NamespacedIdRef<'static>
                 where
                     Self: Sized
                 {
-                    #resource::NamespacedIdRef {
+                    #id_mod::NamespacedIdRef {
                         namespace: #namespace,
                         id: #id,
                     }
@@ -74,11 +93,12 @@ pub fn ident(string: TokenStream) -> TokenStream {
     let string = parse_macro_input!(string as LitStr);
     let id = string.value().parse();
 
-    let resource = resource_mod();
+    let auditeur = Auditeur::new();
+    let id_mod = auditeur.id();
 
     match id {
         Ok(NamespacedId { namespace, id }) => quote!(
-            #resource::NamespacedIdRef {
+            #id_mod::NamespacedIdRef {
                 namespace: #namespace,
                 id: #id,
             }

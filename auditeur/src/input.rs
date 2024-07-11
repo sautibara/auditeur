@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bevy_utils_proc_macros::all_tuples;
 
-use crate::{app::Stopper, prelude::*};
+use crate::prelude::*;
 
 pub trait Input<M: Message>: Send + 'static {
     type Output: Send;
@@ -15,30 +15,6 @@ pub trait Input<M: Message>: Send + 'static {
     #[must_use]
     fn constraints() -> Constraints {
         Constraints::empty()
-    }
-}
-
-impl<M: Message> Input<M> for Sender<M> {
-    type Output = Self;
-
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-        Ok(registry.message_sender())
-    }
-}
-
-impl<M: Message> Input<M> for Exiter {
-    type Output = Self;
-
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-        Ok(registry.exiter())
-    }
-}
-
-impl<M: Message> Input<M> for Stopper {
-    type Output = Self;
-
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-        Ok(registry.stopper())
     }
 }
 

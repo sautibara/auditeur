@@ -290,6 +290,14 @@ impl<M: Message> Registry<M> {
     }
 }
 
+impl<M: Message> Input<M> for Sender<M> {
+    type Output = Self;
+
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
+        Ok(registry.message_sender())
+    }
+}
+
 /// Messages from the [`Registry`] about different events, such as loading or unloading resources
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -341,6 +349,14 @@ impl Stopper {
     }
 }
 
+impl<M: Message> Input<M> for Stopper {
+    type Output = Self;
+
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
+        Ok(registry.stopper())
+    }
+}
+
 /// A handle on a [`Registry`] that can be used to exit the entire program
 #[derive(Clone, Debug)]
 pub struct Exiter {
@@ -351,6 +367,14 @@ impl Exiter {
     /// Tell all resources in the [`Registry`] to exit
     pub fn exit(&self) {
         let _ = self.sender.send(RegistryEvent::Exit);
+    }
+}
+
+impl<M: Message> Input<M> for Exiter {
+    type Output = Self;
+
+    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
+        Ok(registry.exiter())
     }
 }
 
