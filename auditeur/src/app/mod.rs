@@ -214,7 +214,6 @@ impl<M: Message> App<M> {
 pub struct Registry<M: Message> {
     message_sender: Sender<M>,
     meta_sender: Sender<RegistryEvent>,
-    exit_handle: Exiter,
     resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
 }
 
@@ -223,7 +222,6 @@ impl<M: Message> Registry<M> {
         Self {
             message_sender: Sender::new(capacity),
             meta_sender: Sender::new(capacity),
-            exit_handle: Exiter::new(),
             resources: HashMap::new(),
         }
     }
@@ -269,12 +267,9 @@ impl<M: Message> Registry<M> {
 
     #[must_use]
     pub fn exiter(&self) -> Exiter {
-        self.exit_handle.clone()
-    }
-
-    #[must_use]
-    pub fn exit_reciever(&self) -> Receiver<Exit> {
-        self.exit_handle.subscribe()
+        Exiter {
+            sender: self.meta_sender(),
+        }
     }
 
     #[must_use]
@@ -322,6 +317,8 @@ pub enum RegistryEvent {
     /// Note: this is automatically handled for both [listeners](crate::resource::Listener) and
     /// [watchers](crate::resource::Watcher)
     Stop { id: NamespacedId },
+    /// Stop all [`Runner`]s, making the entire [`App`] exit
+    Exit,
 }
 
 /// A handle on a [`Registry`] that can be used to stop one single resource
@@ -344,37 +341,16 @@ impl Stopper {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Exit;
-
 /// A handle on a [`Registry`] that can be used to exit the entire program
 #[derive(Clone, Debug)]
 pub struct Exiter {
-    exiter: Sender<Exit>,
+    sender: Sender<RegistryEvent>,
 }
 
 impl Exiter {
-    #[must_use]
-    fn new() -> Self {
-        Self {
-            exiter: Sender::new(1),
-        }
-    }
-
     /// Tell all resources in the [`Registry`] to exit
     pub fn exit(&self) {
-        let _ = self.exiter.send(Exit);
-    }
-
-    #[must_use]
-    pub fn subscribe(&self) -> Receiver<Exit> {
-        self.exiter.subscribe()
-    }
-}
-
-impl Default for Exiter {
-    fn default() -> Self {
-        Self::new()
+        let _ = self.sender.send(RegistryEvent::Exit);
     }
 }
 

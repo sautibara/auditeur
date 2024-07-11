@@ -41,6 +41,14 @@ type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
 /// object links to is called. To prevent this, handles can be put within the trait objects to
 /// ensure that the library lasts at least as long as the object.
 // ^ this is some prime yappage
+///
+/// # Common Pitfalls
+///
+/// ## Exiting too Early
+///
+/// If a listener or watcher sends resources to other threads and then exits, those references will
+/// be forgotten by the main [`ResourceMap`], leading to libraries being freed too early.
+// TODO: example here
 #[derive(Clone)]
 pub struct LibraryHandle(Arc<Library>);
 

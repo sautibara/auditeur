@@ -12,7 +12,6 @@ use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
-use super::Exit;
 use super::RegistryEvent;
 
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
@@ -56,7 +55,6 @@ pub trait Runner: Send {
 pub struct Listener<M: Message, L: ListenerTrait<M>> {
     inner: L,
     input: <L::Input as Input<M>>::Output,
-    exit_signal: Receiver<Exit>,
     receiver: Receiver<M>,
     meta_receiver: Receiver<RegistryEvent>,
 }
@@ -67,7 +65,6 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         Ok(Self {
             inner: listener,
             input,
-            exit_signal: registry.exit_reciever(),
             receiver: registry.message_reciever(),
             meta_receiver: registry.meta_receiver(),
         })
@@ -87,7 +84,8 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
             Ok(message) => message,
             Err(err) => return handle_recv_error(err, Self::handle_result),
         };
-        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == self.ident());
+        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == self.ident())
+            || matches!(message, RegistryEvent::Exit);
         Self::handle_result(self.inner.meta(message, &mut self.input).await);
         then_continue(!to_exit)
     }
@@ -136,17 +134,9 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
         // send startup message
         self.init().await;
 
-        // listen to the exit signal, calling it out here to avoid remaking the future
-        let mut exit_signal = self.exit_signal.resubscribe();
-        let exit_signal = exit_signal.recv();
-        pin_mut!(exit_signal);
-
         loop {
             tokio::select! {
                 biased;
-                _ = &mut exit_signal => {
-                    break;
-                }
                 meta = self.meta_receiver.recv() => {
                     if self.handle_meta(meta).await.is_break() {
                         break;
@@ -200,7 +190,6 @@ impl<R: ResourceTrait> ResourceTrait for Resource<R> {
 pub struct Watcher<M: Message, W: WatcherTrait<M>> {
     inner: W,
     input: <W::Input as Input<M>>::Output,
-    exit_signal: Receiver<Exit>,
     meta_receiver: Receiver<RegistryEvent>,
 }
 
@@ -209,7 +198,6 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
         let input = <W::Input as Input<M>>::create(registry)?;
         Ok(Self {
             inner: watcher,
-            exit_signal: registry.exit_reciever(),
             input,
             meta_receiver: registry.meta_receiver(),
         })
@@ -220,7 +208,8 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
             Ok(message) => message,
             Err(err) => return handle_recv_error(err, Self::handle_result),
         };
-        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == W::const_ident());
+        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == W::const_ident())
+            || matches!(message, RegistryEvent::Exit);
         then_continue(!to_exit)
     }
 
@@ -257,15 +246,13 @@ impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
         pin_mut!(meta_loop);
         select! {
             biased;
-            _ = self.exit_signal.recv() => {
-                let res = self.inner.exit(&mut self.input).await;
-                Self::handle_result(res);
-            },
             () = &mut meta_loop => { }
             res = self.inner.run(&mut self.input) => {
                 Self::handle_result(res);
             },
         }
+
+        debug!("'{}' exited", self.ident());
     }
 }
 
