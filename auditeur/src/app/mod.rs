@@ -1,16 +1,44 @@
+//! The main entry-point for the application: loading and running [resources](mod@crate::resource)
+//!
+//! The main [`App`] handles loading [resources](crate::resource::Resource),
+//! [listeners](crate::resource::Listener), and [watchers](crate::resource::Watcher) from
+//! [bundles](Bundle) given by the user.
+//!
+//! # The Loading Process
+//!
+//! Note: This is a very technical explanation, and none of it is needed to be known to effectively
+//! use this crate. However, it may help with understanding certain things - especially loaders.
+//!
+//! - Before being added to an [`App`], resources are each wrapped in a [`Loader`]
+//!     - Loaders are trait objects that handle resolving [`Input`]s and building
+//!     a resource into a [`LoadedResource`]
+//! - When the app begins being built, a [`Registry`] is created to hold each [`LoadedResource`]
+//! - Each [`Loader`] is loaded into the registry based on its [`Constraints`]
+//!     - [`Constraints`] are necessary so that resources can ensure that the other resources they
+//!     access through [`Get<_>`](crate::input::Get) are already loaded
+//! - Once loaded, resources are each built into a [`LoadedResource`]
+//!     - [`LoadedResource`]s allow for dynamically accessing the contained resource, which enables
+//!     [`Registry::get`] and thus [`input::Get<_>`](crate::input::Get) to work
+//!     - If the resource calls for any [`Input`]s, the [`LoadedResource`] contains them
+//!     - Then, [`LoadedResource`]s may also provide a [`Runner`] to run in the main loop, which is
+//!     how listeners and watchers are run
+//! - When the registry is [run](Registry::run), each [`Runner`] is
+//! [joined](futures::future::join_all) until they all finish
+//!
+//! The basic pipeline: [`impl Resource`](Resource) / [`impl Listener`](Listener) /
+//! [`impl Watcher`](Watcher) -> [`dyn Loader`](Loader) -> [`dyn LoadedResource`](LoadedResource)
+//! -> (optionally) [`dyn Runner`](Runner)
+
 use std::collections::HashMap;
 
 use tokio::sync::broadcast::Receiver;
 
+use crate::bundle;
 use crate::prelude::*;
 
-mod bundle;
 mod constraints;
-mod loaded;
-mod loader;
-
-pub use bundle::Bundle;
-pub use bundle::Supplier as BundleSupplier;
+pub(crate) mod loaded;
+pub(crate) mod loader;
 
 pub use loaded::LoadedResource;
 pub use loaded::Runner;
@@ -74,14 +102,14 @@ impl<M: Message> App<M> {
         self
     }
 
-    fn add_loader(&mut self, loader: Box<dyn Loader<M>>, bundle: NamespacedId) {
+    pub(crate) fn add_loader(&mut self, loader: Box<dyn Loader<M>>, bundle: NamespacedId) {
         self.loaders.insert(
             loader.ident().into_owned(),
             Some(BundledLoader { loader, bundle }),
         );
     }
 
-    fn add_bundle_inner(
+    pub(crate) fn add_bundle_inner(
         &mut self,
         id: NamespacedId,
         constraints: Constraints,
@@ -445,3 +473,43 @@ impl<M: Message> Input<M> for Exiter {
 // - Loaders will always be paired with a bundle
 // - Bundles may also be paired with other bundles
 // - Bundles may have their own constraints, and child loaders will have to finish those first
+
+// What about when the Registry starts running?
+//
+// In the Registry, hold an enum between a LoadingRegistry and a Handle
+// - These will figure out how to implement methods such as get<R> and add_boxed
+// - Methods concerning channels can be shared - the channels will be stored alongside the enums
+//
+// Why can't it just be one trait and the trait objects take in an impl Trait?
+// - Simple: trait objects can't take in impl Trait types
+//
+// LoadingRegistry
+// - HashMap<NamespacedId, Box<dyn LoadedResource>>,
+// - broadcast::Sender<Box<dyn LoadedResource>>,
+//
+// Handle
+// - broadcast::Sender<Box<dyn LoadedResource>>
+// - broadcast::Sender<RegistryEvent>?
+//
+// Handle can actually become an Input returning a full Registry handle
+
+// How should the plugin system be applied to an App?
+//
+// First off, the plugin system has to be applied to the App, not the Registry
+// - The plugin system has to utilize the App to make things load in the right order
+// - Although, it'll also have to emulate it when it's adding bundles from plugins loaded after the
+//   registry has already started running
+//     - Maybe put an add_bundle method on a registry handle?
+//
+// So we'll have to make the plugin system have a function that takes in a &mut App, adds the
+// plugins that are meant to be loaded, and adds the main plugin system bundle
+//
+// This could be wrapped in an extension trait, making the app have something like an
+// add_plugin_system(config) function
+//
+// ```
+// App::new(1024)
+//     .with_bundle(...)
+//     .with_plugin_system(...)
+//     .run()
+// ```

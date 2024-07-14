@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 pub mod app;
+pub mod bundle;
 pub mod input;
 pub mod namespaced_id;
 pub mod resource;
@@ -9,7 +10,8 @@ pub use auditeur_macros::{ident, resource};
 
 pub mod prelude {
     pub use crate::{
-        app::{App, Bundle, Constraints, Exiter, Stopper},
+        app::{App, Constraints, Exiter, Stopper},
+        bundle::Bundle,
         ident,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
@@ -33,7 +35,7 @@ macro_rules! bake_message {
         pub type App = $crate::app::App<$message>;
         pub type Registry = $crate::app::Registry<$message>;
         pub type Get<T> = $crate::input::Get<$message, T>;
-        pub type Bundle = $crate::app::Bundle<$message>;
+        pub type Bundle = $crate::bundle::Bundle<$message>;
     };
 }
 
