@@ -13,4 +13,9 @@ impl<M: Message + std::fmt::Debug> Listener<M> for Logger {
         trace!("{:?}", message);
         Ok(())
     }
+
+    async fn registry_event(&mut self, event: RegistryEvent, (): &mut ()) -> anyhow::Result<()> {
+        trace!("{:?}", event);
+        Ok(())
+    }
 }

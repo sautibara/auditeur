@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::broadcast::Receiver;
+use tokio::sync::watch;
 
 use crate::bundle;
 use crate::prelude::*;
@@ -242,7 +243,7 @@ impl<M: Message> App<M> {
 /// - To listen to messages, use [`Self::message_reciever`]
 pub struct Registry<M: Message> {
     message_sender: Sender<M>,
-    meta_sender: Sender<RegistryEvent>,
+    event_sender: EventSender,
     resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
 }
 
@@ -250,7 +251,7 @@ impl<M: Message> Registry<M> {
     fn new(capacity: usize) -> Self {
         Self {
             message_sender: Sender::new(capacity),
-            meta_sender: Sender::new(capacity),
+            event_sender: EventSender::new(),
             resources: HashMap::new(),
         }
     }
@@ -261,24 +262,46 @@ impl<M: Message> Registry<M> {
             .resources
             .into_values()
             .filter_map(LoadedResource::runner)
-            .map(Runner::run);
+            // clone the event sender for each runner
+            .zip(std::iter::repeat(self.event_sender.clone()))
+            .map(|(runner, sender)| async move {
+                let id = runner.ident().into_owned();
+                sender.send(RegistryEvent::Running { id: id.clone() });
+                runner.run().await;
+                sender.send(RegistryEvent::Stopped { id });
+            });
         futures::future::join_all(futures).await;
     }
 
     /// Add an already-loaded resource to the registry. The resource can be accessed through
     /// [`Self::get`], and if it provides a [`Runner`], that will be run in the main loop.
     pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
+        self.event_sender.send(RegistryEvent::Loaded {
+            id: runner.ident().into(),
+        });
         self.resources.insert(runner.ident().into(), runner);
         self
     }
 
-    /// Get a reference to a loaded resource. This uses [`Any`](std::any::Any) in order to get the
-    /// contained object if it exists. If the object is cloneable, that can also be used.
+    /// Get a cloned reference to a loaded resource, using `reference_holder` as the holder of the
+    /// reference for the [`ResourceMap`] (see [`RegistryEvent::Reference`]). This uses
+    /// [`Any`](std::any::Any) in order to get the contained object if it exists.
+    // NOTE: in a previous version, this returned Option<&R>. But that messes with RegistryEvent,
+    // as resources could get a reference and then immediately drop it, confusing the ResourceMap
+    // (the map would think that the resource would still contain the reference).
     #[must_use]
-    pub fn get<R: Resource>(&self) -> Option<&R> {
+    pub fn get_as<R: Resource + Clone>(&self, reference_holder: NamespacedIdRef) -> Option<R> {
         let id = R::const_ident().into();
         let loaded = self.resources.get(&id)?;
-        loaded.resource().downcast_ref()
+        let reference = loaded.resource().downcast_ref().cloned();
+        // only send the event if the reference actually succeeded
+        if reference.is_some() {
+            self.event_sender.send(RegistryEvent::Reference {
+                from: reference_holder.into(),
+                to: id,
+            });
+        }
+        reference
     }
 }
 
@@ -295,34 +318,27 @@ impl<M: Message> Registry<M> {
     }
 
     #[must_use]
-    pub fn exiter(&self) -> Exiter {
-        Exiter {
-            sender: self.meta_sender(),
-        }
-    }
-
-    #[must_use]
     pub fn stopper(&self) -> Stopper {
         Stopper {
-            sender: self.meta_sender(),
+            sender: self.event_sender(),
         }
     }
 
     #[must_use]
-    pub(crate) fn meta_sender(&self) -> Sender<RegistryEvent> {
-        self.meta_sender.clone()
+    pub(crate) fn event_sender(&self) -> EventSender {
+        self.event_sender.clone()
     }
 
     #[must_use]
-    pub fn meta_receiver(&self) -> Receiver<RegistryEvent> {
-        self.meta_sender.subscribe()
+    pub fn event_receiver(&self) -> EventReceiver {
+        self.event_sender.subscribe()
     }
 }
 
 impl<M: Message> Input<M> for Sender<M> {
     type Output = Self;
 
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
+    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
         Ok(registry.message_sender())
     }
 }
@@ -362,8 +378,10 @@ pub enum RegistryEvent {
     /// dropped
     ///
     /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
+    // TODO: implement sending
     Unloaded { id: NamespacedId },
     /// A bundle has been loaded into the registry
+    // TODO: implement sending
     BundleLoaded {
         id: NamespacedId,
         resources: Arc<[NamespacedId]>,
@@ -372,6 +390,7 @@ pub enum RegistryEvent {
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///
     /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
+    // TODO: implement sending
     BundleExited { id: NamespacedId },
     /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
     /// [input](crate::input::Input)
@@ -381,13 +400,19 @@ pub enum RegistryEvent {
     },
 }
 
-/// A handle on a [`Registry`] that can be used to stop one single resource
+/// A handle on a [`Registry`] that can be used to stop one single resource or exit the entire
+/// program
 #[derive(Clone, Debug)]
 pub struct Stopper {
-    sender: Sender<RegistryEvent>,
+    sender: EventSender,
 }
 
 impl Stopper {
+    /// Tell all resources in the [`Registry`] to exit
+    pub fn exit(&self) {
+        self.sender.send(RegistryEvent::Exit);
+    }
+
     /// Stop the resource `R`, if it exists
     #[inline]
     pub fn stop<R: Resource>(&self) {
@@ -397,36 +422,75 @@ impl Stopper {
     /// Stop the resource with id `id`, if it exists
     pub fn stop_id(&self, id: NamespacedIdRef<'_>) {
         let id = id.into_owned();
-        let _ = self.sender.send(RegistryEvent::Stop { id });
+        self.sender.send(RegistryEvent::Stop { id });
     }
 }
 
 impl<M: Message> Input<M> for Stopper {
     type Output = Self;
 
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
+    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
         Ok(registry.stopper())
     }
 }
 
-/// A handle on a [`Registry`] that can be used to exit the entire program
 #[derive(Clone, Debug)]
-pub struct Exiter {
-    sender: Sender<RegistryEvent>,
+pub(crate) struct EventSender {
+    watch: watch::Sender<Vec<RegistryEvent>>,
 }
 
-impl Exiter {
-    /// Tell all resources in the [`Registry`] to exit
-    pub fn exit(&self) {
-        let _ = self.sender.send(RegistryEvent::Exit);
+impl EventSender {
+    pub fn new() -> Self {
+        Self {
+            watch: watch::Sender::new(Vec::new()),
+        }
+    }
+
+    pub fn send(&self, event: RegistryEvent) {
+        self.watch.send_modify(|vec| vec.push(event));
+    }
+
+    pub fn subscribe(&self) -> EventReceiver {
+        EventReceiver::new(self.watch.subscribe())
     }
 }
 
-impl<M: Message> Input<M> for Exiter {
-    type Output = Self;
+/// A receiver for [`RegistryEvent`]s
+///
+/// This will always hold the entire history of events, even ones that happened before the receiver
+/// was created. This allows receivers to make models of the [`Registry`] like [`ResourceMap`].
+#[derive(Debug)]
+pub struct EventReceiver {
+    watch: watch::Receiver<Vec<RegistryEvent>>,
+    index: usize,
+}
 
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-        Ok(registry.exiter())
+impl EventReceiver {
+    fn new(receiver: watch::Receiver<Vec<RegistryEvent>>) -> Self {
+        Self {
+            watch: receiver,
+            index: 0,
+        }
+    }
+
+    /// Receive the oldest unhandled message or return [`None`] if the channel has closed.
+    pub async fn recv(&mut self) -> Option<RegistryEvent> {
+        loop {
+            if let Some(val) = self.watch.borrow_and_update().get(self.index) {
+                self.index += 1;
+                return Some(val.clone());
+            }
+            self.watch.changed().await.ok()?;
+        }
+    }
+
+    /// Resubscribe to the channel, starting from the beginning.
+    #[must_use]
+    pub fn resubscribe(&mut self) -> Self {
+        Self {
+            watch: self.watch.clone(),
+            index: 0,
+        }
     }
 }
 

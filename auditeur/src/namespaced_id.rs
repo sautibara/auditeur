@@ -5,7 +5,7 @@ use std::{
 
 use thiserror::Error;
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
 pub struct NamespacedId {
     pub namespace: String,
     pub id: String,
@@ -48,7 +48,7 @@ impl FromStr for NamespacedId {
 }
 
 #[allow(clippy::module_name_repetitions)] // Ref is way too general
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub struct NamespacedIdRef<'a> {
     pub namespace: &'a str,
     pub id: &'a str,

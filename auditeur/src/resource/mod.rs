@@ -33,12 +33,12 @@ pub trait Listener<M: Message>: Resource + Send {
         Ok(())
     }
 
-    async fn meta(
+    async fn registry_event(
         &mut self,
-        message: RegistryEvent,
+        event: RegistryEvent,
         input: &mut <Self::Input as Input<M>>::Output,
     ) -> Result<()> {
-        let _ = (message, input);
+        let _ = (event, input);
         Ok(())
     }
 

@@ -170,7 +170,7 @@ where
     F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
 {
     fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error> {
-        let input = I::create(registry)?;
+        let input = I::create(registry, R::const_ident())?;
         let resource = (self.func)(input, registry)?;
         Ok(Box::new(resource))
     }

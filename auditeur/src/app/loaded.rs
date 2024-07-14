@@ -1,5 +1,6 @@
 use std::any::Any;
 
+use anyhow::anyhow;
 use futures::pin_mut;
 use log::{debug, error};
 use tokio::select;
@@ -12,6 +13,7 @@ use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
+use super::EventReceiver;
 use super::RegistryEvent;
 
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
@@ -48,7 +50,7 @@ pub trait LoadedResource: ResourceTrait + Send {
 
 /// An object that can run a simple async function, see [`LoadedResource::runner`]
 #[async_trait]
-pub trait Runner: Send {
+pub trait Runner: ResourceTrait + Send {
     async fn run(self: Box<Self>);
 }
 
@@ -56,17 +58,17 @@ pub struct Listener<M: Message, L: ListenerTrait<M>> {
     inner: L,
     input: <L::Input as Input<M>>::Output,
     receiver: Receiver<M>,
-    meta_receiver: Receiver<RegistryEvent>,
+    event_receiver: EventReceiver,
 }
 
 impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     pub fn build(listener: L, registry: &Registry<M>) -> Result<Self, Error> {
-        let input = <L::Input as Input<M>>::create(registry)?;
+        let input = <L::Input as Input<M>>::create(registry, listener.ident())?;
         Ok(Self {
             inner: listener,
             input,
             receiver: registry.message_reciever(),
-            meta_receiver: registry.meta_receiver(),
+            event_receiver: registry.event_receiver(),
         })
     }
 
@@ -79,14 +81,14 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         ControlFlow::Continue(())
     }
 
-    async fn handle_meta(&mut self, message: Result<RegistryEvent, RecvError>) -> ControlFlow<()> {
-        let message = match message {
-            Ok(message) => message,
-            Err(err) => return handle_recv_error(err, Self::handle_result),
+    async fn handle_meta(&mut self, message: Option<RegistryEvent>) -> ControlFlow<()> {
+        let Some(message) = message else {
+            Self::handle_result(Err(anyhow!("registry event channel closed")));
+            return ControlFlow::Break(());
         };
         let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == self.ident())
             || matches!(message, RegistryEvent::Exit);
-        Self::handle_result(self.inner.meta(message, &mut self.input).await);
+        Self::handle_result(self.inner.registry_event(message, &mut self.input).await);
         then_continue(!to_exit)
     }
 
@@ -137,7 +139,7 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
         loop {
             tokio::select! {
                 biased;
-                meta = self.meta_receiver.recv() => {
+                meta = self.event_receiver.recv() => {
                     if self.handle_meta(meta).await.is_break() {
                         break;
                     }
@@ -190,23 +192,23 @@ impl<R: ResourceTrait> ResourceTrait for Resource<R> {
 pub struct Watcher<M: Message, W: WatcherTrait<M>> {
     inner: W,
     input: <W::Input as Input<M>>::Output,
-    meta_receiver: Receiver<RegistryEvent>,
+    event_receiver: EventReceiver,
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     pub fn build(watcher: W, registry: &Registry<M>) -> Result<Self, Error> {
-        let input = <W::Input as Input<M>>::create(registry)?;
+        let input = <W::Input as Input<M>>::create(registry, watcher.ident())?;
         Ok(Self {
             inner: watcher,
             input,
-            meta_receiver: registry.meta_receiver(),
+            event_receiver: registry.event_receiver(),
         })
     }
 
-    fn handle_meta(message: Result<RegistryEvent, RecvError>) -> ControlFlow<()> {
-        let message = match message {
-            Ok(message) => message,
-            Err(err) => return handle_recv_error(err, Self::handle_result),
+    fn handle_meta(message: Option<RegistryEvent>) -> ControlFlow<()> {
+        let Some(message) = message else {
+            Self::handle_result(Err(anyhow!("registry event channel closed")));
+            return ControlFlow::Break(());
         };
         let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == W::const_ident())
             || matches!(message, RegistryEvent::Exit);
@@ -233,7 +235,7 @@ impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
 #[async_trait]
 impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     async fn run(mut self: Box<Self>) {
-        let mut meta_receiver = self.meta_receiver.resubscribe();
+        let mut meta_receiver = self.event_receiver.resubscribe();
         let meta_loop = async move {
             loop {
                 let message = meta_receiver.recv().await;

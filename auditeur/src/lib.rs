@@ -10,7 +10,7 @@ pub use auditeur_macros::{ident, resource};
 
 pub mod prelude {
     pub use crate::{
-        app::{App, Constraints, Exiter, Stopper},
+        app::{Constraints, RegistryEvent, Stopper},
         bundle::Bundle,
         ident,
         namespaced_id::{NamespacedId, NamespacedIdRef},
@@ -20,7 +20,11 @@ pub mod prelude {
     };
 
     pub(crate) use crate::Error;
-    pub(crate) use crate::{app::Registry, input::Input, Message};
+    pub(crate) use crate::{
+        app::{App, Registry},
+        input::Input,
+        Message,
+    };
 
     pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;

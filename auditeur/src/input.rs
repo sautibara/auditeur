@@ -7,10 +7,12 @@ use crate::prelude::*;
 pub trait Input<M: Message>: Send + 'static {
     type Output: Send;
 
+    /// Create [`Self::Output`] using the given [`Registry`] and id `as_resource`
+    ///
     /// # Errors
     ///
     /// - If the input failed to gather the resources necessary
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error>;
+    fn create(registry: &Registry<M>, as_resource: NamespacedIdRef) -> Result<Self::Output, Error>;
 
     #[must_use]
     fn constraints() -> Constraints {
@@ -25,8 +27,8 @@ pub struct Get<M: Message, T: Listener<M> + Clone> {
 impl<M: Message, T: Listener<M> + Clone> Input<M> for Get<M, T> {
     type Output = T;
 
-    fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-        registry.get().cloned().ok_or_else(|| Error::NotFound {
+    fn create(registry: &Registry<M>, as_resource: NamespacedIdRef) -> Result<Self::Output, Error> {
+        registry.get_as(as_resource).ok_or_else(|| Error::NotFound {
             id: T::const_ident().into(),
         })
     }
@@ -42,8 +44,8 @@ macro_rules! impl_input {
             type Output = ($($T::Output,)*);
 
             #[allow(unused_variables)]
-            fn create(registry: &Registry<M>) -> Result<Self::Output, Error> {
-                Ok(($($T::create(registry)?,)*))
+            fn create(registry: &Registry<M>, as_resource: NamespacedIdRef) -> Result<Self::Output, Error> {
+                Ok(($($T::create(registry, as_resource)?,)*))
             }
 
             fn constraints() -> Constraints {

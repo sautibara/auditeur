@@ -16,7 +16,7 @@
 
 use std::{ffi::OsStr, sync::Arc};
 
-use auditeur::{prelude::*, Message};
+use auditeur::{app::App, prelude::*, Message};
 use libloading::Library;
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
