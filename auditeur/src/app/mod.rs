@@ -30,6 +30,7 @@
 //! -> (optionally) [`dyn Runner`](Runner)
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::broadcast::Receiver;
 
@@ -330,31 +331,54 @@ impl<M: Message> Input<M> for Sender<M> {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum RegistryEvent {
-    /// `id` has been loaded
-    ///
-    /// This doesn't necessarily mean that the resource is currently running, only that it will
-    /// eventually be run
-    ///
-    /// Note: this only is emitted for [listeners](crate::resource::Listener) and
-    /// [watchers](crate::resource::Watcher), as resources are never loaded
-    Loaded { id: NamespacedId },
-    /// `id` has exited
-    ///
-    /// Note: this only is emitted for [listeners](crate::resource::Listener) and
-    /// [watchers](crate::resource::Watcher), as resources are never loaded, so they can't exit
-    Exited { id: NamespacedId },
-    /// `from` accessed `to` through a [`Get<_>`](crate::input::Get) input
-    Access {
-        from: NamespacedId,
-        to: NamespacedId,
-    },
+    /// Stop all [`Runner`]s, making the entire [`App`] exit
+    Exit,
     /// Stop `id`, making it exit
     ///
     /// Note: this is automatically handled for both [listeners](crate::resource::Listener) and
-    /// [watchers](crate::resource::Watcher)
+    /// [watchers](crate::resource::Watcher), but custom [`Runner`]s will have to listen to this
+    /// message themselves.
     Stop { id: NamespacedId },
-    /// Stop all [`Runner`]s, making the entire [`App`] exit
-    Exit,
+    /// `id` has been loaded into the main [`Registry`]
+    ///
+    /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
+    /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
+    Loaded { id: NamespacedId },
+    /// `id` has started running
+    ///
+    /// Note: this only is emitted for resources that have [`Runner`]s, like
+    /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
+    /// [Resources](crate::resource::Resource) are never run, they never emit this message.
+    Running { id: NamespacedId },
+    /// `id` has stopped running
+    ///
+    /// Note: this only is emitted for resources that are [`Runner`]s, like
+    /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
+    /// [Resources](crate::resource::Resource) are never run, they never emit this message - see
+    /// [`Self::Exited`] instead, if that information is needed.
+    Stopped { id: NamespacedId },
+    /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
+    /// [references](crate::input::Get) of it from other [resources](mod@crate::resource) have been
+    /// dropped
+    ///
+    /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
+    Unloaded { id: NamespacedId },
+    /// A bundle has been loaded into the registry
+    BundleLoaded {
+        id: NamespacedId,
+        resources: Arc<[NamespacedId]>,
+        bundles: Arc<[NamespacedId]>,
+    },
+    /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
+    ///
+    /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
+    BundleExited { id: NamespacedId },
+    /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
+    /// [input](crate::input::Input)
+    Reference {
+        from: NamespacedId,
+        to: NamespacedId,
+    },
 }
 
 /// A handle on a [`Registry`] that can be used to stop one single resource
@@ -513,3 +537,25 @@ impl<M: Message> Input<M> for Exiter {
 //     .with_plugin_system(...)
 //     .run()
 // ```
+
+// ResourceMap redo
+//
+// There's one big question about Handles: how about Resources?
+// - So if we're going to allow users to get resources through Handles, normal Resources need to
+//   stay alive for a while
+// - This means that we now need to find out when specific resources are needed and unneeded based
+//   on which runners are using them... exactly what we need to do for plugins!
+// - Because of this, we could use the same system for both of them
+//
+// How do we link the auditeur ResourceMap to auditeur_plugin_host?
+// - We could simply extend the resource idea to bundles, telling listeners when bundles are loaded
+//   and unloaded
+//
+// How to only add it when it's needed?
+// - If the Handle system is only added when it's needed, it could lower complexity.
+// - It can be added only when a Handle is actually cloned, which could be detected through an
+//   Arc-like thing (through its strong_count)
+// - If no Handles are created, the entire system can be ignored
+// - This is fine because then there's no chance of a Handle ever being needed again: since no new
+//   resources can be added (since there is no Handle), none will ask for a new Handle in the
+//   future
