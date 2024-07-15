@@ -5,9 +5,11 @@
 //! understand. They allow for module-like hierarchies by putting one in another. See the [struct
 //! documentation](Bundle) for more
 
+use std::sync::Arc;
+
 use crate::prelude::*;
 
-use crate::app::{loaded, loader, Constraint, Loader};
+use crate::app::{loaded, loader, BuiltBundle, Constraint, Loader};
 
 /// Create a new bundle with the given identifier
 ///
@@ -56,21 +58,38 @@ impl<M: Message> Bundle<M> {
     }
 
     /// Apply this bundle to the specified [`App`], adding each bundle, loader, the bundle itself
-    pub(super) fn apply_to(self, app: &mut App<M>, parent_bundle: Option<&NamespacedId>) {
-        let id = self.id;
-        for bundle in self.bundles {
-            bundle.apply_to(app, Some(&id));
-        }
-        for loader in self.loaders {
-            app.add_loader(loader, id.clone());
-        }
-        app.add_bundle_inner(id, self.constraints, parent_bundle.cloned());
+    pub(super) fn apply_to(
+        self,
+        app: &mut App<M>,
+        parent: Option<NamespacedIdRef>,
+    ) -> NamespacedId {
+        let this_id = self.id.referenced();
+        let bundles: Arc<[NamespacedId]> = self
+            .bundles
+            .into_iter()
+            .map(|bundle| bundle.apply_to(app, Some(this_id)))
+            .collect();
+        let resources: Arc<[NamespacedId]> = self
+            .loaders
+            .into_iter()
+            .map(|loader| app.add_loader(loader, this_id))
+            .collect();
+        app.add_bundle_inner(
+            self.id.clone(),
+            BuiltBundle {
+                constraints: self.constraints,
+                bundles,
+                resources,
+                parent: parent.map(NamespacedIdRef::into_owned),
+            },
+        );
+        self.id
     }
 
     /// Get a reference to the id that represents this bundle
     #[must_use]
-    pub const fn id(&self) -> &NamespacedId {
-        &self.id
+    pub fn id(&self) -> NamespacedIdRef {
+        self.id.referenced()
     }
 }
 

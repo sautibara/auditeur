@@ -67,6 +67,15 @@ impl IntoIterator for Constraints {
     }
 }
 
+impl<'a> IntoIterator for &'a Constraints {
+    type Item = &'a Constraint;
+    type IntoIter = std::collections::hash_set::Iter<'a, Constraint>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.constraints.iter()
+    }
+}
+
 /// A constraint that must be satisfied before a [resource](Resource) or [bundle](Bundle) can be
 /// loaded in an [app](App)
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]

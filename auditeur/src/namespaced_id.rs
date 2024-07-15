@@ -13,7 +13,7 @@ pub struct NamespacedId {
 
 impl NamespacedId {
     #[must_use]
-    pub fn into_ref(&self) -> NamespacedIdRef<'_> {
+    pub fn referenced(&self) -> NamespacedIdRef<'_> {
         self.into()
     }
 }

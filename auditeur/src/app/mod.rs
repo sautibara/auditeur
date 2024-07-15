@@ -56,9 +56,11 @@ struct BundledLoader<M: Message> {
     bundle: NamespacedId,
 }
 
-struct BuiltBundle {
-    constraints: Constraints,
-    parent: Option<NamespacedId>,
+pub(crate) struct BuiltBundle {
+    pub constraints: Constraints,
+    pub parent: Option<NamespacedId>,
+    pub resources: Arc<[NamespacedId]>,
+    pub bundles: Arc<[NamespacedId]>,
 }
 
 /// The main entry-point for the application: the thing that runs resources
@@ -70,8 +72,8 @@ struct BuiltBundle {
 /// order, through [constraints](Constraints), allowing them to have other dependencies.
 ///
 /// The main container for resources is the [`Bundle`], and all resources that are added to an
-/// `App` must be contained within one. As such, only bundles are allowed to be added to the main
-/// app builder, although resources may be added to each bundles.
+/// `App` must be contained within one. As such, all resources added to an app must be added
+/// through a bundle.
 #[must_use = "An app does nothing unless it is run"]
 pub struct App<M: Message> {
     capacity: usize,
@@ -104,26 +106,24 @@ impl<M: Message> App<M> {
         self
     }
 
-    pub(crate) fn add_loader(&mut self, loader: Box<dyn Loader<M>>, bundle: NamespacedId) {
-        self.loaders.insert(
-            loader.ident().into_owned(),
-            Some(BundledLoader { loader, bundle }),
-        );
-    }
-
-    pub(crate) fn add_bundle_inner(
+    pub(crate) fn add_loader(
         &mut self,
-        id: NamespacedId,
-        constraints: Constraints,
-        parent: Option<NamespacedId>,
-    ) {
-        self.bundles.insert(
-            id,
-            Some(BuiltBundle {
-                constraints,
-                parent,
+        loader: Box<dyn Loader<M>>,
+        bundle: NamespacedIdRef,
+    ) -> NamespacedId {
+        let id = loader.ident().into_owned();
+        self.loaders.insert(
+            id.clone(),
+            Some(BundledLoader {
+                loader,
+                bundle: bundle.into_owned(),
             }),
         );
+        id
+    }
+
+    pub(crate) fn add_bundle_inner(&mut self, id: NamespacedId, bundle: BuiltBundle) {
+        self.bundles.insert(id, Some(bundle));
     }
 
     /// [Build](Self::build) the `App` and run all [runners](Runner) to completion
@@ -149,8 +149,8 @@ impl<M: Message> App<M> {
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
-        for id in self.loaders.keys().cloned().collect::<Vec<_>>() {
-            self.resolve_loader(&mut registry, &id)?;
+        for bundle in self.bundles.keys().cloned().collect::<Vec<_>>() {
+            self.resolve_bundle(&mut registry, &bundle)?;
         }
         Ok(registry)
     }
@@ -171,10 +171,12 @@ impl<M: Message> App<M> {
         };
 
         // bundles always have to be resolved first
+        // this doesn't cause a loop because resolve_bundle [`Option::take`]s the bundle out of the
+        // list
         self.resolve_bundle(registry, &bundle)?;
 
         // if there are constraints, we must load them first
-        self.resolve_constraints(registry, loader.constraints())?;
+        self.resolve_constraints(registry, &loader.constraints())?;
 
         // then we can finally load the loader
         let runnable = loader.load(registry)?;
@@ -193,21 +195,25 @@ impl<M: Message> App<M> {
             .ok_or_else(|| Error::NotFound { id: id.clone() })?;
 
         // if it's already finished, then early return
-        let Some(BuiltBundle {
-            constraints,
-            parent,
-        }) = bundle.take()
-        else {
+        let Some(bundle) = bundle.take() else {
             return Ok(());
         };
 
-        // the bundle always has to be resolved first
-        if let Some(parent) = parent {
-            self.resolve_bundle(registry, &parent)?;
+        // parent bundles always have to be resolved first
+        if let Some(parent) = &bundle.parent {
+            self.resolve_bundle(registry, parent)?;
         }
 
         // then the constraints also have to be resolved
-        self.resolve_constraints(registry, constraints)?;
+        self.resolve_constraints(registry, &bundle.constraints)?;
+
+        // resources should be loaded before adding the bundle to the registry
+        for resource in &*bundle.resources {
+            self.resolve_loader(registry, resource)?;
+        }
+
+        // then the bundle can finally be added to the registry
+        registry.add_bundle(id.clone(), bundle);
 
         Ok(())
     }
@@ -215,12 +221,12 @@ impl<M: Message> App<M> {
     fn resolve_constraints(
         &mut self,
         registry: &mut Registry<M>,
-        constraints: Constraints,
+        constraints: &Constraints,
     ) -> Result<(), Error> {
         for constraint in constraints {
             match constraint {
-                Constraint::AfterResource { id } => self.resolve_loader(registry, &id)?,
-                Constraint::AfterBundle { id } => self.resolve_bundle(registry, &id)?,
+                Constraint::AfterResource { id } => self.resolve_loader(registry, id)?,
+                Constraint::AfterBundle { id } => self.resolve_bundle(registry, id)?,
             }
         }
         Ok(())
@@ -283,6 +289,17 @@ impl<M: Message> Registry<M> {
         self
     }
 
+    /// Add a bundle to the registry
+    pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
+        self.event_sender.send(RegistryEvent::BundleLoaded {
+            id,
+            parent: bundle.parent,
+            resources: bundle.resources,
+            bundles: bundle.bundles,
+        });
+        self
+    }
+
     /// Get a cloned reference to a loaded resource, using `reference_holder` as the holder of the
     /// reference for the [`ResourceMap`] (see [`RegistryEvent::Reference`]). This uses
     /// [`Any`](std::any::Any) in order to get the contained object if it exists.
@@ -297,7 +314,7 @@ impl<M: Message> Registry<M> {
         // only send the event if the reference actually succeeded
         if reference.is_some() {
             self.event_sender.send(RegistryEvent::Reference {
-                from: reference_holder.into(),
+                by: reference_holder.into(),
                 to: id,
             });
         }
@@ -381,9 +398,9 @@ pub enum RegistryEvent {
     // TODO: implement sending
     Unloaded { id: NamespacedId },
     /// A bundle has been loaded into the registry
-    // TODO: implement sending
     BundleLoaded {
         id: NamespacedId,
+        parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
     },
@@ -394,10 +411,7 @@ pub enum RegistryEvent {
     BundleExited { id: NamespacedId },
     /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
     /// [input](crate::input::Input)
-    Reference {
-        from: NamespacedId,
-        to: NamespacedId,
-    },
+    Reference { by: NamespacedId, to: NamespacedId },
 }
 
 /// A handle on a [`Registry`] that can be used to stop one single resource or exit the entire
