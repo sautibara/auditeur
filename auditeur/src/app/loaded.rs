@@ -44,7 +44,7 @@ pub trait LoadedResource: ResourceTrait + Send {
     fn runner(self: Box<Self>) -> Option<Box<dyn Runner>>;
     /// Obtain a reference to the original resource, wrapped in an [`Any`]
     ///
-    /// This allows [`Registry::get`] to give a cloned version of the resource
+    /// This allows [`Registry::get_as`] to give a cloned version of the resource
     fn resource(&self) -> &dyn Any;
 }
 

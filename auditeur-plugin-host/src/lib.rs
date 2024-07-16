@@ -47,7 +47,8 @@ type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
 /// ## Exiting too Early
 ///
 /// If a listener or watcher sends resources to other threads and then exits, those references will
-/// be forgotten by the main [`ResourceMap`], leading to libraries being freed too early.
+/// be forgotten by the main [`ResourceMap`](crate::resource::builtin::ResourceMap), leading to
+/// libraries being freed too early.
 // TODO: example here
 #[derive(Clone)]
 pub struct LibraryHandle(Arc<Library>);

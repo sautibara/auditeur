@@ -18,7 +18,7 @@
 //!     access through [`Get<_>`](crate::input::Get) are already loaded
 //! - Once loaded, resources are each built into a [`LoadedResource`]
 //!     - [`LoadedResource`]s allow for dynamically accessing the contained resource, which enables
-//!     [`Registry::get`] and thus [`input::Get<_>`](crate::input::Get) to work
+//!     [`Registry::get_as`] and thus [`input::Get<_>`](crate::input::Get) to work
 //!     - If the resource calls for any [`Input`]s, the [`LoadedResource`] contains them
 //!     - Then, [`LoadedResource`]s may also provide a [`Runner`] to run in the main loop, which is
 //!     how listeners and watchers are run
@@ -73,7 +73,8 @@ pub(crate) struct BuiltBundle {
 ///
 /// The main container for resources is the [`Bundle`], and all resources that are added to an
 /// `App` must be contained within one. As such, all resources added to an app must be added
-/// through a bundle.
+/// through a bundle. If there are conflicts between resources with the same id, the one that is
+/// added first is kept.
 #[must_use = "An app does nothing unless it is run"]
 pub struct App<M: Message> {
     capacity: usize,
@@ -112,13 +113,13 @@ impl<M: Message> App<M> {
         bundle: NamespacedIdRef,
     ) -> NamespacedId {
         let id = loader.ident().into_owned();
-        self.loaders.insert(
-            id.clone(),
-            Some(BundledLoader {
+        // prefer the eldest loader
+        self.loaders
+            .entry(id.clone())
+            .or_insert(Some(BundledLoader {
                 loader,
                 bundle: bundle.into_owned(),
-            }),
-        );
+            }));
         id
     }
 
@@ -175,8 +176,7 @@ impl<M: Message> App<M> {
         // if there are constraints, we must load them first
         self.resolve_constraints(registry, &loader.constraints())?;
         // then we can finally load the loader
-        let runnable = loader.load(registry)?;
-        registry.add_boxed(runnable, bundle);
+        registry.add_loader(loader, bundle)?;
         Ok(())
     }
 
@@ -222,16 +222,15 @@ impl<M: Message> App<M> {
 /// A list of registered and loaded [resources](LoadedResource), built from an [`App`], that can be run as a main loop
 ///
 /// A registry is built from an [`App`] declaration, which handles loading things in the correct
-/// order. This allows resources to access other resources through [`Self::get`], or, much more
+/// order. This allows resources to access other resources through [`Self::get_as`], or, much more
 /// commonly, [`Get<_>`](crate::input::Get). It is the main thing that [inputs](crate::input)
 /// interact with, allowing resources to automatically get a large amount of information about the
 /// app. As such, most channels shown below are also able to be used as inputs (they implement
 /// [`Input`]).
 ///
 /// There are many bundled channels for notification passing:
-/// - To tell all runners to exit at the same time, use an [`Exiter`] through [`Self::exiter`]
-/// - To tell only one resource to exit, use a [`Stopper`] through [`Self::stopper`]
-/// - To recieve notifications about what happens to the registry, use [`Self::meta_receiver`]
+/// - To tell only one resource or the entire program to stop, use a [`Stopper`] through [`Self::stopper`]
+/// - To recieve notifications about what happens to the registry, use [`Self::event_receiver`]
 /// - To listen to messages, use [`Self::message_reciever`]
 pub struct Registry<M: Message> {
     message_sender: Sender<M>,
@@ -265,17 +264,34 @@ impl<M: Message> Registry<M> {
         futures::future::join_all(futures).await;
     }
 
-    /// Add an already-loaded resource to the registry, under a parent `bundle`. The resource can
-    /// be accessed through [`Self::get`], and if it provides a [`Runner`], that will be run in the
-    /// main loop.
-    pub fn add_boxed(
+    /// Load a [`Loader`] into the registry, adding the [`LoadedResource`] it contains. The
+    /// resource will be able to be accessed through [`Self::get_as`], and if it provides a
+    /// [`Runner`], the runner will be run in the main loop
+    ///
+    /// Note: As this method sends the correct [`RegistryEvent`]s, it should be prefered to loading
+    /// the loader externally
+    ///
+    /// # Errors
+    ///
+    /// - If the [`Loader`] returns an error; see [`Loader::load`]
+    pub fn add_loader(
         &mut self,
-        runner: Box<dyn LoadedResource>,
+        loader: Box<dyn Loader<M>>,
         bundle: NamespacedId,
-    ) -> &mut Self {
+    ) -> Result<&mut Self, Error> {
+        self.event_sender.send(RegistryEvent::Loading {
+            id: loader.ident().into(),
+            bundle,
+        });
+        let resource = loader.load(self)?;
+        Ok(self.add_boxed(resource))
+    }
+
+    /// Add an already-loaded resource to the registry. The resource can be accessed through
+    /// [`Self::get_as`], and if it provides a [`Runner`], the runner will be run in the main loop
+    pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
         self.event_sender.send(RegistryEvent::Loaded {
             id: runner.ident().into(),
-            bundle,
         });
         self.resources.insert(runner.ident().into(), runner);
         self
@@ -293,8 +309,11 @@ impl<M: Message> Registry<M> {
     }
 
     /// Get a cloned reference to a loaded resource, using `reference_holder` as the holder of the
-    /// reference for the [`ResourceMap`] (see [`RegistryEvent::Reference`]). This uses
-    /// [`Any`](std::any::Any) in order to get the contained object if it exists.
+    /// reference for [`RegistryEvent::Reference`] (see
+    /// [`ResourceMap`](crate::resource::builtin::ResourceMap) for why this information is
+    /// necessary).
+    ///
+    /// This uses [`Any`](std::any::Any) in order to get the contained object, if it exists.
     // NOTE: in a previous version, this returned Option<&R>. But that messes with RegistryEvent,
     // as resources could get a reference and then immediately drop it, confusing the ResourceMap
     // (the map would think that the resource would still contain the reference).
@@ -364,14 +383,19 @@ pub enum RegistryEvent {
     /// [watchers](crate::resource::Watcher), but custom [`Runner`]s will have to listen to this
     /// message themselves.
     Stop { id: NamespacedId },
+    /// `id` has begun being loaded into the main [`Registry`]
+    ///
+    /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
+    /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
+    Loading {
+        id: NamespacedId,
+        bundle: NamespacedId,
+    },
     /// `id` has been loaded into the main [`Registry`]
     ///
     /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
     /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
-    Loaded {
-        id: NamespacedId,
-        bundle: NamespacedId,
-    },
+    Loaded { id: NamespacedId },
     /// `id` has started running
     ///
     /// Note: this only is emitted for resources that have [`Runner`]s, like
@@ -383,14 +407,14 @@ pub enum RegistryEvent {
     /// Note: this only is emitted for resources that are [`Runner`]s, like
     /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
     /// [Resources](crate::resource::Resource) are never run, they never emit this message - see
-    /// [`Self::Exited`] instead, if that information is needed.
+    /// [`Self::Unloaded`] instead, if that information is needed.
     Stopped { id: NamespacedId },
     /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
     /// [references](crate::input::Get) of it from other [resources](mod@crate::resource) have been
     /// dropped
     ///
-    /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
-    // TODO: implement sending
+    /// Note: this will only ever be sent if a
+    /// [`ResourceMap`](crate::resource::builtin::ResourceMap) is currently running
     Unloaded { id: NamespacedId },
     /// A bundle has started loading into the registry
     BundleLoading {
@@ -401,8 +425,8 @@ pub enum RegistryEvent {
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///
-    /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
-    // TODO: implement sending
+    /// Note: this will only ever be sent if a
+    /// [`ResourceMap`](crate::resource::builtin::ResourceMap) is currently running
     BundleUnloaded { id: NamespacedId },
     /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
     /// [input](crate::input::Input)
@@ -464,10 +488,19 @@ impl EventSender {
     }
 }
 
+impl<M: Message> Input<M> for EventSender {
+    type Output = Self;
+
+    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
+        Ok(registry.event_sender())
+    }
+}
+
 /// A receiver for [`RegistryEvent`]s
 ///
 /// This will always hold the entire history of events, even ones that happened before the receiver
-/// was created. This allows receivers to make models of the [`Registry`] like [`ResourceMap`].
+/// was created. This allows receivers to make models of the [`Registry`] using its entire state,
+/// like [`ResourceMap`](crate::resource::builtin::ResourceMap).
 #[derive(Debug)]
 pub struct EventReceiver {
     watch: watch::Receiver<Vec<RegistryEvent>>,
@@ -493,6 +526,26 @@ impl EventReceiver {
         }
     }
 
+    /// Receive an unhandled message if it is ready
+    ///
+    /// # Errors
+    ///
+    /// - [`EventTryRecvError::NotReady`] if the stream is not ready
+    /// - [`EventTryRecvError::Closed`] if the stream is closed
+    pub fn try_recv(&mut self) -> Result<RegistryEvent, EventTryRecvError> {
+        if let Some(val) = self.watch.borrow_and_update().get(self.index) {
+            self.index += 1;
+            // can't use else 'cause the compiler gets angry at the mutable ref above
+            return Ok(val.clone());
+        };
+        // the easiest way to check if the channel is closed is through this method
+        if self.watch.has_changed().is_err() {
+            Err(EventTryRecvError::Closed)
+        } else {
+            Err(EventTryRecvError::NotReady)
+        }
+    }
+
     /// Resubscribe to the channel, starting from the beginning.
     #[must_use]
     pub fn resubscribe(&mut self) -> Self {
@@ -500,6 +553,44 @@ impl EventReceiver {
             watch: self.watch.clone(),
             index: 0,
         }
+    }
+
+    /// Mark the most recent message as seen, ignoring recv
+    pub(crate) fn mark_seen(&mut self) {
+        let vec = self.watch.borrow_and_update();
+        self.index = vec.len();
+    }
+}
+
+impl<M: Message> Input<M> for EventReceiver {
+    type Output = Self;
+
+    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
+        Ok(registry.event_receiver())
+    }
+}
+
+/// The result for [`EventReceiver::try_recv`]
+pub enum EventTryRecvError {
+    Closed,
+    NotReady,
+}
+
+impl EventTryRecvError {
+    /// Returns `true` if the event try recv error is [`Closed`].
+    ///
+    /// [`Closed`]: EventTryRecvError::Closed
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
+        matches!(self, Self::Closed)
+    }
+
+    /// Returns `true` if the event try recv error is [`NotReady`].
+    ///
+    /// [`NotReady`]: EventTryRecvError::NotReady
+    #[must_use]
+    pub const fn is_not_ready(&self) -> bool {
+        matches!(self, Self::NotReady)
     }
 }
 
