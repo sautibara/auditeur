@@ -12,3 +12,4 @@ stabby = { version = "5.1.0", features = ["libloading"] }
 libloading = "0.8.3"
 thiserror = "1.0.58"
 auditeur = { version = "0.1.0", path = "../../auditeur/auditeur/" }
+log = "0.4.21"

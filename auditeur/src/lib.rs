@@ -26,8 +26,10 @@ pub mod prelude {
         Message,
     };
 
+    pub use anyhow::Result;
     pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;
+
     pub(crate) use tokio::sync::broadcast::Sender;
 }
 

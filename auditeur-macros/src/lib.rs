@@ -56,9 +56,11 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let id_mod = auditeur.id();
     let resource_mod = auditeur.resource();
 
+    let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
+
     match id {
         Ok(NamespacedId { namespace, id }) => quote!(
-            impl #resource_mod::Resource for #ident {
+            impl #impl_generics #resource_mod::Resource for #ident #ty_generics #where_clause {
                 fn ident(&self) -> #id_mod::NamespacedIdRef<'static> {
                     #id_mod::NamespacedIdRef {
                         namespace: #namespace,
