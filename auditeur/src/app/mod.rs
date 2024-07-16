@@ -149,8 +149,8 @@ impl<M: Message> App<M> {
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
-        for bundle in self.bundles.keys().cloned().collect::<Vec<_>>() {
-            self.resolve_bundle(&mut registry, &bundle)?;
+        for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
+            self.resolve_loader(&mut registry, &loader)?;
         }
         Ok(registry)
     }
@@ -163,24 +163,20 @@ impl<M: Message> App<M> {
         let loader = self
             .loaders
             .get_mut(id)
-            .ok_or_else(|| Error::NotFound { id: id.clone() })?;
-
+            .ok_or_else(|| Error::LoaderNotFound { id: id.clone() })?;
         // if it's already finished, then early return
         let Some(BundledLoader { loader, bundle }) = loader.take() else {
             return Ok(());
         };
-
         // bundles always have to be resolved first
-        // this doesn't cause a loop because resolve_bundle [`Option::take`]s the bundle out of the
-        // list
+        // this doesn't cause a loop because resolve_bundle already [`Option::take`]s the bundle
+        // out of the list, so it can't be loaded again
         self.resolve_bundle(registry, &bundle)?;
-
         // if there are constraints, we must load them first
         self.resolve_constraints(registry, &loader.constraints())?;
-
         // then we can finally load the loader
         let runnable = loader.load(registry)?;
-        registry.add_boxed(runnable);
+        registry.add_boxed(runnable, bundle);
         Ok(())
     }
 
@@ -192,29 +188,19 @@ impl<M: Message> App<M> {
         let bundle = self
             .bundles
             .get_mut(id)
-            .ok_or_else(|| Error::NotFound { id: id.clone() })?;
-
+            .ok_or_else(|| Error::BundleNotFound { id: id.clone() })?;
         // if it's already finished, then early return
         let Some(bundle) = bundle.take() else {
             return Ok(());
         };
-
         // parent bundles always have to be resolved first
         if let Some(parent) = &bundle.parent {
             self.resolve_bundle(registry, parent)?;
         }
-
         // then the constraints also have to be resolved
         self.resolve_constraints(registry, &bundle.constraints)?;
-
-        // resources should be loaded before adding the bundle to the registry
-        for resource in &*bundle.resources {
-            self.resolve_loader(registry, resource)?;
-        }
-
         // then the bundle can finally be added to the registry
         registry.add_bundle(id.clone(), bundle);
-
         Ok(())
     }
 
@@ -279,11 +265,17 @@ impl<M: Message> Registry<M> {
         futures::future::join_all(futures).await;
     }
 
-    /// Add an already-loaded resource to the registry. The resource can be accessed through
-    /// [`Self::get`], and if it provides a [`Runner`], that will be run in the main loop.
-    pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
+    /// Add an already-loaded resource to the registry, under a parent `bundle`. The resource can
+    /// be accessed through [`Self::get`], and if it provides a [`Runner`], that will be run in the
+    /// main loop.
+    pub fn add_boxed(
+        &mut self,
+        runner: Box<dyn LoadedResource>,
+        bundle: NamespacedId,
+    ) -> &mut Self {
         self.event_sender.send(RegistryEvent::Loaded {
             id: runner.ident().into(),
+            bundle,
         });
         self.resources.insert(runner.ident().into(), runner);
         self
@@ -291,7 +283,7 @@ impl<M: Message> Registry<M> {
 
     /// Add a bundle to the registry
     pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
-        self.event_sender.send(RegistryEvent::BundleLoaded {
+        self.event_sender.send(RegistryEvent::BundleLoading {
             id,
             parent: bundle.parent,
             resources: bundle.resources,
@@ -376,7 +368,10 @@ pub enum RegistryEvent {
     ///
     /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
     /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
-    Loaded { id: NamespacedId },
+    Loaded {
+        id: NamespacedId,
+        bundle: NamespacedId,
+    },
     /// `id` has started running
     ///
     /// Note: this only is emitted for resources that have [`Runner`]s, like
@@ -397,8 +392,8 @@ pub enum RegistryEvent {
     /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
     // TODO: implement sending
     Unloaded { id: NamespacedId },
-    /// A bundle has been loaded into the registry
-    BundleLoaded {
+    /// A bundle has started loading into the registry
+    BundleLoading {
         id: NamespacedId,
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
@@ -408,7 +403,7 @@ pub enum RegistryEvent {
     ///
     /// Note: this will only ever be sent if a [`ResourceMap`] is currently running
     // TODO: implement sending
-    BundleExited { id: NamespacedId },
+    BundleUnloaded { id: NamespacedId },
     /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
     /// [input](crate::input::Input)
     Reference { by: NamespacedId, to: NamespacedId },

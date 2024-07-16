@@ -28,9 +28,11 @@ impl<M: Message, T: Listener<M> + Clone> Input<M> for Get<M, T> {
     type Output = T;
 
     fn create(registry: &Registry<M>, as_resource: NamespacedIdRef) -> Result<Self::Output, Error> {
-        registry.get_as(as_resource).ok_or_else(|| Error::NotFound {
-            id: T::const_ident().into(),
-        })
+        registry
+            .get_as(as_resource)
+            .ok_or_else(|| Error::LoaderNotFound {
+                id: T::const_ident().into(),
+            })
     }
 
     fn constraints() -> Constraints {

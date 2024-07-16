@@ -47,6 +47,8 @@ use prelude::*;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("dependency '{id}' not found, has it been loaded?")]
-    NotFound { id: NamespacedId },
+    #[error("loader dependency '{id}' not found, has it been loaded?")]
+    LoaderNotFound { id: NamespacedId },
+    #[error("bundle dependency '{id}' not found, has it been loaded?")]
+    BundleNotFound { id: NamespacedId },
 }
