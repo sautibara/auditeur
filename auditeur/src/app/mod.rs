@@ -36,6 +36,7 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
 
 use crate::bundle;
+use crate::input::GetRef;
 use crate::prelude::*;
 
 mod constraints;
@@ -318,10 +319,13 @@ impl<M: Message> Registry<M> {
     // as resources could get a reference and then immediately drop it, confusing the ResourceMap
     // (the map would think that the resource would still contain the reference).
     #[must_use]
-    pub fn get_as<R: Resource + Clone>(&self, reference_holder: NamespacedIdRef) -> Option<R> {
+    pub fn get_as<R: Resource + GetRef>(
+        &self,
+        reference_holder: NamespacedIdRef,
+    ) -> Option<R::Ref> {
         let id = R::const_ident().into();
         let loaded = self.resources.get(&id)?;
-        let reference = loaded.resource().downcast_ref().cloned();
+        let reference = loaded.resource().downcast_ref::<R>().map(GetRef::get_ref);
         // only send the event if the reference actually succeeded
         if reference.is_some() {
             self.event_sender.send(RegistryEvent::Reference {

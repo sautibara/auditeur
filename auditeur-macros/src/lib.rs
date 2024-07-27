@@ -3,7 +3,7 @@ use proc_macro::TokenStream;
 use proc_macro2::Span;
 use proc_macro_crate::crate_name;
 use quote::{quote, quote_spanned};
-use syn::{parse_macro_input, Ident, ItemStruct, LitStr};
+use syn::{parse_macro_input, Ident, ItemStruct, LitStr, Item, spanned::Spanned};
 
 mod namespaced_id;
 
@@ -42,6 +42,12 @@ impl Auditeur {
         let root = &self.root;
         quote! { #root::resource }
     }
+
+    pub fn input(&self) -> proc_macro2::TokenStream {
+        let root = &self.root;
+        quote! { #root::input }
+    }
+
 }
 
 #[proc_macro_attribute]
@@ -113,3 +119,31 @@ pub fn ident(string: TokenStream) -> TokenStream {
     }
     .into()
 }
+
+#[proc_macro_derive(GetRef)]
+pub fn get_ref(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as Item);
+
+    let ident = match item {
+        Item::Struct(strct) => strct.ident,
+        Item::Enum(enm) => enm.ident,
+        _ => {
+            return quote_spanned! {
+                item.span() => compile_error!("item must be a struct or enum"),
+            }.into();
+        },
+    };
+
+    let auditeur = Auditeur::new();
+    let input_mod = auditeur.input();
+
+    quote! {
+        impl #input_mod::GetRef for #ident {
+            type Ref = Self;
+            fn get_ref(&self) -> Self {
+                self.clone()
+            }
+        }
+    }.into()
+}
+

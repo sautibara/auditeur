@@ -8,6 +8,29 @@ pub mod resource;
 
 pub use auditeur_macros::{ident, resource};
 
+/// A macro to automate implementing [`GetRef`](crate::input::GetRef) using [`Clone`]
+///
+/// # Examples
+///
+/// ```
+/// # // see the doc test for bundle::Supplier for why this is necessary
+/// # use auditeur::input;
+/// # pub fn main() {
+/// use auditeur::GetRef;
+/// use auditeur::input::GetRef;
+/// use std::sync::Arc;
+///
+/// #[derive(Clone, GetRef)]
+/// pub struct Shared(Arc<usize>);
+///
+/// let shared: Shared = Shared(Arc::new(0));
+/// let reference: Shared = shared.get_ref();
+///
+/// assert!(Arc::ptr_eq(&shared.0, &reference.0));
+/// # }
+/// ```
+pub use auditeur_macros::GetRef;
+
 pub mod prelude {
     pub use crate::{
         app::{Constraints, RegistryEvent, Stopper},
@@ -16,7 +39,7 @@ pub mod prelude {
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
         resource::{Listener, Resource, Watcher},
-        Error as AuditeurError,
+        Error as AuditeurError, GetRef,
     };
 
     pub(crate) use crate::Error;

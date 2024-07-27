@@ -222,7 +222,7 @@ impl<M: Message> Bundle<M> {
 /// # // should be referred to as `crate` even though we're in a separate crate for testing. To
 /// # // avoid this, we can just import auditeur::resource here so that crate::resource resolves to
 /// # // it.
-/// # use auditeur::resource;
+/// # use auditeur::namespaced_id;
 /// #
 /// # fn main() {
 ///
