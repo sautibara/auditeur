@@ -13,3 +13,10 @@ libloading = "0.8.3"
 thiserror = "1.0.58"
 auditeur = { version = "0.1.0", path = "../../auditeur/auditeur/" }
 log = "0.4.21"
+directories = "5.0.1"
+ron = "0.8.1"
+semver = { version = "1.0.23", features = ["serde"] }
+tokio = { version = "1.37.0", features = ["full"] }
+futures = "0.3.28"
+cargo_toml = "0.20.4"
+toml = "0.8.16"

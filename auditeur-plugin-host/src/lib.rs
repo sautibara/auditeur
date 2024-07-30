@@ -14,18 +14,56 @@
 // but since the trait objects reference code from their library, if the library gets unloaded,
 // they break (they can't find the thing that they're referencing, so they segfault)
 
-use std::{collections::HashMap, ffi::OsStr, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use arena::Arena;
 use auditeur::{app::App, prelude::*, Message};
+use config::{PluginName, Source};
+use futures::Future;
 use libloading::Library;
-use log::debug;
-use stabby::libloading::StabbyLibrary;
+use log::error;
 use thiserror::Error;
+
+pub mod arena;
+pub mod config;
+mod registry;
+pub use registry::PluginRegistry;
+
+mod prelude {
+    pub use crate::{
+        config::{self, GitShorthand, PluginName, Source},
+        Error, ErrorSink, PluginRegistry,
+    };
+}
 
 #[doc(hidden)]
 pub use stabby::export as stabby_export;
 
 type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
+
+pub trait AppExt {
+    /// # Safety
+    ///
+    /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
+    /// it is inherently unsafe.
+    #[allow(opaque_hidden_inferred_bound)] // I think this is a false positive?
+    unsafe fn with_plugin_system(self, config: &config::Host) -> impl Future<Output = Self>;
+}
+
+impl<M: Message> AppExt for App<M> {
+    async unsafe fn with_plugin_system(mut self, config: &config::Host) -> Self {
+        let mut registry = PluginRegistry::new();
+        let arena = Arena::open_or_init(config).await;
+        if let Ok(mut arena) = arena.build().await {
+            arena.add_binaries_to_registry(&mut registry, &mut self);
+        }
+        self.with_bundle(
+            new_bundle!("auditeur:plugin_host")
+                .with_resource_map()
+                .with_listener(registry),
+        )
+    }
+}
 
 /// A handle to a [shared library](::libloading) that contains a plugin
 ///
@@ -52,6 +90,7 @@ type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
 /// be forgotten by the main [`ResourceMap`](crate::resource::builtin::ResourceMap), leading to
 /// libraries being freed too early.
 // TODO: example here
+// TODO: move this to auditeur-plugin and reverse the dependency
 #[derive(Clone)]
 pub struct LibraryHandle(Arc<Library>);
 
@@ -79,119 +118,6 @@ impl PluginContext {
     }
 }
 
-/// A plugin and its associated [`Bundle`] that has already been loaded into an [`App`]
-struct Plugin {
-    library: LibraryHandle,
-    bundle: NamespacedId,
-}
-
-impl Plugin {
-    /// Load a plugin from a dynamic library at `path` and run its `main` function
-    ///
-    /// # Safety
-    ///
-    /// Calling a function from a dynamic library is inherently unsafe, as we're trusting the
-    /// it to have the correct signature. If the signature is wrong, it could lead to undefined
-    /// behavior.
-    ///
-    /// # Errors
-    ///
-    /// - If the library fails to load
-    /// - If the library's main function fails to load
-    unsafe fn load_from_file_unchecked<M: Message>(
-        path: impl AsRef<OsStr>,
-        app: &mut App<M>,
-    ) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let library = libloading::Library::new(path)?;
-        let handle = LibraryHandle(Arc::new(library));
-        let main: libloading::Symbol<PluginFn<M>> = handle
-            .library()
-            .get_canaried(b"init")
-            .map_err(|err| Error::CantLoadInitFunction {
-                path: path.to_string_lossy().to_string(),
-                additional_info: err.to_string(),
-            })?;
-        let context = PluginContext {
-            handle: handle.clone(),
-        };
-        let bundle = main(context);
-        let bundle_id = bundle.id().into_owned();
-        app.add_bundle(bundle);
-        Ok(Self {
-            library: handle,
-            bundle: bundle_id,
-        })
-    }
-}
-
-/// A registry of all of the currently loaded plugins in the [`App`]
-///
-/// This registry keeps a [`LibraryHandle`] of all loaded plugins, keeping their dynamic libraries
-/// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is recieved
-/// for the plugin's bundle, so that the library isn't held for forever.
-#[must_use = "the registry must be added as a listener to the app, otherwise plugin code will be immediately unloaded"]
-#[resource("plugin_host:library_holder")]
-pub struct PluginRegistry<M: Message> {
-    libraries: HashMap<NamespacedId, LibraryHandle>,
-    message: PhantomData<M>,
-}
-
-impl<M: Message> Default for PluginRegistry<M> {
-    fn default() -> Self {
-        Self {
-            libraries: Default::default(),
-            message: Default::default(),
-        }
-    }
-}
-
-impl<M: Message> PluginRegistry<M> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
-    /// handle in the registry
-    ///
-    /// # Safety
-    ///
-    /// Calling a function from a dynamic library is inherently unsafe, as we're trusting the
-    /// it to have the correct signature. If the signature is wrong, it could lead to undefined
-    /// behavior.
-    ///
-    /// # Errors
-    ///
-    /// - If the library fails to load
-    /// - If the library's main function fails to load
-    pub unsafe fn load_plugin_from_file_unchecked(
-        &mut self,
-        path: impl AsRef<OsStr>,
-        app: &mut App<M>,
-    ) -> Result<&mut Self, Error> {
-        let plugin = Plugin::load_from_file_unchecked(path, app)?;
-        self.libraries.insert(plugin.bundle, plugin.library);
-        Ok(self)
-    }
-}
-
-#[async_trait]
-impl<M: Message> Listener<M> for PluginRegistry<M> {
-    type Input = ();
-
-    async fn handle(&mut self, _: M, (): &mut ()) -> Result<()> {
-        Ok(())
-    }
-
-    async fn registry_event(&mut self, event: RegistryEvent, (): &mut ()) -> Result<()> {
-        if let RegistryEvent::BundleUnloaded { id } = event {
-            self.libraries.remove(&id);
-            debug!("unloaded bundle `{id}`'s library");
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -204,4 +130,108 @@ pub enum Error {
         path: String,
         additional_info: String,
     },
+    #[error("error with git repository '{url}': {error}")]
+    Git {
+        #[source]
+        error: git2::Error,
+        url: String,
+    },
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("path source '{0}' is not a directory on disk")]
+    PathNotFound(PathBuf),
+    #[error("path source '{0}' is empty")]
+    NoComponentsInPath(PathBuf),
+    #[error("'plugin.ron' was not found at '{0}'")]
+    PluginFileNotFound(PathBuf),
+    #[error("failed to serialize to file '{file}': {error}")]
+    Serialization {
+        #[source]
+        error: ron::Error,
+        file: PathBuf,
+    },
+    #[error("failed to deserialize from file '{file}': {error}")]
+    Deserialization {
+        #[source]
+        error: ron::de::SpannedError,
+        file: PathBuf,
+    },
+    #[error("build failed: {stderr}")]
+    BuildFailed { stderr: String },
+    #[error("failed to parse '{path}': {error}")]
+    CargoParse {
+        #[source]
+        error: cargo_toml::Error,
+        path: PathBuf,
+    },
+    #[error("plugin '{0}' does not specify a package in its Cargo.toml")]
+    NoPackage(PluginName),
+    #[error("plugin '{for_plugin}' requires dependency '{dependency}', which doesn't exist")]
+    UnsatisfiedDependency {
+        for_plugin: PluginName,
+        dependency: PluginName,
+    },
+    #[error("failed to serialize to file '{path}': {error}")]
+    TomlSerialization {
+        #[source]
+        error: toml::ser::Error,
+        path: PathBuf,
+    },
+}
+
+pub struct ErrorSink {
+    plugin_map: HashMap<PluginName, Vec<Error>>,
+    source_map: HashMap<Source, Vec<Error>>,
+    generic: Vec<Error>,
+}
+
+impl ErrorSink {
+    fn new() -> Self {
+        Self {
+            plugin_map: HashMap::new(),
+            source_map: HashMap::new(),
+            generic: Vec::new(),
+        }
+    }
+
+    fn add_generic(&mut self, error: Error) {
+        error!("encountered error when loading plugin system: {error}");
+        self.generic.push(error);
+    }
+
+    pub fn generic(&self) -> &[Error] {
+        &self.generic[..]
+    }
+
+    fn add_for_plugin(&mut self, name: PluginName, error: Error) {
+        error!("encountered error when loading plugin '{name}': {error}");
+        self.plugin_map.entry(name).or_default().push(error)
+    }
+
+    pub fn plugin_map(&self) -> &HashMap<PluginName, Vec<Error>> {
+        &self.plugin_map
+    }
+
+    pub fn for_plugin(&self, name: PluginName) -> &[Error] {
+        self.plugin_map
+            .get(&name)
+            .map(|vec| &vec[..])
+            .unwrap_or_default()
+    }
+
+    fn add_for_source(&mut self, source: Source, error: Error) {
+        error!("encountered error when loading source '{source}': {error}");
+        self.source_map.entry(source).or_default().push(error)
+    }
+
+    pub fn source_map(&self) -> &HashMap<Source, Vec<Error>> {
+        &self.source_map
+    }
+
+    pub fn for_source(&self, source: Source) -> &[Error] {
+        self.source_map
+            .get(&source)
+            .map(|vec| &vec[..])
+            .unwrap_or_default()
+    }
 }
