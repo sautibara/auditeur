@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use auditeur::{app::App, Message};
+use auditeur_plugin::auditeur::{app::App, Message};
 use cargo_toml::Manifest;
 use git2::Repository;
 use serde::{Deserialize, Serialize};

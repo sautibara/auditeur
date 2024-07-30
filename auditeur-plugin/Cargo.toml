@@ -7,5 +7,11 @@ edition = "2021"
 
 [dependencies]
 auditeur = { version = "0.1.0", path = "../auditeur" }
-auditeur-plugin-host = { version = "0.1.0", path = "../auditeur-plugin-host" }
 auditeur-plugin-macros = { version = "0.1.0", path = "../auditeur-plugin-macros" }
+stabby-macros = { version = "6.2.2" }
+libloading = "0.8.3"
+thiserror = { version = "1.0.58", optional = true }
+stabby = { version = "5.1.0", features = ["libloading"], optional = true }
+
+[features]
+loading = ["dep:thiserror", "dep:stabby"]

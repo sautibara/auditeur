@@ -28,7 +28,9 @@ struct Auditeur {
 impl Auditeur {
     pub fn new() -> Self {
         let root = get_crate("auditeur")
-            .expect("auditeur should be in Cargo.toml");
+            // fallback to auditeur-plugin, if it exists
+            .or_else(|| get_crate("auditeur-plugin").map(|auditeur_plugin| quote! { #auditeur_plugin::auditeur }))
+            .expect("auditeur or auditeur_plugin should be in Cargo.toml");
 
         Self { root }
     }

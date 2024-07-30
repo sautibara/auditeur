@@ -14,13 +14,12 @@
 // but since the trait objects reference code from their library, if the library gets unloaded,
 // they break (they can't find the thing that they're referencing, so they segfault)
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf};
 
 use arena::Arena;
-use auditeur::{app::App, prelude::*, Message};
+use auditeur_plugin::auditeur::{app::App, prelude::*, Message};
 use config::{PluginName, Source};
 use futures::Future;
-use libloading::Library;
 use log::error;
 use thiserror::Error;
 
@@ -35,11 +34,6 @@ mod prelude {
         Error, ErrorSink, PluginRegistry,
     };
 }
-
-#[doc(hidden)]
-pub use stabby::export as stabby_export;
-
-type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
 
 pub trait AppExt {
     /// # Safety
@@ -65,71 +59,11 @@ impl<M: Message> AppExt for App<M> {
     }
 }
 
-/// A handle to a [shared library](::libloading) that contains a plugin
-///
-/// # Safety
-///
-/// Once all handles are dropped, the library containing the plugin will be automatically unloaded.
-/// This'll cause future attempts to call code from this plugin to segfault (to try to access memory
-/// that isn't owned by the process), as the memory which should hold the code would already be
-/// freed by unloading.
-///
-/// All [resources](mod@auditeur::resource)'s lifetimes are automatically handled by the
-/// [`ResourceMap`](auditeur::resource::builtin::ResourceMap), so they will never unload while
-/// being used. However, trait objects given to other plugins may cause undefined behavior if all
-/// handles are dropped and the code that the trait object links to is called. To prevent this,
-/// handles can be put within the trait objects to ensure that the library lasts at least as long
-/// as the object.
-// ^ this is some prime yappage
-///
-/// # Common Pitfalls
-///
-/// ## Exiting too Early
-///
-/// If a listener or watcher sends resources to other threads and then exits, those references will
-/// be forgotten by the main [`ResourceMap`](crate::resource::builtin::ResourceMap), leading to
-/// libraries being freed too early.
-// TODO: example here
-// TODO: move this to auditeur-plugin and reverse the dependency
-#[derive(Clone)]
-pub struct LibraryHandle(Arc<Library>);
-
-impl LibraryHandle {
-    pub(crate) fn library(&self) -> &Library {
-        &self.0
-    }
-}
-
-/// Additional context given to a plugin during load
-///
-/// This most notably contains a [`LibraryHandle`], which is sometimes necessary to keep the plugin
-/// loaded.
-#[derive(Clone)]
-pub struct PluginContext {
-    handle: LibraryHandle,
-}
-
-impl PluginContext {
-    /// Get an owned handle to the plugin's dynamic library
-    ///
-    /// See [`LibraryHandle`] for more information
-    pub fn handle(&self) -> LibraryHandle {
-        self.handle.clone()
-    }
-}
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// An error associated with loading a plugin dynamic library
-    #[error("failed to load library: {0}")]
-    LibLoading(#[from] libloading::Error),
-    /// The plugin loader couldn't find or call the `main` function in a plugin
-    #[error("couldn't call the init function in plugin `{path}`: {additional_info}")]
-    CantLoadInitFunction {
-        path: String,
-        additional_info: String,
-    },
+    #[error("error when loading plugin: {0}")]
+    Loading(#[from] auditeur_plugin::loading::Error),
     #[error("error with git repository '{url}': {error}")]
     Git {
         #[source]
