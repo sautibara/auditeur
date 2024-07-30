@@ -49,8 +49,8 @@ pub trait AppExt {
 impl<M: Message> AppExt for App<M> {
     async unsafe fn with_plugin_system(mut self, config: &config::Host) -> Self {
         let mut registry = PluginRegistry::new(&mut self);
-        let arena = Arena::open_or_init(config).await;
-        if let Ok(mut arena) = arena.build().await {
+        let mut arena = Arena::open_or_init(config).await;
+        if let Some(arena) = arena.build().await {
             arena.add_to_registry(&mut registry);
         }
         let registry = registry.finalize();

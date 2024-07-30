@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    marker::PhantomData,
     path::{Path, PathBuf},
 };
 
@@ -58,45 +57,16 @@ fn path_exists_with_children(path: &Path) -> Result<bool, Error> {
     Ok(path.exists() && path.is_dir() && std::fs::read_dir(path)?.next().is_some())
 }
 
-/// A marker that all plugins in an [`Arena`] have been fully built, and their binaries can be
-/// added to an [`App`]
-pub struct Built;
-pub struct Unbuilt;
-
-pub struct Arena<B> {
+pub struct Arena {
     arena_dir: PathBuf,
     output_dir: PathBuf,
     config: config::host::Arena,
     loaded: HashMap<PluginName, LoadedPlugin>,
     binaries: HashMap<PluginName, PathBuf>,
     error_sink: ErrorSink,
-    built_tag: PhantomData<B>,
 }
 
-impl<B> Arena<B> {
-    fn convert<T>(self) -> Arena<T> {
-        let Self {
-            arena_dir,
-            output_dir,
-            config,
-            loaded,
-            binaries,
-            error_sink,
-            ..
-        } = self;
-        Arena {
-            arena_dir,
-            output_dir,
-            config,
-            loaded,
-            binaries,
-            error_sink,
-            built_tag: PhantomData,
-        }
-    }
-}
-
-impl Arena<Unbuilt> {
+impl Arena {
     pub async fn open_or_init(config: &config::Host) -> Self {
         let mut error_sink = ErrorSink::new();
         let arena_dir = config.directories().arena_dir();
@@ -110,7 +80,6 @@ impl Arena<Unbuilt> {
             loaded: HashMap::new(),
             error_sink,
             binaries,
-            built_tag: PhantomData,
         };
         let source_loads = config.plugins.iter().map(|plugin| async {
             arena
@@ -144,10 +113,10 @@ impl Arena<Unbuilt> {
         binaries.unwrap_or_default()
     }
 
-    pub async fn build(mut self) -> Result<Arena<Built>, Self> {
+    pub async fn build(&mut self) -> Option<BinaryList> {
         if let Err(err) = self.create_workspace().await {
             self.error_sink.add_generic(err);
-            return Err(self);
+            return None;
         }
         // TODO: clone and link the entirety of auditeur as well
         self.build_plugins().await;
@@ -157,7 +126,7 @@ impl Arena<Unbuilt> {
         self.link_workspace_dependencies().await;
         self.serialize_built_binaries().await;
         // all plugins should be built now, so we can say that we've been built
-        Ok(self.convert())
+        Some(BinaryList { arena: self })
     }
 
     async fn create_workspace(&self) -> Result<(), Error> {
@@ -310,56 +279,11 @@ resolver = "2"
             self.error_sink.add_generic(err);
         }
     }
-}
 
-impl Arena<Built> {
-    pub fn binaries(&self) -> &HashMap<PluginName, PathBuf> {
-        &self.binaries
-    }
-
-    /// # Safety
-    ///
-    /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
-    /// it is inherently unsafe - see [`PluginRegistry::load_plugin_from_file_unchecked`] for more
-    /// information.
-    pub unsafe fn add_to_registry<M: Message>(
-        &mut self,
-        registry: &mut PluginRegistry<M, registry::Building<'_, M>>,
-    ) {
-        for (_, binary) in self
-            .binaries
-            .iter()
-            .filter(|(name, _)| self.loaded.get(name).is_some_and(|plugin| plugin.enabled))
-        {
-            let res =
-                unsafe { registry.load_plugin_from_file_unchecked(self.output_dir.join(binary)) };
-            if let Err(err) = res {
-                self.error_sink.add_generic(err);
-            }
-        }
-    }
-
-    pub fn downgrade(self) -> Arena<Unbuilt> {
-        self.convert()
-    }
-}
-
-impl<B> Arena<B> {
     pub fn errors(&self) -> &ErrorSink {
         &self.error_sink
     }
 
-    pub fn finish(self) -> ErrorSink {
-        self.error_sink
-    }
-}
-
-enum LoadedSource {
-    Plugins(Vec<LoadedPlugin>, Updated),
-    Binary(BinarySource),
-}
-
-impl Arena<Unbuilt> {
     pub async fn add_source(&mut self, source: &config::host::Plugin) -> Result<Updated, Error> {
         let loaded = self.load_source(source).await?;
         Ok(self.add_loaded_source(loaded))
@@ -500,6 +424,44 @@ impl Arena<Unbuilt> {
             false
         };
         Ok((path, Updated(updated)))
+    }
+}
+
+enum LoadedSource {
+    Plugins(Vec<LoadedPlugin>, Updated),
+    Binary(BinarySource),
+}
+
+pub struct BinaryList<'arena> {
+    arena: &'arena mut Arena,
+}
+
+impl<'arena> BinaryList<'arena> {
+    pub fn binaries(&self) -> &HashMap<PluginName, PathBuf> {
+        &self.arena.binaries
+    }
+
+    /// # Safety
+    ///
+    /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
+    /// it is inherently unsafe - see [`PluginRegistry::load_plugin_from_file_unchecked`] for more
+    /// information.
+    pub unsafe fn add_to_registry<M: Message>(
+        self,
+        registry: &mut PluginRegistry<M, registry::Building<'_, M>>,
+    ) {
+        let Self { arena } = self;
+        for (_, binary) in arena
+            .binaries
+            .iter()
+            .filter(|(name, _)| arena.loaded.get(name).is_some_and(|plugin| plugin.enabled))
+        {
+            let res =
+                unsafe { registry.load_plugin_from_file_unchecked(arena.output_dir.join(binary)) };
+            if let Err(err) = res {
+                arena.error_sink.add_generic(err);
+            }
+        }
     }
 }
 
