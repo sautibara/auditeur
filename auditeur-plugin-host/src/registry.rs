@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ffi::OsStr, marker::PhantomData};
 
 use auditeur_plugin::auditeur::{app::App, prelude::*, Message};
-use log::debug;
+use log::{debug, trace};
 
 use crate::Error;
 use auditeur_plugin::{loading::Plugin, LibraryHandle};
@@ -50,6 +50,8 @@ impl<M: Message> PluginRegistry<M> {
         path: impl AsRef<OsStr>,
         app: &mut App<M>,
     ) -> Result<&mut Self, Error> {
+        let path = path.as_ref();
+        trace!("loading binary at '{}' to app", path.to_string_lossy());
         let plugin = Plugin::load_from_file_unchecked(path, app)?;
         self.libraries.insert(plugin.bundle, plugin.library);
         Ok(self)

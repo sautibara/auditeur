@@ -8,34 +8,45 @@ use std::{
 
 use auditeur_plugin::auditeur::{app::App, Message};
 use cargo_toml::Manifest;
+use futures::{future::join_all, FutureExt};
 use git2::Repository;
+use log::trace;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncWriteExt, process::Command};
 
 use crate::{config::BinarySource, prelude::*};
 
+async fn spawn_blocking<F, R>(func: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match tokio::task::spawn_blocking(func).await {
+        Err(err) => std::panic::resume_unwind(err.into_panic()),
+        Ok(val) => val,
+    }
+}
+
 async fn serialize<T: Serialize + Send + 'static>(path: PathBuf, value: T) -> Result<T, Error> {
-    tokio::task::spawn_blocking(move || {
+    spawn_blocking(move || {
         let file = std::fs::File::create(&path)?;
         ron::ser::to_writer(file, &value)
             .map_err(|error| Error::Serialization { error, file: path })?;
         Ok::<_, Error>(value)
     })
     .await
-    .expect("serialization shouldn't panic")
 }
 
 async fn deserialize<T: for<'de> Deserialize<'de> + Send + 'static>(
     path: PathBuf,
 ) -> Result<T, Error> {
-    tokio::task::spawn_blocking(move || {
+    spawn_blocking(move || {
         let file = std::fs::File::open(&path)?;
         let value = ron::de::from_reader(file)
             .map_err(|error| Error::Deserialization { error, file: path })?;
         Ok(value)
     })
     .await
-    .expect("deserialization shouldn't panic")
 }
 
 /// Returns `true` if `path` exists and isn't empty
@@ -136,11 +147,13 @@ impl Arena<Unbuilt> {
         if !self.config.retain_build_artifacts {
             self.remove_target_dir().await;
         }
+        self.link_workspace_dependencies().await;
         // all plugins should be built now, so we can say that we've been built
         Ok(self.convert())
     }
 
     async fn create_workspace(&self) -> Result<(), Error> {
+        trace!("creating the cargo workspace");
         let paths = self.loaded.values().map(|plugin| &plugin.path);
         let path_list =
             paths
@@ -163,6 +176,7 @@ resolver = "2"
     }
 
     async fn build_plugins(&mut self) {
+        trace!("building plugins");
         let plugin_builds = self
             .loaded
             .values_mut()
@@ -187,12 +201,18 @@ resolver = "2"
         arena_dir: &Path,
         retain_target: bool,
     ) -> Result<PathBuf, Error> {
+        trace!("building '{}'", plugin.name());
         let output = Command::new("cargo")
             .arg("build") // FIXME: check for --release
             .current_dir(&plugin.path)
             .env("CARGO_INCREMENTAL", if retain_target { "1" } else { "0" })
             .output()
             .await?;
+        trace!(
+            "finished building '{}', code: {}",
+            plugin.name(),
+            output.status
+        );
         if output.status.success() {
             // FIXME: check for windows .dll and --release
             // FIXME: use cargo.toml name instead of plugin name
@@ -205,6 +225,7 @@ resolver = "2"
     }
 
     async fn remove_target_dir(&mut self) {
+        trace!("removing target dir");
         let target_dir_path = self.arena_dir.join("target");
         let res = tokio::fs::remove_dir_all(&target_dir_path).await;
         if let Err(err) = res {
@@ -212,24 +233,36 @@ resolver = "2"
         }
     }
 
-    async fn link_workspace(&mut self) -> Result<(), Error> {
-        for plugin in self.loaded.values() {
-            if let Err(err) = Self::link_plugin(plugin, &self.loaded).await {
-                self.error_sink.add_for_plugin(plugin.name().clone(), err);
+    async fn link_workspace_dependencies(&mut self) {
+        trace!("linking inner-workspace dependencies");
+        for (name, res) in join_all(self.loaded.values().map(|plugin| {
+            Self::link_plugin_dependencies(plugin, &self.loaded).map(|res| (plugin.name(), res))
+        }))
+        .await
+        {
+            if let Err(err) = res {
+                self.error_sink.add_for_plugin(name.clone(), err);
             }
         }
-        Ok(())
     }
 
-    async fn link_plugin(
+    async fn link_plugin_dependencies(
         plugin: &LoadedPlugin,
         loaded: &HashMap<PluginName, LoadedPlugin>,
     ) -> Result<(), Error> {
+        if plugin.info.dependencies.is_empty() {
+            return Ok(());
+        }
+
+        trace!("linking `{}`'s dependencies", plugin.name());
         let path = plugin.path.join("Cargo.toml");
-        let mut manifest = Manifest::from_path(&path).map_err(|error| Error::CargoParse {
-            error,
-            path: path.clone(),
-        })?;
+        let manifest_path = path.clone();
+        let mut manifest = spawn_blocking(move || Manifest::from_path(manifest_path))
+            .await
+            .map_err(|error| Error::CargoParse {
+                error,
+                path: path.clone(),
+            })?;
         // TODO: respect version
         for dependency in plugin.info.dependencies.keys() {
             let dependency =
@@ -247,15 +280,15 @@ resolver = "2"
                     ..Default::default()
                 })),
             );
-            let mut file = File::create(&path).await?;
-            let serialized = toml::ser::to_string_pretty(&manifest).map_err(|error| {
-                Error::TomlSerialization {
-                    error,
-                    path: path.clone(),
-                }
-            })?;
-            file.write_all(serialized.as_bytes()).await?;
         }
+        let mut file = File::create(&path).await?;
+        let serialized = spawn_blocking(move || toml::ser::to_string_pretty(&manifest))
+            .await
+            .map_err(|error| Error::TomlSerialization {
+                error,
+                path: path.clone(),
+            })?;
+        file.write_all(serialized.as_bytes()).await?;
         Ok(())
     }
 }
@@ -311,6 +344,7 @@ impl Arena<Unbuilt> {
     }
 
     async fn load_source(&self, plugin_spec: &config::host::Plugin) -> Result<LoadedSource, Error> {
+        trace!("loading source '{}'", plugin_spec.source);
         let (path, updated) = match &plugin_spec.source {
             Source::Github(GitShorthand { user, repo }) => {
                 self.load_git_source(&format!("https://github.com/{user}/{repo}"), repo)
@@ -411,6 +445,7 @@ impl Arena<Unbuilt> {
             let path = path.to_owned();
             let repo_url = url.to_owned();
             let error_url = url.to_owned();
+            trace!("cloning '{repo_url}' to '{}''", path.display());
             tokio::task::spawn_blocking(move || Repository::clone_recurse(&repo_url, &path))
                 .await
                 .expect("repository clone shouldn't panic")
@@ -435,6 +470,7 @@ impl Arena<Unbuilt> {
             .ok_or_else(|| Error::NoComponentsInPath(source.to_owned()))?;
         let path = self.arena_dir.join(path);
         let updated = if !path_exists_with_children(&path)? {
+            trace!("copying '{}' to '{}'", source.display(), path.display());
             tokio::fs::copy(source, &path).await?;
             true
         } else {
