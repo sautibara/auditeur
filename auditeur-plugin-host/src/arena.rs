@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_variables)]
-
 use std::{
     collections::HashMap,
     marker::PhantomData,
@@ -29,12 +27,15 @@ where
 }
 
 /// Serialize `value` to the file at `path`, using [`ron`]
-async fn serialize<T: Serialize + Send + 'static>(path: PathBuf, value: T) -> Result<T, Error> {
+async fn serialize<T: Serialize + Send + Sync + 'static>(
+    path: PathBuf,
+    value: T,
+) -> Result<(), Error> {
     spawn_blocking(move || {
         let file = std::fs::File::create(&path)?;
         ron::ser::to_writer(file, &value)
             .map_err(|error| Error::Serialization { error, file: path })?;
-        Ok::<_, Error>(value)
+        Ok(())
     })
     .await
 }
@@ -148,11 +149,13 @@ impl Arena<Unbuilt> {
             self.error_sink.add_generic(err);
             return Err(self);
         }
+        // TODO: clone and link the entirety of auditeur as well
         self.build_plugins().await;
         if !self.config.retain_build_artifacts {
             self.remove_target_dir().await;
         }
         self.link_workspace_dependencies().await;
+        self.serialize_built_binaries().await;
         // all plugins should be built now, so we can say that we've been built
         Ok(self.convert())
     }
@@ -296,6 +299,17 @@ resolver = "2"
         file.write_all(serialized.as_bytes()).await?;
         Ok(())
     }
+
+    async fn serialize_built_binaries(&mut self) {
+        let file = self.arena_dir.join("built_binaries.ron");
+        // PERF: serialize requires a 'static bound from spawn_blocking to prevent a leakpocalypse
+        // or something, but that prevents us using a reference to serialize
+        // instead, we're forced to clone the binaries, which isn't great, but not terrible either
+        let binaries = self.binaries.clone();
+        if let Err(err) = serialize(file, binaries).await {
+            self.error_sink.add_generic(err);
+        }
+    }
 }
 
 impl Arena<Built> {
@@ -312,10 +326,10 @@ impl Arena<Built> {
         &mut self,
         registry: &mut PluginRegistry<M, registry::Building<'_, M>>,
     ) {
-        for (name, binary) in self
+        for (_, binary) in self
             .binaries
             .iter()
-            .filter(|(name, binary)| self.loaded.get(name).is_some_and(|plugin| plugin.enabled))
+            .filter(|(name, _)| self.loaded.get(name).is_some_and(|plugin| plugin.enabled))
         {
             let res =
                 unsafe { registry.load_plugin_from_file_unchecked(self.output_dir.join(binary)) };
