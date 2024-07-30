@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use auditeur_plugin::auditeur::{app::App, Message};
+use auditeur_plugin::auditeur::Message;
 use cargo_toml::Manifest;
 use futures::{future::join_all, FutureExt};
 use git2::Repository;
@@ -14,8 +14,9 @@ use log::trace;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncWriteExt, process::Command};
 
-use crate::{config::BinarySource, prelude::*};
+use crate::{config::BinarySource, prelude::*, registry};
 
+/// Spawn a blocking closure in [`tokio`], resuming any panics from the closure if they occur
 async fn spawn_blocking<F, R>(func: F) -> R
 where
     F: FnOnce() -> R + Send + 'static,
@@ -27,6 +28,7 @@ where
     }
 }
 
+/// Serialize `value` to the file at `path`, using [`ron`]
 async fn serialize<T: Serialize + Send + 'static>(path: PathBuf, value: T) -> Result<T, Error> {
     spawn_blocking(move || {
         let file = std::fs::File::create(&path)?;
@@ -37,6 +39,7 @@ async fn serialize<T: Serialize + Send + 'static>(path: PathBuf, value: T) -> Re
     .await
 }
 
+/// Deserialize `value` from to the file at `path`, using [`ron`]
 async fn deserialize<T: for<'de> Deserialize<'de> + Send + 'static>(
     path: PathBuf,
 ) -> Result<T, Error> {
@@ -54,6 +57,8 @@ fn path_exists_with_children(path: &Path) -> Result<bool, Error> {
     Ok(path.exists() && path.is_dir() && std::fs::read_dir(path)?.next().is_some())
 }
 
+/// A marker that all plugins in an [`Arena`] have been fully built, and their binaries can be
+/// added to an [`App`]
 pub struct Built;
 pub struct Unbuilt;
 
@@ -298,19 +303,22 @@ impl Arena<Built> {
         &self.binaries
     }
 
-    pub(crate) unsafe fn add_binaries_to_registry<M: Message>(
+    /// # Safety
+    ///
+    /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
+    /// it is inherently unsafe - see [`PluginRegistry::load_plugin_from_file_unchecked`] for more
+    /// information.
+    pub unsafe fn add_to_registry<M: Message>(
         &mut self,
-        registry: &mut PluginRegistry<M>,
-        app: &mut App<M>,
+        registry: &mut PluginRegistry<M, registry::Building<'_, M>>,
     ) {
         for (name, binary) in self
             .binaries
             .iter()
             .filter(|(name, binary)| self.loaded.get(name).is_some_and(|plugin| plugin.enabled))
         {
-            let res = unsafe {
-                registry.load_plugin_from_file_unchecked(self.output_dir.join(binary), app)
-            };
+            let res =
+                unsafe { registry.load_plugin_from_file_unchecked(self.output_dir.join(binary)) };
             if let Err(err) = res {
                 self.error_sink.add_generic(err);
             }

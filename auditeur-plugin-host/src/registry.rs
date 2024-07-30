@@ -6,30 +6,43 @@ use log::{debug, trace};
 use crate::Error;
 use auditeur_plugin::{loading::Plugin, LibraryHandle};
 
+pub struct Building<'app, M: Message> {
+    app: &'app mut App<M>,
+}
+pub struct Finalized;
+
 /// A registry of all of the currently loaded plugins in the [`App`]
 ///
 /// This registry keeps a [`LibraryHandle`] of all loaded plugins, keeping their dynamic libraries
 /// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is recieved
 /// for the plugin's bundle, so that the library isn't held for forever.
-#[must_use = "the registry must be added as a listener to the app, otherwise plugin code will be immediately unloaded"]
-#[resource("plugin_host:registry")]
-pub struct PluginRegistry<M: Message> {
+#[must_use = "the registry *must* be added as a listener to the app, otherwise plugin code may be unloaded while running"]
+pub struct PluginRegistry<M: Message, A> {
     libraries: HashMap<NamespacedId, LibraryHandle>,
+    maybe_app: A,
     message: PhantomData<M>,
 }
 
-impl<M: Message> Default for PluginRegistry<M> {
-    fn default() -> Self {
-        Self {
-            libraries: Default::default(),
-            message: Default::default(),
-        }
+// this can't be implemented through #[resource] due to the `Finalized` generic bound
+impl<M: Message> Resource for PluginRegistry<M, Finalized> {
+    fn ident(&self) -> NamespacedIdRef<'static> {
+        ident!("plugin_host:registry")
+    }
+    fn const_ident() -> NamespacedIdRef<'static>
+    where
+        Self: Sized,
+    {
+        ident!("plugin_host:registry")
     }
 }
 
-impl<M: Message> PluginRegistry<M> {
-    pub fn new() -> Self {
-        Self::default()
+impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
+    pub fn new(app: &'app mut App<M>) -> Self {
+        Self {
+            libraries: HashMap::new(),
+            maybe_app: Building { app },
+            message: PhantomData,
+        }
     }
 
     /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
@@ -48,18 +61,45 @@ impl<M: Message> PluginRegistry<M> {
     pub unsafe fn load_plugin_from_file_unchecked(
         &mut self,
         path: impl AsRef<OsStr>,
-        app: &mut App<M>,
     ) -> Result<&mut Self, Error> {
         let path = path.as_ref();
         trace!("loading binary at '{}' to app", path.to_string_lossy());
-        let plugin = Plugin::load_from_file_unchecked(path, app)?;
+        let plugin = Plugin::load_from_file_unchecked(path, self.maybe_app.app)?;
         self.libraries.insert(plugin.bundle, plugin.library);
         Ok(self)
+    }
+
+    /// # Safety
+    ///
+    /// If the registry is dropped before dynamically loaded resources added to the [`App`] are,
+    /// their shared libraries will be dropped, which will lead to undefined behavior (See
+    /// [`LibraryHandle`] for a more in-depth explanation). As such, the registry *must* be added
+    /// as a [`Listener`] to the app, which will keep it alive.
+    pub unsafe fn finalize(self) -> PluginRegistry<M, Finalized> {
+        PluginRegistry {
+            libraries: self.libraries,
+            maybe_app: Finalized,
+            message: PhantomData,
+        }
+    }
+
+    pub fn finalize_and_add(self) {
+        let app = self.maybe_app.app;
+        let finalized = PluginRegistry {
+            libraries: self.libraries,
+            maybe_app: Finalized,
+            message: PhantomData,
+        };
+        app.add_bundle(
+            new_bundle!("auditeur:plugin_host_registry")
+                .with_resource_map()
+                .with_listener(finalized),
+        );
     }
 }
 
 #[async_trait]
-impl<M: Message> Listener<M> for PluginRegistry<M> {
+impl<M: Message> Listener<M> for PluginRegistry<M, Finalized> {
     type Input = ();
 
     async fn handle(&mut self, _: M, (): &mut ()) -> Result<()> {

@@ -25,15 +25,17 @@ use thiserror::Error;
 
 pub mod arena;
 pub mod config;
-mod registry;
-pub use registry::PluginRegistry;
+pub mod registry;
 
 mod prelude {
     pub use crate::{
         config::{self, GitShorthand, PluginName, Source},
-        Error, ErrorSink, PluginRegistry,
+        registry::PluginRegistry,
+        Error, ErrorSink,
     };
 }
+
+use prelude::*;
 
 pub trait AppExt {
     /// # Safety
@@ -46,11 +48,12 @@ pub trait AppExt {
 
 impl<M: Message> AppExt for App<M> {
     async unsafe fn with_plugin_system(mut self, config: &config::Host) -> Self {
-        let mut registry = PluginRegistry::new();
+        let mut registry = PluginRegistry::new(&mut self);
         let arena = Arena::open_or_init(config).await;
         if let Ok(mut arena) = arena.build().await {
-            arena.add_binaries_to_registry(&mut registry, &mut self);
+            arena.add_to_registry(&mut registry);
         }
+        let registry = registry.finalize();
         self.with_bundle(
             new_bundle!("auditeur:plugin_host")
                 .with_resource_map()
