@@ -46,6 +46,7 @@ pub struct Workspace {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Single {
     pub plugin: PluginInfo,
+    #[serde(default)]
     pub dependencies: HashMap<PluginName, semver::VersionReq>,
 }
 

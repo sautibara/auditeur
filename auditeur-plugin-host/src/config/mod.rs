@@ -1,4 +1,4 @@
-use std::{fmt::Display, path::PathBuf, str::FromStr};
+use std::{borrow::Borrow, fmt::Display, path::PathBuf, str::FromStr};
 
 use serde::{de::Visitor, Deserialize, Serialize};
 
@@ -12,6 +12,18 @@ pub use plugin::Config as Plugin;
 #[serde(transparent)]
 pub struct PluginName(pub String);
 
+impl Borrow<String> for PluginName {
+    fn borrow(&self) -> &String {
+        &self.0
+    }
+}
+
+impl Borrow<str> for PluginName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 impl Display for PluginName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -22,11 +34,22 @@ impl Display for PluginName {
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     // these are the top three git hosts
+    // TODO: generic git source
+    // TODO: choosing commit / version
     Github(GitShorthand),
     Gitlab(GitShorthand),
     Bitbucket(GitShorthand),
     Path(PathBuf),
     Builtin(BinarySource),
+}
+
+impl Source {
+    pub fn new_github(user: impl Into<String>, repo: impl Into<String>) -> Self {
+        Self::Github(GitShorthand {
+            user: user.into(),
+            repo: repo.into(),
+        })
+    }
 }
 
 impl Display for Source {
@@ -53,6 +76,23 @@ pub struct BinarySource {
 pub struct GitShorthand {
     pub user: String,
     pub repo: String,
+}
+
+impl GitShorthand {
+    pub fn as_https(&self, host: &str) -> String {
+        self.with_host(host).as_https()
+    }
+
+    pub fn as_ssh(&self, host: &str) -> String {
+        self.with_host(host).as_ssh()
+    }
+
+    pub fn with_host<'a>(&'a self, host: &'a str) -> HostedGitShorthandRef {
+        HostedGitShorthandRef {
+            host,
+            shorthand: self,
+        }
+    }
 }
 
 impl Display for GitShorthand {
@@ -112,5 +152,80 @@ impl<'de> Deserialize<'de> for GitShorthand {
         D: serde::Deserializer<'de>,
     {
         deserializer.deserialize_str(GitShorthandVisitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HostedGitShorthandRef<'a> {
+    pub host: &'a str,
+    pub shorthand: &'a GitShorthand,
+}
+
+impl<'a> HostedGitShorthandRef<'a> {
+    pub fn as_https(&self) -> String {
+        let Self {
+            shorthand: GitShorthand { user, repo },
+            host,
+        } = self;
+        format!("https://{host}/{user}/{repo}.git")
+    }
+
+    pub fn as_ssh(&self) -> String {
+        let Self {
+            shorthand: GitShorthand { user, repo },
+            host,
+        } = self;
+        format!("git@{host}:{user}/{repo}")
+    }
+
+    pub fn repo(&self) -> &str {
+        &self.shorthand.repo
+    }
+
+    pub fn to_owned(self) -> HostedGitShorthand {
+        HostedGitShorthand {
+            host: self.host.to_owned(),
+            shorthand: self.shorthand.to_owned(),
+        }
+    }
+}
+
+impl Display for HostedGitShorthandRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { host, shorthand } = self;
+        write!(f, "{host} - {shorthand}")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HostedGitShorthand {
+    pub host: String,
+    pub shorthand: GitShorthand,
+}
+
+impl HostedGitShorthand {
+    pub fn as_https(&self) -> String {
+        self.to_ref().as_https()
+    }
+
+    pub fn as_ssh(&self) -> String {
+        self.to_ref().as_ssh()
+    }
+
+    pub fn repo(&self) -> &str {
+        &self.shorthand.repo
+    }
+
+    pub fn to_ref(&self) -> HostedGitShorthandRef {
+        HostedGitShorthandRef {
+            host: &self.host,
+            shorthand: &self.shorthand,
+        }
+    }
+}
+
+impl Display for HostedGitShorthand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.to_ref().fmt(f)
     }
 }

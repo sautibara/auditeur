@@ -43,17 +43,18 @@ pub trait AppExt {
     /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
     /// it is inherently unsafe.
     #[allow(opaque_hidden_inferred_bound)] // I think this is a false positive?
-    unsafe fn with_plugin_system(self, config: &config::Host) -> impl Future<Output = Self>;
+    fn with_plugin_system(self, config: &config::Host) -> impl Future<Output = Self>;
 }
 
 impl<M: Message> AppExt for App<M> {
-    async unsafe fn with_plugin_system(mut self, config: &config::Host) -> Self {
+    async fn with_plugin_system(mut self, config: &config::Host) -> Self {
         let mut registry = PluginRegistry::new(&mut self);
         let mut arena = Arena::open_or_init(config).await;
         if let Some(arena) = arena.build().await {
             arena.add_to_registry(&mut registry);
         }
-        let registry = registry.finalize();
+        // SAFETY: we add the registry immediately below, but in a bundle
+        let registry = unsafe { registry.finalize() };
         self.with_bundle(
             new_bundle!("auditeur:plugin_host")
                 .with_resource_map()
@@ -114,6 +115,16 @@ pub enum Error {
         error: toml::ser::Error,
         path: PathBuf,
     },
+    #[error("invalid rustc version, found: '{found}', expected: '{expected}'")]
+    InvalidRustc { found: String, expected: String },
+    #[error("recieved message from cargo: {}", .0.message.rendered.as_deref().unwrap_or_default())]
+    CargoMessage(cargo_metadata::CompilerMessage),
+}
+
+impl From<cargo_metadata::CompilerMessage> for Error {
+    fn from(value: cargo_metadata::CompilerMessage) -> Self {
+        Self::CargoMessage(value)
+    }
 }
 
 pub struct ErrorSink {
@@ -131,7 +142,8 @@ impl ErrorSink {
         }
     }
 
-    fn add_generic(&mut self, error: Error) {
+    fn add_generic(&mut self, error: impl Into<Error>) {
+        let error = error.into();
         error!("encountered error when loading plugin system: {error}");
         self.generic.push(error);
     }
@@ -140,7 +152,8 @@ impl ErrorSink {
         &self.generic[..]
     }
 
-    fn add_for_plugin(&mut self, name: PluginName, error: Error) {
+    fn add_for_plugin(&mut self, name: PluginName, error: impl Into<Error>) {
+        let error = error.into();
         error!("encountered error when loading plugin '{name}': {error}");
         self.plugin_map.entry(name).or_default().push(error)
     }
@@ -156,7 +169,8 @@ impl ErrorSink {
             .unwrap_or_default()
     }
 
-    fn add_for_source(&mut self, source: Source, error: Error) {
+    fn add_for_source(&mut self, source: Source, error: impl Into<Error>) {
+        let error = error.into();
         error!("encountered error when loading source '{source}': {error}");
         self.source_map.entry(source).or_default().push(error)
     }

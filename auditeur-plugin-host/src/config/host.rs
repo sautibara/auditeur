@@ -41,6 +41,8 @@ pub struct Config {
     pub arena: Arena,
     #[serde(default)]
     pub plugins: Vec<Plugin>,
+    #[serde(skip)]
+    pub static_dependencies: Vec<Source>,
 }
 
 impl Config {
@@ -49,11 +51,17 @@ impl Config {
             directories: Directories::new(project_dirs),
             arena: Arena::default(),
             plugins: vec![],
+            static_dependencies: vec![],
         }
     }
 
     pub fn directories(&self) -> &Directories {
         &self.directories
+    }
+
+    pub fn with_static_dependency(mut self, dependency: Source) -> Self {
+        self.static_dependencies.push(dependency);
+        self
     }
 }
 
