@@ -32,6 +32,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use log::trace;
+use log::warn;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
 
@@ -332,6 +334,8 @@ impl<M: Message> Registry<M> {
                 by: reference_holder.into(),
                 to: id,
             });
+        } else {
+            warn!("attempt to downcast {} failed", id);
         }
         reference
     }

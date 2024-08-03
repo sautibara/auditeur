@@ -30,7 +30,7 @@ impl<M: Message, T: Listener<M> + GetRef> Input<M> for Get<M, T> {
     fn create(registry: &Registry<M>, as_resource: NamespacedIdRef) -> Result<Self::Output, Error> {
         registry
             .get_as::<T>(as_resource)
-            .ok_or_else(|| Error::LoaderNotFound {
+            .ok_or_else(|| Error::DowncastFailed {
                 id: T::const_ident().into(),
             })
     }

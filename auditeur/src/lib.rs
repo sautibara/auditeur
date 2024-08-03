@@ -77,4 +77,6 @@ pub enum Error {
     LoaderNotFound { id: NamespacedId },
     #[error("bundle dependency '{id}' not found, has it been loaded?")]
     BundleNotFound { id: NamespacedId },
+    #[error("downcast of resource '{id}' failed, has it been loaded?")]
+    DowncastFailed { id: NamespacedId },
 }
