@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-auditeur = { version = "0.1.0", path = "../auditeur" }
+auditeur = { version = "0.1.0", path = "../auditeur", features = ["path-any"] }
 auditeur-plugin-macros = { version = "0.1.0", path = "../auditeur-plugin-macros" }
 stabby-macros = { version = "6.2.2" }
 libloading = "0.8.3"

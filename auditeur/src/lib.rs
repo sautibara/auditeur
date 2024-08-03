@@ -1,3 +1,4 @@
+use auditeur_macros::cfg_supertrait;
 use thiserror::Error;
 
 pub mod app;
@@ -5,6 +6,9 @@ pub mod bundle;
 pub mod input;
 pub mod namespaced_id;
 pub mod resource;
+
+#[cfg(feature = "path-any")]
+pub mod path_any;
 
 pub use auditeur_macros::{ident, resource};
 
@@ -31,6 +35,9 @@ pub use auditeur_macros::{ident, resource};
 /// ```
 pub use auditeur_macros::GetRef;
 
+#[cfg(feature = "path-any")]
+pub use auditeur_macros::PathAny;
+
 pub mod prelude {
     pub use crate::{
         app::{Constraints, RegistryEvent, Stopper},
@@ -38,9 +45,12 @@ pub mod prelude {
         ident,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
-        resource::{Listener, Resource, Watcher},
+        resource::{DynamicResource, Listener, Resource, Watcher},
         Error as AuditeurError, GetRef,
     };
+
+    #[cfg(feature = "path-any")]
+    pub use crate::PathAny;
 
     pub(crate) use crate::Error;
     pub(crate) use crate::{
@@ -57,6 +67,7 @@ pub mod prelude {
     pub(crate) use tokio::sync::broadcast::Sender;
 }
 
+#[cfg_supertrait(feature = "path-any", path_any::ConstPathAny)]
 pub trait Message: Clone + Send + 'static {}
 
 #[macro_export]

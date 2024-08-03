@@ -3,7 +3,6 @@ use std::marker::PhantomData;
 use crate::prelude::*;
 
 use crate::resource::Listener as ListenerTrait;
-use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
 use super::loaded;
@@ -15,7 +14,7 @@ use super::loaded::LoadedResource;
 /// [inputs](Input). When loading, inputs are taken from the [Registry]. Resources are ensured to
 /// already be loaded through the [`Constraints`] of each input, which is why delayed execution is
 /// necessary.
-pub trait Loader<M: Message>: ResourceTrait + Send {
+pub trait Loader<M: Message>: Send {
     /// Consume the loader and create a [`LoadedResource`], resolving inputs using `registry`
     ///
     /// # Errors
@@ -25,6 +24,8 @@ pub trait Loader<M: Message>: ResourceTrait + Send {
     fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error>;
     /// Return a list of [`Constraints`] that must be satisfied before loading
     fn constraints(&self) -> Constraints;
+    /// Return a reference to the contained [resource](crate::resource)'s [`NamespacedId`]
+    fn ident(&self) -> NamespacedIdRef<'_>;
 }
 
 pub struct Listener<M: Message, L: ListenerTrait<M>> {
@@ -50,32 +51,23 @@ impl<M: Message, L: ListenerTrait<M>> Loader<M> for Listener<M, L> {
     fn constraints(&self) -> Constraints {
         self.listener.constraints()
     }
-}
 
-impl<M: Message, L: ListenerTrait<M>> ResourceTrait for Listener<M, L> {
-    fn ident(&self) -> NamespacedIdRef<'static> {
-        L::const_ident()
-    }
-
-    fn const_ident() -> NamespacedIdRef<'static>
-    where
-        Self: Sized,
-    {
-        L::const_ident()
+    fn ident(&self) -> NamespacedIdRef<'_> {
+        self.listener.ident()
     }
 }
 
-pub struct Resource<R: ResourceTrait> {
+pub struct Resource<R: DynamicResource> {
     resource: R,
 }
 
-impl<R: ResourceTrait> Resource<R> {
+impl<R: DynamicResource> Resource<R> {
     pub const fn new(resource: R) -> Self {
         Self { resource }
     }
 }
 
-impl<M: Message, R: ResourceTrait> Loader<M> for Resource<R> {
+impl<M: Message, R: DynamicResource> Loader<M> for Resource<R> {
     fn load(self: Box<Self>, _: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error> {
         Ok(Box::new(loaded::Resource::new(self.resource)))
     }
@@ -83,18 +75,9 @@ impl<M: Message, R: ResourceTrait> Loader<M> for Resource<R> {
     fn constraints(&self) -> Constraints {
         Constraints::empty()
     }
-}
 
-impl<R: ResourceTrait> ResourceTrait for Resource<R> {
-    fn const_ident() -> NamespacedIdRef<'static>
-    where
-        Self: Sized,
-    {
-        R::const_ident()
-    }
-
-    fn ident(&self) -> NamespacedIdRef<'static> {
-        R::const_ident()
+    fn ident(&self) -> NamespacedIdRef<'_> {
+        self.resource.ident()
     }
 }
 
@@ -121,18 +104,9 @@ impl<M: Message, W: WatcherTrait<M>> Loader<M> for Watcher<M, W> {
     fn constraints(&self) -> Constraints {
         self.watcher.constraints()
     }
-}
 
-impl<M: Message, W: WatcherTrait<M>> ResourceTrait for Watcher<M, W> {
-    fn const_ident() -> NamespacedIdRef<'static>
-    where
-        Self: Sized,
-    {
-        W::const_ident()
-    }
-
-    fn ident(&self) -> NamespacedIdRef<'static> {
-        W::const_ident()
+    fn ident(&self) -> NamespacedIdRef<'_> {
+        self.watcher.ident()
     }
 }
 
@@ -178,23 +152,8 @@ where
     fn constraints(&self) -> Constraints {
         I::constraints()
     }
-}
 
-impl<I, M, R, F> ResourceTrait for With<I, M, R, F>
-where
-    I: Input<M>,
-    M: Message,
-    R: LoadedResource,
-    F: FnOnce(I::Output, &Registry<M>) -> Result<R, Error> + Send + 'static,
-{
-    fn ident(&self) -> NamespacedIdRef<'static> {
-        R::const_ident()
-    }
-
-    fn const_ident() -> NamespacedIdRef<'static>
-    where
-        Self: Sized,
-    {
+    fn ident(&self) -> NamespacedIdRef<'_> {
         R::const_ident()
     }
 }

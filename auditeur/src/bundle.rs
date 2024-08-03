@@ -106,7 +106,7 @@ impl<M: Message> Bundle<M> {
     ///
     /// Resources are never run, they only provide themselves to [listeners](Listener),
     /// [watchers](Watcher), or other resources with [`input::Get<_>`](crate::input::Get)
-    pub fn with_resource<R: Resource>(self, resource: R) -> Self {
+    pub fn with_resource<R: DynamicResource>(self, resource: R) -> Self {
         self.with(loader::Resource::new(resource))
     }
 
@@ -148,7 +148,7 @@ impl<M: Message> Bundle<M> {
 /// These methods allow building a [resource](mod@crate::resource) using some specified [`Input`]s
 impl<M: Message> Bundle<M> {
     /// Add a [`Resource`] to this bundle, using the given [`Input`]
-    pub fn with_resource_with<I: Input<M>, R: Resource>(
+    pub fn with_resource_with<I: Input<M>, R: DynamicResource>(
         self,
         func: impl FnOnce(I::Output) -> R + Send + 'static,
     ) -> Self {

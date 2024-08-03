@@ -32,7 +32,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use log::trace;
 use log::warn;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
@@ -321,7 +320,7 @@ impl<M: Message> Registry<M> {
     // as resources could get a reference and then immediately drop it, confusing the ResourceMap
     // (the map would think that the resource would still contain the reference).
     #[must_use]
-    pub fn get_as<R: Resource + GetRef>(
+    pub fn get_as<R: DynamicResource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef,
     ) -> Option<R::Ref> {
@@ -444,6 +443,7 @@ pub enum RegistryEvent {
 /// A handle on a [`Registry`] that can be used to stop one single resource or exit the entire
 /// program
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "path-any", derive(PathAny))]
 pub struct Stopper {
     sender: EventSender,
 }
@@ -476,6 +476,7 @@ impl<M: Message> Input<M> for Stopper {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "path-any", derive(PathAny))]
 pub(crate) struct EventSender {
     watch: watch::Sender<Vec<RegistryEvent>>,
 }
@@ -510,6 +511,7 @@ impl<M: Message> Input<M> for EventSender {
 /// was created. This allows receivers to make models of the [`Registry`] using its entire state,
 /// like [`ResourceMap`](crate::resource::builtin::ResourceMap).
 #[derive(Debug)]
+#[cfg_attr(feature = "path-any", derive(PathAny))]
 pub struct EventReceiver {
     watch: watch::Receiver<Vec<RegistryEvent>>,
     index: usize,

@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use anyhow::anyhow;
 use futures::pin_mut;
 use log::{debug, error};
@@ -15,6 +13,11 @@ use crate::resource::Watcher as WatcherTrait;
 
 use super::EventReceiver;
 use super::RegistryEvent;
+
+#[cfg(feature = "path-any")]
+use crate::path_any::PathAny as Any;
+#[cfg(not(feature = "path-any"))]
+use std::any::Any;
 
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
     if conditional {
@@ -156,17 +159,17 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
     }
 }
 
-pub struct Resource<R: ResourceTrait> {
+pub struct Resource<R: DynamicResource> {
     resource: R,
 }
 
-impl<R: ResourceTrait> Resource<R> {
+impl<R: DynamicResource> Resource<R> {
     pub const fn new(resource: R) -> Self {
         Self { resource }
     }
 }
 
-impl<R: ResourceTrait> LoadedResource for Resource<R> {
+impl<R: DynamicResource> LoadedResource for Resource<R> {
     fn runner(self: Box<Self>) -> Option<Box<dyn Runner>> {
         None
     }
@@ -176,7 +179,7 @@ impl<R: ResourceTrait> LoadedResource for Resource<R> {
     }
 }
 
-impl<R: ResourceTrait> ResourceTrait for Resource<R> {
+impl<R: DynamicResource> ResourceTrait for Resource<R> {
     fn ident(&self) -> NamespacedIdRef<'static> {
         self.resource.ident()
     }

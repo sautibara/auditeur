@@ -19,3 +19,6 @@ tokio = { version = "1.37.0", features = ["full"] }
 enum_glob_use = "warn"
 pedantic = "warn"
 nursery = "warn"
+
+[features]
+path-any = ["auditeur-macros/path-any"]

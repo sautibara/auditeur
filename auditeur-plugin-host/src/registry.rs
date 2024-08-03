@@ -9,6 +9,7 @@ use auditeur_plugin::{loading::Plugin, LibraryHandle};
 pub struct Building<'app, M: Message> {
     app: &'app mut App<M>,
 }
+#[derive(PathAny)]
 pub struct Finalized;
 
 /// A registry of all of the currently loaded plugins in the [`App`]
@@ -17,23 +18,12 @@ pub struct Finalized;
 /// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is recieved
 /// for the plugin's bundle, so that the library isn't held for forever.
 #[must_use = "the registry *must* be added as a listener to the app, otherwise plugin code may be unloaded while running"]
+#[resource("plugin_host:registry")]
+#[resource_custom_generics = "(M: Message) - (M, Finalized)"]
 pub struct PluginRegistry<M: Message, A> {
     libraries: HashMap<NamespacedId, LibraryHandle>,
     maybe_app: A,
     message: PhantomData<M>,
-}
-
-// this can't be implemented through #[resource] due to the `Finalized` generic bound
-impl<M: Message> Resource for PluginRegistry<M, Finalized> {
-    fn ident(&self) -> NamespacedIdRef<'static> {
-        ident!("plugin_host:registry")
-    }
-    fn const_ident() -> NamespacedIdRef<'static>
-    where
-        Self: Sized,
-    {
-        ident!("plugin_host:registry")
-    }
 }
 
 impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
