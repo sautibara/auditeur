@@ -37,6 +37,8 @@ mod prelude {
 
 use prelude::*;
 
+pub use auditeur_plugin;
+
 pub trait AppExt {
     /// # Safety
     ///

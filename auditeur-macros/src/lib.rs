@@ -30,6 +30,7 @@ impl Auditeur {
         let root = get_crate("auditeur")
             // fallback to auditeur-plugin, if it exists
             .or_else(|| get_crate("auditeur-plugin").map(|auditeur_plugin| quote! { #auditeur_plugin::auditeur }))
+            .or_else(|| get_crate("auditeur-plugin-host").map(|auditeur_plugin_host| quote! { #auditeur_plugin_host::auditeur_plugin::auditeur }))
             .expect("auditeur or auditeur_plugin should be in Cargo.toml");
 
         Self { root }
