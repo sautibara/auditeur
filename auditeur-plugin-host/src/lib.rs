@@ -119,6 +119,16 @@ pub enum Error {
     InvalidRustc { found: String, expected: String },
     #[error("recieved message from cargo: {}", .0.message.rendered.as_deref().unwrap_or_default())]
     CargoMessage(cargo_metadata::CompilerMessage),
+    #[error("plugin '{name}' has no library crate (checked {})", manifest_path.display())]
+    PluginNoLibrary {
+        name: PluginName,
+        manifest_path: PathBuf,
+    },
+    #[error("plugin '{name}' has no package (checked {})", manifest_path.display())]
+    PluginNoPackage {
+        name: PluginName,
+        manifest_path: PathBuf,
+    },
 }
 
 impl From<cargo_metadata::CompilerMessage> for Error {

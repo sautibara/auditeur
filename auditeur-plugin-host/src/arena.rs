@@ -73,7 +73,8 @@ pub struct Arena {
     arena_dir: PathBuf,
     output_dir: PathBuf,
     config: config::host::Arena,
-    loaded: HashMap<PluginName, LoadedPlugin>,
+    plugins: HashMap<PluginName, LoadedPlugin>,
+    library_names: HashMap<String, PluginName>,
     binaries: HashMap<PluginName, PathBuf>,
     error_sink: ErrorSink,
 }
@@ -90,7 +91,8 @@ impl Arena {
             arena_dir,
             output_dir: config.directories().plugin_dir(),
             config: config.arena.clone(),
-            loaded: HashMap::new(),
+            plugins: HashMap::new(),
+            library_names: HashMap::new(),
             error_sink,
             binaries,
         };
@@ -137,11 +139,15 @@ impl Arena {
     }
 
     fn plugins(&self) -> impl Iterator<Item = &LoadedPlugin> {
-        self.loaded.values()
+        self.plugins.values()
     }
 
     fn enabled_plugins(&self) -> impl Iterator<Item = &LoadedPlugin> {
         self.plugins().filter(|plugin| plugin.enabled)
+    }
+
+    fn enabled_library_names(&self) -> impl Iterator<Item = &str> {
+        self.enabled_plugins().map(|plugin| &plugin.lib_name[..])
     }
 
     pub async fn add_source(
@@ -154,7 +160,7 @@ impl Arena {
     }
 
     async fn load_source(&self, source: &Source, enabled: &Enabled) -> Result<LoadedSource, Error> {
-        trace!("loading source '{}'", source);
+        trace!("  loading source '{source}'");
         let (path, updated) = match &source {
             Source::Github(shorthand) => {
                 self.load_git_source(shorthand.with_host("github.com"))
@@ -183,7 +189,7 @@ impl Arena {
                 plugin
             })
             .collect();
-        trace!("found plugins: {plugins:?}");
+        trace!("  found plugins for source '{source}': {plugins:?}");
         Ok(LoadedSource::Plugins(plugins, updated))
     }
 
@@ -200,7 +206,12 @@ impl Arena {
                         self.binaries.remove(plugin.name());
                     }
                 }
-                self.loaded.extend(
+                self.library_names.extend(
+                    plugins
+                        .iter()
+                        .map(|plugin| (plugin.lib_name.clone(), plugin.name().clone())),
+                );
+                self.plugins.extend(
                     plugins
                         .into_iter()
                         .map(|plugin| (plugin.name().clone(), plugin)),
@@ -222,7 +233,7 @@ impl Arena {
             }
             let info = deserialize::<config::Plugin>(config_path).await?;
             match info {
-                config::Plugin::Single(info) => plugins.push(Self::load_plugin(path, info).await?),
+                config::Plugin::Single(info) => plugins.push(LoadedPlugin::load(path, info).await?),
                 config::Plugin::Workspace(workspace) => {
                     // while we could try to load all of the paths in a workspace at the same time
                     // in an aim to improve performance, it's needlessly complex and there's a good
@@ -235,17 +246,6 @@ impl Arena {
             }
         }
         Ok(plugins)
-    }
-
-    async fn load_plugin(
-        path: PathBuf,
-        info: config::plugin::Single,
-    ) -> Result<LoadedPlugin, Error> {
-        Ok(LoadedPlugin {
-            path,
-            info,
-            enabled: false,
-        })
     }
 
     async fn load_git_source<'a, 'b>(
@@ -268,9 +268,20 @@ impl Arena {
         Ok((path, Updated(updated)))
     }
 
-    pub fn clone_repository_blocking(repo: HostedGitShorthand, path: PathBuf) -> Result<(), Error> {
+    fn clone_repository_blocking(repo: HostedGitShorthand, path: PathBuf) -> Result<(), Error> {
+        let (fetch_options, ssh) = Self::fetch_options();
+        let url = if ssh { repo.as_ssh() } else { repo.as_https() };
+        git2::build::RepoBuilder::new()
+            .fetch_options(fetch_options)
+            .clone(&url, &path)
+            .and_then(|repo| Self::update_submodules_of(&repo))
+            .map_err(|error| Error::Git { error, url })?;
+        Ok(())
+    }
+
+    fn fetch_options<'cb>() -> (git2::FetchOptions<'cb>, bool) {
         let mut callbacks = git2::RemoteCallbacks::new();
-        let url = if let Ok(key) = std::env::var("AUDITEUR_SSH") {
+        let ssh = if let Ok(key) = std::env::var("AUDITEUR_SSH") {
             let key = PathBuf::from(key);
             callbacks.credentials(move |_url, user_from_url, cred_type| {
                 let user_from_url = user_from_url.unwrap_or("git");
@@ -280,18 +291,39 @@ impl Arena {
                     git2::Cred::ssh_key(user_from_url, None, &key, None)
                 }
             });
-            repo.as_ssh()
+            true
         } else {
-            repo.as_https()
+            false
         };
 
         let mut fo = git2::FetchOptions::new();
         fo.remote_callbacks(callbacks);
 
-        git2::build::RepoBuilder::new()
-            .fetch_options(fo)
-            .clone(&url, &path)
-            .map_err(|error| Error::Git { error, url })?;
+        (fo, ssh)
+    }
+
+    fn update_submodules_of(self_repo: &Repository) -> Result<(), git2::Error> {
+        fn add_subrepos(
+            repo: &Repository,
+            list: &mut Vec<Repository>,
+            opts: &mut git2::SubmoduleUpdateOptions,
+        ) -> Result<(), git2::Error> {
+            for mut subm in repo.submodules()? {
+                subm.update(true, Some(opts))?;
+                list.push(subm.open()?);
+            }
+            Ok(())
+        }
+
+        let (fetch_options, _) = Self::fetch_options();
+        let mut opts = git2::SubmoduleUpdateOptions::new();
+        opts.fetch(fetch_options);
+
+        let mut repos = Vec::new();
+        add_subrepos(self_repo, &mut repos, &mut opts)?;
+        while let Some(repo) = repos.pop() {
+            add_subrepos(&repo, &mut repos, &mut opts)?;
+        }
         Ok(())
     }
 
@@ -328,13 +360,14 @@ impl Arena {
     async fn maybe_build(&mut self) -> Result<(), Error> {
         trace!("building arena");
         self.check_rustc().await?;
+        tokio::fs::create_dir_all(&self.arena_dir).await?;
         self.create_workspace().await?;
-        // TODO: clone and link the entirety of auditeur as well
+        self.link_workspace_dependencies().await;
+        tokio::fs::create_dir_all(&self.output_dir).await?;
         self.build_plugins().await?;
         if !self.config.retain_build_artifacts {
             self.remove_target_dir().await;
         }
-        self.link_workspace_dependencies().await;
         self.serialize_built_binaries().await;
         Ok(())
     }
@@ -390,7 +423,7 @@ debug = {debug}
     }
 
     async fn build_plugins(&mut self) -> Result<(), Error> {
-        trace!("building all plugins");
+        trace!("  building plugins");
         let mut build_command = std::process::Command::new("cargo")
             .arg("build")
             // canaries
@@ -416,13 +449,13 @@ debug = {debug}
         let message_stream = build_command.stdout.take().expect("stdout should be piped");
         // collect the names out here so it can be given to the other thread without references
         // these are used to filter the cargo messages so that they only contain plugin artifacts
-        let enabled_plugin_names: HashSet<PluginName> = self
-            .enabled_plugins()
-            .map(|plugin| plugin.name().clone())
+        let enabled_library_names: HashSet<String> = self
+            .enabled_library_names()
+            .map(ToOwned::to_owned)
             .collect();
         // parse the messages in another thread since cargo_metadata doesn't work with async
         let messages: Vec<CargoMessage> =
-            spawn_blocking(move || Self::parse_messages(message_stream, enabled_plugin_names))
+            spawn_blocking(move || Self::parse_messages(message_stream, enabled_library_names))
                 .await?;
         // wait for the process to finish
         let _exit_code = spawn_blocking(move || build_command.wait()).await?;
@@ -443,13 +476,13 @@ debug = {debug}
 
     fn parse_messages(
         stream: impl Read,
-        names: HashSet<PluginName>,
+        library_names: HashSet<String>,
     ) -> std::io::Result<Vec<CargoMessage>> {
         let reader = std::io::BufReader::new(stream);
         CargoMessage::parse_stream(reader)
             .filter(|message| match message {
                 Ok(CargoMessage::CompilerArtifact(artifact))
-                    if names.contains(&artifact.target.name) =>
+                    if library_names.contains(&artifact.target.name) =>
                 {
                     true
                 }
@@ -461,14 +494,12 @@ debug = {debug}
     }
 
     fn add_compiler_artifact(&mut self, artifact: cargo_metadata::Artifact) -> Result<(), Error> {
-        // TODO: PluginName != Cargo.toml name
-        let plugin = PluginName(artifact.target.name);
-        assert!(
-            self.loaded.contains_key(&plugin),
-            "artifact messages should be filtered"
-        );
+        let plugin = self
+            .library_names
+            .get(&artifact.target.name)
+            .expect("libraries must be filtered before being handled");
         if let [binary] = &artifact.filenames[..] {
-            self.add_binary(plugin, binary.as_std_path())?;
+            self.add_binary(plugin.clone(), binary.as_std_path())?;
         } else {
             warn!(
                 "incorrect number of binaries received for {plugin}. found {}, expected 1",
@@ -492,7 +523,7 @@ debug = {debug}
 
     fn handle_compiler_message(&mut self, message: cargo_metadata::CompilerMessage) {
         let plugin = PluginName(message.target.name.clone());
-        if self.loaded.contains_key(&plugin) {
+        if self.plugins.contains_key(&plugin) {
             self.error_sink.add_for_plugin(plugin, message);
         } else {
             self.error_sink.add_generic(message);
@@ -500,8 +531,11 @@ debug = {debug}
     }
 
     async fn remove_target_dir(&mut self) {
-        trace!("removing target dir");
+        trace!("  removing target dir");
         let target_dir_path = self.arena_dir.join("target");
+        if !(target_dir_path.exists() && target_dir_path.is_dir()) {
+            return;
+        }
         let res = tokio::fs::remove_dir_all(&target_dir_path).await;
         if let Err(err) = res {
             self.error_sink.add_generic(Error::Io(err));
@@ -509,9 +543,9 @@ debug = {debug}
     }
 
     async fn link_workspace_dependencies(&mut self) {
-        trace!("linking inner-workspace dependencies");
-        for (name, res) in join_all(self.loaded.values().map(|plugin| {
-            Self::link_plugin_dependencies(plugin, &self.loaded).map(|res| (plugin.name(), res))
+        trace!("  linking inner-workspace dependencies");
+        for (name, res) in join_all(self.plugins.values().map(|plugin| {
+            Self::link_plugin_dependencies(plugin, &self.plugins).map(|res| (plugin.name(), res))
         }))
         .await
         {
@@ -529,15 +563,8 @@ debug = {debug}
             return Ok(());
         }
 
-        trace!("linking `{}`'s dependencies", plugin.name());
-        let path = plugin.path.join("Cargo.toml");
-        let manifest_path = path.clone();
-        let mut manifest = spawn_blocking(move || Manifest::from_path(manifest_path))
-            .await
-            .map_err(|error| Error::CargoParse {
-                error,
-                path: path.clone(),
-            })?;
+        trace!("    linking `{}`'s dependencies", plugin.name());
+        let mut manifest = plugin.load_manifest().await?;
         // TODO: respect version
         for dependency in plugin.info.dependencies.keys() {
             let dependency =
@@ -548,22 +575,14 @@ debug = {debug}
                         dependency: dependency.clone(),
                     })?;
             manifest.dependencies.insert(
-                // FIXME: use cargo name
-                dependency.name().clone().0,
+                dependency.crate_name.clone(),
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
-                    path: Some(path.to_string_lossy().into_owned()),
+                    path: Some(dependency.path.to_string_lossy().into_owned()),
                     ..Default::default()
                 })),
             );
         }
-        let mut file = File::create(&path).await?;
-        let serialized = spawn_blocking(move || toml::ser::to_string_pretty(&manifest))
-            .await
-            .map_err(|error| Error::TomlSerialization {
-                error,
-                path: path.clone(),
-            })?;
-        file.write_all(serialized.as_bytes()).await?;
+        plugin.save_manifest(manifest).await?;
         Ok(())
     }
 
@@ -600,7 +619,7 @@ impl<'arena> BinaryList<'arena> {
     pub fn enabled_binaries(&self) -> impl Iterator<Item = (&PluginName, &PathBuf)> {
         self.arena.binaries.iter().filter(|(name, _)| {
             self.arena
-                .loaded
+                .plugins
                 .get(*name)
                 .is_some_and(|plugin| plugin.enabled)
         })
@@ -621,7 +640,7 @@ impl<'arena> BinaryList<'arena> {
         // self.arena.binaries there, not all of self (which would conflict with self.error_sink)
         let enabled_binaries = self.arena.binaries.iter().filter(|(name, _)| {
             self.arena
-                .loaded
+                .plugins
                 .get(*name)
                 .is_some_and(|plugin| plugin.enabled)
         });
@@ -648,16 +667,70 @@ impl Updated {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct LoadedPlugin {
     // only store the name here for ease of access
     info: config::plugin::Single,
+    crate_name: String,
+    lib_name: String,
     path: PathBuf,
     enabled: bool,
 }
 
 impl LoadedPlugin {
+    async fn load(path: PathBuf, info: config::plugin::Single) -> Result<Self, Error> {
+        let mut plugin = Self {
+            info,
+            path,
+            enabled: false,
+            crate_name: String::default(),
+            lib_name: String::default(),
+        };
+        let manifest = plugin.load_manifest().await?;
+        plugin.lib_name =
+            manifest
+                .lib
+                .and_then(|lib| lib.name)
+                .ok_or_else(|| Error::PluginNoLibrary {
+                    name: plugin.name().clone(),
+                    manifest_path: plugin.manifest_path(),
+                })?;
+        plugin.crate_name = manifest
+            .package
+            .ok_or_else(|| Error::PluginNoPackage {
+                name: plugin.name().clone(),
+                manifest_path: plugin.manifest_path(),
+            })?
+            .name;
+        Ok(plugin)
+    }
+
     fn name(&self) -> &PluginName {
         &self.info.plugin.name
+    }
+
+    fn manifest_path(&self) -> PathBuf {
+        self.path.join("Cargo.toml")
+    }
+
+    async fn load_manifest(&self) -> Result<cargo_toml::Manifest, Error> {
+        let path = self.manifest_path();
+        spawn_blocking(move || {
+            Manifest::from_path(&path).map_err(|error| Error::CargoParse { error, path })
+        })
+        .await
+    }
+
+    async fn save_manifest(&self, manifest: cargo_toml::Manifest) -> Result<(), Error> {
+        let path = self.manifest_path();
+        let mut file = File::create(&path).await?;
+        // have to clone due to the 'static requirement on spawn_blocking :(
+        let serialized = spawn_blocking(move || {
+            toml::ser::to_string_pretty(&manifest)
+                .map_err(|error| Error::TomlSerialization { error, path })
+        })
+        .await?;
+        file.write_all(serialized.as_bytes()).await?;
+        Ok(())
     }
 }
