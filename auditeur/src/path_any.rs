@@ -20,7 +20,7 @@ impl PathId {
     }
 }
 
-/// A trait to emulate dynamic typing similar to [`Any`](std::any::Any) that plays well with FFI
+/// A trait to emulate dynamic typing similar to [`Any`](std::any::Any), that plays well with FFI
 ///
 /// Instead of integers provided by the compiler used in [`std::any`], this uses the module paths
 /// of each type and their generics. However, this requires implementing the trait for every type

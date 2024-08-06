@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncWriteExt, process::Command};
 
 use crate::{
-    config::{host::Enabled, BinarySource, HostedGitShorthand, HostedGitShorthandRef},
+    config::{
+        host::Enabled, BinarySource, GitFetchMethod, GitFetchUrl, GitHost, HostedGitShorthand,
+        HostedGitShorthandRef,
+    },
     prelude::*,
     registry,
 };
@@ -163,15 +166,15 @@ impl Arena {
         trace!("  loading source '{source}'");
         let (path, updated) = match &source {
             Source::Github(shorthand) => {
-                self.load_git_source(shorthand.with_host("github.com"))
+                self.load_git_source(shorthand.with_host(config::GitHost::Github))
                     .await
             }
             Source::Gitlab(shorthand) => {
-                self.load_git_source(shorthand.with_host("gitlab.com"))
+                self.load_git_source(shorthand.with_host(config::GitHost::Gitlab))
                     .await
             }
             Source::Bitbucket(shorthand) => {
-                self.load_git_source(shorthand.with_host("bitbucket.org"))
+                self.load_git_source(shorthand.with_host(config::GitHost::Bitbucket))
                     .await
             }
             Source::Builtin(binary) => {
@@ -269,8 +272,8 @@ impl Arena {
     }
 
     fn clone_repository_blocking(repo: HostedGitShorthand, path: PathBuf) -> Result<(), Error> {
-        let (fetch_options, ssh) = Self::fetch_options();
-        let url = if ssh { repo.as_ssh() } else { repo.as_https() };
+        let (fetch_options, fetch_method) = Self::fetch_options(repo.host);
+        let url = repo.fetch_url(fetch_method);
         git2::build::RepoBuilder::new()
             .fetch_options(fetch_options)
             .clone(&url, &path)
@@ -279,9 +282,10 @@ impl Arena {
         Ok(())
     }
 
-    fn fetch_options<'cb>() -> (git2::FetchOptions<'cb>, bool) {
+    fn fetch_options<'cb>(host: GitHost) -> (git2::FetchOptions<'cb>, GitFetchMethod) {
         let mut callbacks = git2::RemoteCallbacks::new();
-        let ssh = if let Ok(key) = std::env::var("AUDITEUR_SSH") {
+        let env_var = format!("AUDITEUR_SSH_{}", host.name());
+        let ssh = if let Ok(key) = std::env::var(env_var) {
             let key = PathBuf::from(key);
             callbacks.credentials(move |_url, user_from_url, cred_type| {
                 let user_from_url = user_from_url.unwrap_or("git");
@@ -291,9 +295,9 @@ impl Arena {
                     git2::Cred::ssh_key(user_from_url, None, &key, None)
                 }
             });
-            true
+            GitFetchMethod::Ssh
         } else {
-            false
+            GitFetchMethod::Https
         };
 
         let mut fo = git2::FetchOptions::new();
@@ -303,26 +307,34 @@ impl Arena {
     }
 
     fn update_submodules_of(self_repo: &Repository) -> Result<(), git2::Error> {
-        fn add_subrepos(
-            repo: &Repository,
-            list: &mut Vec<Repository>,
-            opts: &mut git2::SubmoduleUpdateOptions,
-        ) -> Result<(), git2::Error> {
+        fn submodule_update_options<'cb>(url: &str) -> git2::SubmoduleUpdateOptions<'cb> {
+            let mut opts = git2::SubmoduleUpdateOptions::new();
+            match url.parse::<GitFetchUrl>() {
+                Ok(url) => {
+                    let (fetch_options, _) = Arena::fetch_options(url.shorthand.host);
+                    opts.fetch(fetch_options);
+                }
+                Err(err) => {
+                    warn!("couldn't parse submodule url: {err}");
+                }
+            }
+            opts
+        }
+
+        fn add_subrepos(repo: &Repository, list: &mut Vec<Repository>) -> Result<(), git2::Error> {
             for mut subm in repo.submodules()? {
-                subm.update(true, Some(opts))?;
+                // use the url of the submodule so we can input an ssh key if necessary
+                let mut opts = submodule_update_options(subm.url().unwrap_or_default());
+                subm.update(true, Some(&mut opts))?;
                 list.push(subm.open()?);
             }
             Ok(())
         }
 
-        let (fetch_options, _) = Self::fetch_options();
-        let mut opts = git2::SubmoduleUpdateOptions::new();
-        opts.fetch(fetch_options);
-
         let mut repos = Vec::new();
-        add_subrepos(self_repo, &mut repos, &mut opts)?;
+        add_subrepos(self_repo, &mut repos)?;
         while let Some(repo) = repos.pop() {
-            add_subrepos(&repo, &mut repos, &mut opts)?;
+            add_subrepos(&repo, &mut repos)?;
         }
         Ok(())
     }
@@ -627,10 +639,12 @@ impl<'arena> BinaryList<'arena> {
 
     /// # Safety
     ///
-    /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
-    /// it is inherently unsafe - see [`PluginRegistry::load_plugin_from_file_unchecked`] for more
-    /// information. However, since the code comes from other rust code and is checked in many
-    /// ways, the dynamic linking should be safe.
+    /// The plugin system calls foreign code through the use of [dynamic
+    /// linking](auditeur_plugin::LibraryHandle), so it is inherently unsafe - see
+    /// [`PluginRegistry::load_plugin_from_file_unchecked`] for more information. However, the
+    /// boundary is checked in many ways. The main way that unsafety could come from other plugins
+    /// is from them having unsafe code or intentionally going past the safety checks, which isn't
+    /// something that can be prevented. Thus, thus function isn't marked unsafe.
     pub fn add_to_registry<M: Message>(
         self,
         registry: &mut PluginRegistry<M, registry::Building<'_, M>>,

@@ -27,6 +27,7 @@ semver = { version = "1.0.23", features = ["serde"] }
 # other
 log = "0.4.21"
 thiserror = "1.0.58"
+regex = "1.10.6"
 
 [build-dependencies]
 # for getting build information to be used to build plugins

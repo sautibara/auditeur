@@ -1,5 +1,6 @@
-use std::{borrow::Borrow, fmt::Display, path::PathBuf, str::FromStr};
+use std::{borrow::Borrow, fmt::Display, path::PathBuf, str::FromStr, sync::OnceLock};
 
+use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
 
 pub mod host;
@@ -7,6 +8,7 @@ pub mod plugin;
 
 pub use host::Config as Host;
 pub use plugin::Config as Plugin;
+use thiserror::Error;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[serde(transparent)]
@@ -79,15 +81,11 @@ pub struct GitShorthand {
 }
 
 impl GitShorthand {
-    pub fn as_https(&self, host: &str) -> String {
-        self.with_host(host).as_https()
+    pub fn fetch_url(&self, host: GitHost, method: GitFetchMethod) -> String {
+        self.with_host(host).fetch_url(method)
     }
 
-    pub fn as_ssh(&self, host: &str) -> String {
-        self.with_host(host).as_ssh()
-    }
-
-    pub fn with_host<'a>(&'a self, host: &'a str) -> HostedGitShorthandRef {
+    pub fn with_host(&self, host: GitHost) -> HostedGitShorthandRef {
         HostedGitShorthandRef {
             host,
             shorthand: self,
@@ -155,27 +153,138 @@ impl<'de> Deserialize<'de> for GitShorthand {
     }
 }
 
+/// A common hosting service for git repositories
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GitHost {
+    Github,
+    Gitlab,
+    Bitbucket,
+}
+
+impl GitHost {
+    /// Returns the base url for the hosting service
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use auditeur_plugin_host::config::GitHost;
+    /// assert_eq!(GitHost::Github.url(), "github.com");
+    /// assert_eq!(GitHost::Bitbucket.url(), "bitbucket.org");
+    /// ```
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Github => "github.com",
+            Self::Gitlab => "gitlab.com",
+            Self::Bitbucket => "bitbucket.org",
+        }
+    }
+
+    /// Returns the name of the hosting service
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use auditeur_plugin_host::config::GitHost;
+    /// assert_eq!(GitHost::Github.name(), "github");
+    /// assert_eq!(GitHost::Gitlab.name(), "gitlab");
+    /// ```
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Github => "github",
+            Self::Gitlab => "gitlab",
+            Self::Bitbucket => "bitbucket",
+        }
+    }
+
+    /// Returns `true` if the git host is [`Github`].
+    ///
+    /// [`Github`]: GitHost::Github
+    #[must_use]
+    pub fn is_github(&self) -> bool {
+        matches!(self, Self::Github)
+    }
+
+    /// Returns `true` if the git host is [`Gitlab`].
+    ///
+    /// [`Gitlab`]: GitHost::Gitlab
+    #[must_use]
+    pub fn is_gitlab(&self) -> bool {
+        matches!(self, Self::Gitlab)
+    }
+
+    /// Returns `true` if the git host is [`Bitbucket`].
+    ///
+    /// [`Bitbucket`]: GitHost::Bitbucket
+    #[must_use]
+    pub fn is_bitbucket(&self) -> bool {
+        matches!(self, Self::Bitbucket)
+    }
+}
+
+impl Display for GitHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.url())
+    }
+}
+
+/// A git host was not recognized so it couldn't be [parsed](GitHost::from_str)
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Error)]
+#[error("unknown git host: {0}")]
+pub struct GitUnknownHost(String);
+
+impl FromStr for GitHost {
+    type Err = GitUnknownHost;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "github.com" => Ok(Self::Github),
+            "gitlab.com" => Ok(Self::Gitlab),
+            "bitbucket.org" => Ok(Self::Bitbucket),
+            unknown => Err(GitUnknownHost(unknown.to_owned())),
+        }
+    }
+}
+
+/// A network protocol that can be used to fetch a git repository from a hosting service
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GitFetchMethod {
+    Https,
+    Ssh,
+}
+
+impl GitFetchMethod {
+    /// Returns `true` if the git fetch method is [`Https`].
+    ///
+    /// [`Https`]: GitFetchMethod::Https
+    #[must_use]
+    pub fn is_https(&self) -> bool {
+        matches!(self, Self::Https)
+    }
+
+    /// Returns `true` if the git fetch method is [`Ssh`].
+    ///
+    /// [`Ssh`]: GitFetchMethod::Ssh
+    #[must_use]
+    pub fn is_ssh(&self) -> bool {
+        matches!(self, Self::Ssh)
+    }
+
+    pub fn fetch_url(&self, host: GitHost, user: &str, repo: &str) -> String {
+        match self {
+            Self::Https => format!("https://{host}/{user}/{repo}.git"),
+            Self::Ssh => format!("git@{host}:{user}/{repo}.git"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HostedGitShorthandRef<'a> {
-    pub host: &'a str,
+    pub host: GitHost,
     pub shorthand: &'a GitShorthand,
 }
 
 impl<'a> HostedGitShorthandRef<'a> {
-    pub fn as_https(&self) -> String {
-        let Self {
-            shorthand: GitShorthand { user, repo },
-            host,
-        } = self;
-        format!("https://{host}/{user}/{repo}.git")
-    }
-
-    pub fn as_ssh(&self) -> String {
-        let Self {
-            shorthand: GitShorthand { user, repo },
-            host,
-        } = self;
-        format!("git@{host}:{user}/{repo}")
+    pub fn fetch_url(&self, method: GitFetchMethod) -> String {
+        method.fetch_url(self.host, &self.shorthand.user, &self.shorthand.repo)
     }
 
     pub fn repo(&self) -> &str {
@@ -199,17 +308,13 @@ impl Display for HostedGitShorthandRef<'_> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostedGitShorthand {
-    pub host: String,
+    pub host: GitHost,
     pub shorthand: GitShorthand,
 }
 
 impl HostedGitShorthand {
-    pub fn as_https(&self) -> String {
-        self.to_ref().as_https()
-    }
-
-    pub fn as_ssh(&self) -> String {
-        self.to_ref().as_ssh()
+    pub fn fetch_url(&self, method: GitFetchMethod) -> String {
+        self.to_ref().fetch_url(method)
     }
 
     pub fn repo(&self) -> &str {
@@ -218,7 +323,7 @@ impl HostedGitShorthand {
 
     pub fn to_ref(&self) -> HostedGitShorthandRef {
         HostedGitShorthandRef {
-            host: &self.host,
+            host: self.host,
             shorthand: &self.shorthand,
         }
     }
@@ -227,5 +332,62 @@ impl HostedGitShorthand {
 impl Display for HostedGitShorthand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.to_ref().fmt(f)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GitFetchUrl {
+    pub method: GitFetchMethod,
+    pub shorthand: HostedGitShorthand,
+}
+
+impl GitFetchUrl {
+    pub fn fetch_url(&self) -> String {
+        self.shorthand.fetch_url(self.method)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Error)]
+pub enum GitUrlParseError {
+    #[error("{0}")]
+    UnknownHost(#[from] GitUnknownHost),
+    #[error("could not parse git url: {0}")]
+    Unknown(String),
+}
+
+impl FromStr for GitFetchUrl {
+    type Err = GitUrlParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        static SSH_REGEX: OnceLock<Regex> = OnceLock::new();
+        let ssh_regex = SSH_REGEX.get_or_init(|| {
+            Regex::new(r"^git@(?<host>[\w\.]+):(?<user>[\w]+)/(?<repo>[\w]+)(?:.git)?$")
+                .expect("regex should compile")
+        });
+        static HTTPS_REGEX: OnceLock<Regex> = OnceLock::new();
+        let https_regex = HTTPS_REGEX.get_or_init(|| {
+            Regex::new(r"^https://(?<host>[\w\.]+)/(?<user>[\w]+)/(?<repo>[\w]+)(?:.git)?$")
+                .expect("regex should compile")
+        });
+
+        // test https first because it'll probably be more common
+        let (method, captures) = if let Some(captures) = https_regex.captures(s) {
+            (GitFetchMethod::Https, captures)
+        } else if let Some(captures) = ssh_regex.captures(s) {
+            (GitFetchMethod::Ssh, captures)
+        } else {
+            return Err(GitUrlParseError::Unknown(s.to_owned()));
+        };
+
+        Ok(GitFetchUrl {
+            method,
+            // both regex have the same capture groups for the shorthand
+            shorthand: HostedGitShorthand {
+                host: captures["host"].parse()?,
+                shorthand: GitShorthand {
+                    user: captures["user"].to_owned(),
+                    repo: captures["repo"].to_owned(),
+                },
+            },
+        })
     }
 }

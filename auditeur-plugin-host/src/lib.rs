@@ -42,8 +42,12 @@ pub use auditeur_plugin;
 pub trait AppExt {
     /// # Safety
     ///
-    /// The plugin system calls foreign code through the use of [dynamic linking](libloading), so
-    /// it is inherently unsafe.
+    /// The plugin system calls foreign code through the use of [dynamic
+    /// linking](auditeur_plugin::LibraryHandle), so it is inherently unsafe - see
+    /// [`PluginRegistry::load_plugin_from_file_unchecked`] for more information. However, the
+    /// boundary is checked in many ways. The main way that unsafety could come from other plugins
+    /// is from them having unsafe code or intentionally going past the safety checks, which isn't
+    /// something that can be prevented. Thus, thus function isn't marked unsafe.
     #[allow(opaque_hidden_inferred_bound)] // I think this is a false positive?
     fn with_plugin_system(self, config: &config::Host) -> impl Future<Output = Self>;
 }

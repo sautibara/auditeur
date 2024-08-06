@@ -24,7 +24,7 @@ pub trait Loader<M: Message>: Send {
     fn load(self: Box<Self>, registry: &Registry<M>) -> Result<Box<dyn LoadedResource>, Error>;
     /// Return a list of [`Constraints`] that must be satisfied before loading
     fn constraints(&self) -> Constraints;
-    /// Return a reference to the contained [resource](crate::resource)'s [`NamespacedId`]
+    /// Return a reference to the contained [resource](mod@crate::resource)'s [`NamespacedId`]
     fn ident(&self) -> NamespacedIdRef<'_>;
 }
 

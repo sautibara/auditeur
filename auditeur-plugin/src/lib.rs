@@ -58,7 +58,7 @@ impl PluginContext {
 /// ## Exiting too Early
 ///
 /// If a listener or watcher sends resources to other threads and then exits, those references will
-/// be forgotten by the main [`ResourceMap`](crate::resource::builtin::ResourceMap), leading to
+/// be forgotten by the main [`ResourceMap`](auditeur::resource::builtin::ResourceMap), leading to
 /// libraries being freed too early.
 // TODO: example here
 #[derive(Clone)]

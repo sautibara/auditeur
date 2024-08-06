@@ -213,7 +213,7 @@ impl<M: Message> Bundle<M> {
 /// ```
 /// use auditeur::prelude::*;
 /// #
-/// # #[derive(Clone)]
+/// # #[derive(Clone, PathAny)]
 /// # struct Message;
 /// # impl auditeur::Message for Message {}
 /// # auditeur::bake_message!(Message);
@@ -222,7 +222,7 @@ impl<M: Message> Bundle<M> {
 /// # // should be referred to as `crate` even though we're in a separate crate for testing. To
 /// # // avoid this, we can just import auditeur::resource here so that crate::resource resolves to
 /// # // it.
-/// # use auditeur::namespaced_id;
+/// # use auditeur::{namespaced_id, path_any};
 /// #
 /// # fn main() {
 ///
