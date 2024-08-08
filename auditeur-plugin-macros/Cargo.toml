@@ -14,3 +14,8 @@ thiserror = "1.0.58"
 
 [lib]
 proc-macro = true
+
+[lints.clippy]
+enum_glob_use = "warn"
+pedantic = "warn"
+nursery = "warn"

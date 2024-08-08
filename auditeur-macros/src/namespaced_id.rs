@@ -17,7 +17,7 @@ impl FromStr for NamespacedId {
         if components.next().is_some() {
             return Err(ParseError::TooManyComponents);
         }
-        Ok(NamespacedId {
+        Ok(Self {
             namespace: namespace.to_string(),
             id: id.to_string(),
         })

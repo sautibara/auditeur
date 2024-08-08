@@ -8,3 +8,8 @@ members = [
   "auditeur-plugin-macros",
 ]
 resolver = "2"
+
+[lints.clippy]
+enum_glob_use = "warn"
+pedantic = "warn"
+nursery = "warn"

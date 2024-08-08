@@ -20,6 +20,7 @@ pub struct Finalized;
 #[must_use = "the registry *must* be added as a listener to the app, otherwise plugin code may be unloaded while running"]
 #[resource("plugin_host:registry")]
 #[resource_custom_generics = "(M: Message) - (M, Finalized)"]
+#[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
 pub struct PluginRegistry<M: Message, A> {
     libraries: HashMap<NamespacedId, LibraryHandle>,
     maybe_app: A,

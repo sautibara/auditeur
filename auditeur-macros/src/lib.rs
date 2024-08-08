@@ -78,7 +78,7 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     item.attrs.retain(|attr| !CustomGenerics::attr_matches(attr));
 
     #[cfg(feature = "path-any")]
-    let path_any_impl = implement_path_any(&ident, &generics, auditeur);
+    let path_any_impl = implement_path_any(&ident, &generics, &auditeur);
     #[cfg(not(feature = "path-any"))]
     let path_any_impl = quote!();
 
@@ -191,7 +191,7 @@ pub fn path_any(item: TokenStream) -> TokenStream {
     };
 
     let auditeur = Auditeur::new();
-    implement_path_any(&ident, &generics, auditeur).into()
+    implement_path_any(&ident, &generics, &auditeur).into()
 }
 
 #[cfg(feature = "path-any")]
@@ -201,7 +201,7 @@ pub fn implement_path_any_external(ident: TokenStream) -> TokenStream {
 
     let auditeur = Auditeur::new();
     // TODO: ensure that there are no name collisions
-    implement_path_any(&ident, &CustomGenerics::from_generics(&generics), auditeur).into()
+    implement_path_any(&ident, &CustomGenerics::from_generics(&generics), &auditeur).into()
 }
 
 #[cfg(feature = "path-any")]
@@ -224,7 +224,7 @@ impl syn::parse::Parse for PathAnyExternal {
 }
 
 #[cfg(feature = "path-any")]
-fn implement_path_any(ident: &Ident, generics: &CustomGenerics, auditeur: Auditeur) -> proc_macro2::TokenStream {
+fn implement_path_any(ident: &Ident, generics: &CustomGenerics, auditeur: &Auditeur) -> proc_macro2::TokenStream {
     let path_any_mod = auditeur.path_any();
 
     let CustomGenerics { impl_generics, type_generics, where_clause } = generics;

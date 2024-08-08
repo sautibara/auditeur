@@ -46,19 +46,22 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(project_dirs: ProjectDirs) -> Self {
+    #[must_use]
+    pub fn defaults(project_dirs: &ProjectDirs) -> Self {
         Self {
-            directories: Directories::new(project_dirs),
+            directories: Directories::defaults(project_dirs),
             arena: Arena::default(),
             plugins: vec![],
             static_dependencies: vec![],
         }
     }
 
-    pub fn directories(&self) -> &Directories {
+    #[must_use]
+    pub const fn directories(&self) -> &Directories {
         &self.directories
     }
 
+    #[must_use]
     pub fn with_static_dependency(mut self, dependency: Source) -> Self {
         self.static_dependencies.push(dependency);
         self
@@ -73,7 +76,8 @@ pub struct Directories {
 }
 
 impl Directories {
-    pub fn new(project_dirs: ProjectDirs) -> Self {
+    #[must_use]
+    pub fn defaults(project_dirs: &ProjectDirs) -> Self {
         let local_data_dir = project_dirs.data_local_dir();
         Self {
             data_root: local_data_dir.to_path_buf(),
@@ -92,11 +96,13 @@ impl Directories {
     }
 
     /// Returns the path that holds the shared cargo workspace to compile plugins
+    #[must_use]
     pub fn arena_dir(&self) -> PathBuf {
         self.extend_data_root_with(&self.plugin_arena)
     }
 
     /// Returns the path that holds compiled plugins for the app
+    #[must_use]
     pub fn plugin_dir(&self) -> PathBuf {
         self.extend_data_root_with(&self.compiled_plugins)
     }
@@ -143,6 +149,7 @@ pub enum Enabled {
 }
 
 impl Enabled {
+    #[must_use]
     pub fn get(&self, name: &PluginName) -> bool {
         match self {
             Self::All(val) => *val,

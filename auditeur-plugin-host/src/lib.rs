@@ -160,6 +160,7 @@ impl ErrorSink {
         self.generic.push(error);
     }
 
+    #[must_use]
     pub fn generic(&self) -> &[Error] {
         &self.generic[..]
     }
@@ -167,16 +168,18 @@ impl ErrorSink {
     fn add_for_plugin(&mut self, name: PluginName, error: impl Into<Error>) {
         let error = error.into();
         error!("encountered error when loading plugin '{name}': {error}");
-        self.plugin_map.entry(name).or_default().push(error)
+        self.plugin_map.entry(name).or_default().push(error);
     }
 
-    pub fn plugin_map(&self) -> &HashMap<PluginName, Vec<Error>> {
+    #[must_use]
+    pub const fn plugin_map(&self) -> &HashMap<PluginName, Vec<Error>> {
         &self.plugin_map
     }
 
-    pub fn for_plugin(&self, name: PluginName) -> &[Error] {
+    #[must_use]
+    pub fn for_plugin(&self, name: &PluginName) -> &[Error] {
         self.plugin_map
-            .get(&name)
+            .get(name)
             .map(|vec| &vec[..])
             .unwrap_or_default()
     }
@@ -184,16 +187,18 @@ impl ErrorSink {
     fn add_for_source(&mut self, source: Source, error: impl Into<Error>) {
         let error = error.into();
         error!("encountered error when loading source '{source}': {error}");
-        self.source_map.entry(source).or_default().push(error)
+        self.source_map.entry(source).or_default().push(error);
     }
 
-    pub fn source_map(&self) -> &HashMap<Source, Vec<Error>> {
+    #[must_use]
+    pub const fn source_map(&self) -> &HashMap<Source, Vec<Error>> {
         &self.source_map
     }
 
-    pub fn for_source(&self, source: Source) -> &[Error] {
+    #[must_use]
+    pub fn for_source(&self, source: &Source) -> &[Error] {
         self.source_map
-            .get(&source)
+            .get(source)
             .map(|vec| &vec[..])
             .unwrap_or_default()
     }

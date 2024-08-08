@@ -126,6 +126,7 @@ impl Arena {
         arena
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)] // false positive - closure
     async fn deserialize_binary_file(
         file: PathBuf,
         error_sink: &mut ErrorSink,
@@ -153,6 +154,12 @@ impl Arena {
         self.enabled_plugins().map(|plugin| &plugin.lib_name[..])
     }
 
+    /// Add all plugins found within [`Source`] to the arena, checking `enabled` for each one
+    ///
+    /// # Errors
+    ///
+    /// - If a [`Source`] fails to be built
+    /// - If searching the source for plugins fails
     pub async fn add_source(
         &mut self,
         source: &Source,
@@ -256,27 +263,27 @@ impl Arena {
         repo: HostedGitShorthandRef<'b>,
     ) -> Result<(PathBuf, Updated), Error> {
         let path = self.arena_dir.join(repo.repo());
-        let updated = if !path_exists_with_children(&path)? {
-            // this is a dumb amount of cloning required due to the 'static bound on spawn_blocking
-            // - at times like these I wish I was using some type of structured concurrency
-            let path = path.to_owned();
-            let repo = repo.to_owned();
-            trace!("cloning '{repo}' to '{}''", path.display());
-            spawn_blocking(move || Self::clone_repository_blocking(repo, path)).await?;
-            true
-        } else {
+        let updated = if path_exists_with_children(&path)? {
             // TODO: check for updates
             false
+        } else {
+            // this is a dumb amount of cloning required due to the 'static bound on spawn_blocking
+            // - at times like these I wish I was using some type of structured concurrency
+            let path = path.clone();
+            let repo = repo.to_owned();
+            trace!("cloning '{repo}' to '{}''", path.display());
+            spawn_blocking(move || Self::clone_repository_blocking(&repo, &path)).await?;
+            true
         };
         Ok((path, Updated(updated)))
     }
 
-    fn clone_repository_blocking(repo: HostedGitShorthand, path: PathBuf) -> Result<(), Error> {
+    fn clone_repository_blocking(repo: &HostedGitShorthand, path: &Path) -> Result<(), Error> {
         let (fetch_options, fetch_method) = Self::fetch_options(repo.host);
         let url = repo.fetch_url(fetch_method);
         git2::build::RepoBuilder::new()
             .fetch_options(fetch_options)
-            .clone(&url, &path)
+            .clone(&url, path)
             .and_then(|repo| Self::update_submodules_of(&repo))
             .map_err(|error| Error::Git { error, url })?;
         Ok(())
@@ -285,7 +292,7 @@ impl Arena {
     fn fetch_options<'cb>(host: GitHost) -> (git2::FetchOptions<'cb>, GitFetchMethod) {
         let mut callbacks = git2::RemoteCallbacks::new();
         let env_var = format!("AUDITEUR_SSH_{}", host.name());
-        let ssh = if let Ok(key) = std::env::var(env_var) {
+        let ssh = std::env::var(env_var).map_or(GitFetchMethod::Https, |key| {
             let key = PathBuf::from(key);
             callbacks.credentials(move |_url, user_from_url, cred_type| {
                 let user_from_url = user_from_url.unwrap_or("git");
@@ -296,9 +303,7 @@ impl Arena {
                 }
             });
             GitFetchMethod::Ssh
-        } else {
-            GitFetchMethod::Https
-        };
+        });
 
         let mut fo = git2::FetchOptions::new();
         fo.remote_callbacks(callbacks);
@@ -347,13 +352,13 @@ impl Arena {
             .file_name()
             .ok_or_else(|| Error::NoComponentsInPath(source.to_owned()))?;
         let path = self.arena_dir.join(path);
-        let updated = if !path_exists_with_children(&path)? {
+        let updated = if path_exists_with_children(&path)? {
+            // TODO: check for updates
+            false
+        } else {
             trace!("copying '{}' to '{}'", source.display(), path.display());
             tokio::fs::copy(source, &path).await?;
             true
-        } else {
-            // TODO: check for updates
-            false
         };
         Ok((path, Updated(updated)))
     }
@@ -393,13 +398,13 @@ impl Arena {
             .await?
             .stdout;
         let found = String::from_utf8_lossy(&found_bytes).trim().to_owned();
-        if found != expected {
+        if found == expected {
+            Ok(())
+        } else {
             Err(Error::InvalidRustc {
                 found,
                 expected: expected.to_owned(),
             })
-        } else {
-            Ok(())
         }
     }
 
@@ -450,7 +455,7 @@ debug = {debug}
             // don't compile as incremental if we're not even retaining the info
             .env(
                 "CARGO_INCREMENTAL",
-                (self.config.retain_build_artifacts as usize).to_string(),
+                usize::from(self.config.retain_build_artifacts).to_string(),
             )
             // run the command at the root of the workspace
             .current_dir(&self.arena_dir)
@@ -467,7 +472,7 @@ debug = {debug}
             .collect();
         // parse the messages in another thread since cargo_metadata doesn't work with async
         let messages: Vec<CargoMessage> =
-            spawn_blocking(move || Self::parse_messages(message_stream, enabled_library_names))
+            spawn_blocking(move || Self::parse_messages(message_stream, &enabled_library_names))
                 .await?;
         // wait for the process to finish
         let _exit_code = spawn_blocking(move || build_command.wait()).await?;
@@ -476,7 +481,7 @@ debug = {debug}
             match message {
                 // try to collect any binaries
                 CargoMessage::CompilerArtifact(artifact) => {
-                    self.add_compiler_artifact(artifact)?;
+                    self.add_compiler_artifact(&artifact)?;
                 }
                 CargoMessage::CompilerMessage(message) => self.handle_compiler_message(message),
                 _ => unreachable!(),
@@ -488,7 +493,7 @@ debug = {debug}
 
     fn parse_messages(
         stream: impl Read,
-        library_names: HashSet<String>,
+        library_names: &HashSet<String>,
     ) -> std::io::Result<Vec<CargoMessage>> {
         let reader = std::io::BufReader::new(stream);
         CargoMessage::parse_stream(reader)
@@ -498,14 +503,13 @@ debug = {debug}
                 {
                     true
                 }
-                Ok(CargoMessage::CompilerMessage(_)) => true,
-                Err(_) => true,
+                Ok(CargoMessage::CompilerMessage(_)) | Err(_) => true,
                 _ => false,
             })
             .collect()
     }
 
-    fn add_compiler_artifact(&mut self, artifact: cargo_metadata::Artifact) -> Result<(), Error> {
+    fn add_compiler_artifact(&mut self, artifact: &cargo_metadata::Artifact) -> Result<(), Error> {
         let plugin = self
             .library_names
             .get(&artifact.target.name)
@@ -516,7 +520,7 @@ debug = {debug}
             warn!(
                 "incorrect number of binaries received for {plugin}. found {}, expected 1",
                 artifact.filenames.len()
-            )
+            );
         }
         Ok(())
     }
@@ -609,7 +613,8 @@ debug = {debug}
         }
     }
 
-    pub fn errors(&self) -> &ErrorSink {
+    #[must_use]
+    pub const fn errors(&self) -> &ErrorSink {
         &self.error_sink
     }
 }
@@ -624,6 +629,7 @@ pub struct BinaryList<'arena> {
 }
 
 impl<'arena> BinaryList<'arena> {
+    #[must_use]
     pub fn binaries(&self) -> &HashMap<PluginName, PathBuf> {
         &self.arena.binaries
     }
@@ -675,8 +681,9 @@ impl<'arena> BinaryList<'arena> {
 pub struct Updated(pub bool);
 
 impl Updated {
-    pub fn has_updated(&self) -> bool {
-        let Updated(updated) = self;
+    #[must_use]
+    pub const fn has_updated(&self) -> bool {
+        let Self(updated) = self;
         *updated
     }
 }
@@ -719,7 +726,7 @@ impl LoadedPlugin {
         Ok(plugin)
     }
 
-    fn name(&self) -> &PluginName {
+    const fn name(&self) -> &PluginName {
         &self.info.plugin.name
     }
 

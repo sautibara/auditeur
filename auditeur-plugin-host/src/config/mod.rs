@@ -58,8 +58,8 @@ impl Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Github(shorthand) => write!(f, "( github: {shorthand} )"),
-            Self::Gitlab(shorthand) => write!(f, "( github: {shorthand} )"),
-            Self::Bitbucket(shorthand) => write!(f, "( github: {shorthand} )"),
+            Self::Gitlab(shorthand) => write!(f, "( gitlab: {shorthand} )"),
+            Self::Bitbucket(shorthand) => write!(f, "( bitbucket: {shorthand} )"),
             Self::Path(path) => write!(f, "( path: {} )", path.display()),
             Self::Builtin(BinarySource { path, name }) => {
                 write!(f, "( builtin: ( path: {}, name: {name} ) )", path.display())
@@ -81,11 +81,13 @@ pub struct GitShorthand {
 }
 
 impl GitShorthand {
+    #[must_use]
     pub fn fetch_url(&self, host: GitHost, method: GitFetchMethod) -> String {
         self.with_host(host).fetch_url(method)
     }
 
-    pub fn with_host(&self, host: GitHost) -> HostedGitShorthandRef {
+    #[must_use]
+    pub const fn with_host(&self, host: GitHost) -> HostedGitShorthandRef {
         HostedGitShorthandRef {
             host,
             shorthand: self,
@@ -108,8 +110,8 @@ impl FromStr for GitShorthand {
             return Err(segments.len());
         };
         Ok(Self {
-            user: user.to_string(),
-            repo: repo.to_string(),
+            user: (*user).to_string(),
+            repo: (*repo).to_string(),
         })
     }
 }
@@ -171,7 +173,8 @@ impl GitHost {
     /// assert_eq!(GitHost::Github.url(), "github.com");
     /// assert_eq!(GitHost::Bitbucket.url(), "bitbucket.org");
     /// ```
-    pub fn url(&self) -> &str {
+    #[must_use]
+    pub const fn url(&self) -> &str {
         match self {
             Self::Github => "github.com",
             Self::Gitlab => "gitlab.com",
@@ -188,7 +191,8 @@ impl GitHost {
     /// assert_eq!(GitHost::Github.name(), "github");
     /// assert_eq!(GitHost::Gitlab.name(), "gitlab");
     /// ```
-    pub fn name(&self) -> &str {
+    #[must_use]
+    pub const fn name(&self) -> &str {
         match self {
             Self::Github => "github",
             Self::Gitlab => "gitlab",
@@ -200,7 +204,7 @@ impl GitHost {
     ///
     /// [`Github`]: GitHost::Github
     #[must_use]
-    pub fn is_github(&self) -> bool {
+    pub const fn is_github(&self) -> bool {
         matches!(self, Self::Github)
     }
 
@@ -208,7 +212,7 @@ impl GitHost {
     ///
     /// [`Gitlab`]: GitHost::Gitlab
     #[must_use]
-    pub fn is_gitlab(&self) -> bool {
+    pub const fn is_gitlab(&self) -> bool {
         matches!(self, Self::Gitlab)
     }
 
@@ -216,7 +220,7 @@ impl GitHost {
     ///
     /// [`Bitbucket`]: GitHost::Bitbucket
     #[must_use]
-    pub fn is_bitbucket(&self) -> bool {
+    pub const fn is_bitbucket(&self) -> bool {
         matches!(self, Self::Bitbucket)
     }
 }
@@ -256,7 +260,7 @@ impl GitFetchMethod {
     ///
     /// [`Https`]: GitFetchMethod::Https
     #[must_use]
-    pub fn is_https(&self) -> bool {
+    pub const fn is_https(&self) -> bool {
         matches!(self, Self::Https)
     }
 
@@ -264,10 +268,11 @@ impl GitFetchMethod {
     ///
     /// [`Ssh`]: GitFetchMethod::Ssh
     #[must_use]
-    pub fn is_ssh(&self) -> bool {
+    pub const fn is_ssh(&self) -> bool {
         matches!(self, Self::Ssh)
     }
 
+    #[must_use]
     pub fn fetch_url(&self, host: GitHost, user: &str, repo: &str) -> String {
         match self {
             Self::Https => format!("https://{host}/{user}/{repo}.git"),
@@ -283,17 +288,20 @@ pub struct HostedGitShorthandRef<'a> {
 }
 
 impl<'a> HostedGitShorthandRef<'a> {
+    #[must_use]
     pub fn fetch_url(&self, method: GitFetchMethod) -> String {
         method.fetch_url(self.host, &self.shorthand.user, &self.shorthand.repo)
     }
 
+    #[must_use]
     pub fn repo(&self) -> &str {
         &self.shorthand.repo
     }
 
+    #[must_use]
     pub fn to_owned(self) -> HostedGitShorthand {
         HostedGitShorthand {
-            host: self.host.to_owned(),
+            host: self.host,
             shorthand: self.shorthand.to_owned(),
         }
     }
@@ -313,15 +321,18 @@ pub struct HostedGitShorthand {
 }
 
 impl HostedGitShorthand {
+    #[must_use]
     pub fn fetch_url(&self, method: GitFetchMethod) -> String {
         self.to_ref().fetch_url(method)
     }
 
+    #[must_use]
     pub fn repo(&self) -> &str {
         &self.shorthand.repo
     }
 
-    pub fn to_ref(&self) -> HostedGitShorthandRef {
+    #[must_use]
+    pub const fn to_ref(&self) -> HostedGitShorthandRef {
         HostedGitShorthandRef {
             host: self.host,
             shorthand: &self.shorthand,
@@ -342,6 +353,7 @@ pub struct GitFetchUrl {
 }
 
 impl GitFetchUrl {
+    #[must_use]
     pub fn fetch_url(&self) -> String {
         self.shorthand.fetch_url(self.method)
     }
@@ -359,11 +371,11 @@ impl FromStr for GitFetchUrl {
     type Err = GitUrlParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         static SSH_REGEX: OnceLock<Regex> = OnceLock::new();
+        static HTTPS_REGEX: OnceLock<Regex> = OnceLock::new();
         let ssh_regex = SSH_REGEX.get_or_init(|| {
             Regex::new(r"^git@(?<host>[\w\.]+):(?<user>[\w]+)/(?<repo>[\w]+)(?:.git)?$")
                 .expect("regex should compile")
         });
-        static HTTPS_REGEX: OnceLock<Regex> = OnceLock::new();
         let https_regex = HTTPS_REGEX.get_or_init(|| {
             Regex::new(r"^https://(?<host>[\w\.]+)/(?<user>[\w]+)/(?<repo>[\w]+)(?:.git)?$")
                 .expect("regex should compile")
@@ -378,7 +390,7 @@ impl FromStr for GitFetchUrl {
             return Err(GitUrlParseError::Unknown(s.to_owned()));
         };
 
-        Ok(GitFetchUrl {
+        Ok(Self {
             method,
             // both regex have the same capture groups for the shorthand
             shorthand: HostedGitShorthand {

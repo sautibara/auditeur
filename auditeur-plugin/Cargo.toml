@@ -19,3 +19,8 @@ stabby = { version = "5.1.0", features = ["libloading"], optional = true }
 
 [features]
 loading = ["dep:thiserror", "dep:stabby"]
+
+[lints.clippy]
+enum_glob_use = "warn"
+pedantic = "warn"
+nursery = "warn"

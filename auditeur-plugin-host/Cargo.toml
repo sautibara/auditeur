@@ -32,3 +32,8 @@ regex = "1.10.6"
 [build-dependencies]
 # for getting build information to be used to build plugins
 built = { version = "0.7.4", features = ["git2"] }
+
+[lints.clippy]
+enum_glob_use = "warn"
+pedantic = "warn"
+nursery = "warn"

@@ -17,3 +17,8 @@ proc-macro = true
 
 [features]
 path-any = []
+
+[lints.clippy]
+enum_glob_use = "warn"
+pedantic = "warn"
+nursery = "warn"

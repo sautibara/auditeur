@@ -51,6 +51,7 @@ pub struct Single {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::module_name_repetitions)]
 pub struct PluginInfo {
     pub name: PluginName,
     pub version: semver::Version,

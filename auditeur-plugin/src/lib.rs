@@ -24,13 +24,14 @@ pub struct PluginContext {
 }
 
 impl PluginContext {
-    fn new(handle: LibraryHandle) -> Self {
+    const fn new(handle: LibraryHandle) -> Self {
         Self { handle }
     }
 
     /// Get an owned handle to the plugin's dynamic library
     ///
     /// See [`LibraryHandle`] for more information
+    #[must_use]
     pub fn handle(&self) -> LibraryHandle {
         self.handle.clone()
     }
@@ -66,11 +67,13 @@ pub struct LibraryHandle(Arc<Library>);
 
 impl LibraryHandle {
     #[doc(hidden)]
+    #[must_use]
     pub fn library(&self) -> &Library {
         &self.0
     }
 
     #[doc(hidden)]
+    #[must_use]
     pub fn from_library(library: Library) -> Self {
         Self(Arc::new(library))
     }
