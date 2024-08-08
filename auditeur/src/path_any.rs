@@ -1,7 +1,11 @@
 use bevy_utils_proc_macros::all_tuples;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum PathId {
+pub struct PathId(PathIdInner);
+
+// Separate the enum so that the implementation details are private
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum PathIdInner {
     Single(&'static str),
     Joined(&'static PathId, &'static PathId),
 }
@@ -10,13 +14,13 @@ impl PathId {
     #[must_use]
     #[doc(hidden)]
     pub const fn new(path: &'static str) -> Self {
-        Self::Single(path)
+        Self(PathIdInner::Single(path))
     }
 
     #[must_use]
     #[doc(hidden)]
     pub const fn join(&'static self, other: &'static Self) -> Self {
-        Self::Joined(self, other)
+        Self(PathIdInner::Joined(self, other))
     }
 }
 
