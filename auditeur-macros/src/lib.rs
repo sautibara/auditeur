@@ -247,12 +247,12 @@ fn implement_path_any(ident: &Ident, generics: &CustomGenerics, auditeur: Audite
         }) 
     {
         path_id = quote! {
-            #path_id.join(&<#param_bound as #path_any_mod::ConstPathAny>::PATH_ID)
+            #path_id.join(&<#param_bound as #path_any_mod::PathAnyConst>::PATH_ID)
         }
     }
 
     quote! {
-        unsafe impl #impl_generics #path_any_mod::ConstPathAny for #ident #type_generics #where_clause {
+        unsafe impl #impl_generics #path_any_mod::PathAnyConst for #ident #type_generics #where_clause {
             const PATH_ID: #path_any_mod::PathId = #path_id;
         }
     }

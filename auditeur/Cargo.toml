@@ -22,3 +22,4 @@ nursery = "warn"
 
 [features]
 path-any = ["auditeur-macros/path-any"]
+resource-map = []

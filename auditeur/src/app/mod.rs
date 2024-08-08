@@ -86,12 +86,22 @@ pub struct App<M: Message> {
 
 impl<M: Message> App<M> {
     /// Create a new app with a specified `capacity` of messages for each channel
+    #[cfg_attr(
+        not(feature = "resource-map"),
+        allow(clippy::let_and_return, unused_mut)
+    )]
     pub fn new(capacity: usize) -> Self {
-        Self {
+        let mut this = Self {
             capacity,
             loaders: HashMap::new(),
             bundles: HashMap::new(),
-        }
+        };
+        #[cfg(feature = "resource-map")]
+        this.add_bundle(
+            new_bundle!("auditeur:resource_map")
+                .with_listener_with::<EventSender, _>(crate::resource_map::ResourceMap::new),
+        );
+        this
     }
 
     /// Add a [`Bundle`] to the app, supplied by a [`Supplier`](bundle::Supplier)
@@ -312,7 +322,7 @@ impl<M: Message> Registry<M> {
 
     /// Get a cloned reference to a loaded resource, using `reference_holder` as the holder of the
     /// reference for [`RegistryEvent::Reference`] (see
-    /// [`ResourceMap`](crate::resource::builtin::ResourceMap) for why this information is
+    /// [`ResourceMap`](crate::resource_map::ResourceMap) for why this information is
     /// necessary).
     ///
     /// This uses [`Any`](std::any::Any) in order to get the contained object, if it exists.
@@ -420,8 +430,9 @@ pub enum RegistryEvent {
     /// [references](crate::input::Get) of it from other [resources](mod@crate::resource) have been
     /// dropped
     ///
-    /// Note: this will only ever be sent if a
-    /// [`ResourceMap`](crate::resource::builtin::ResourceMap) is currently running
+    /// Note: this will only ever be sent if the
+    /// [`ResourceMap`](crate::resource_map::ResourceMap) feature is enabled
+    #[cfg(feature = "resource-map")]
     Unloaded { id: NamespacedId },
     /// A bundle has started loading into the registry
     BundleLoading {
@@ -432,8 +443,9 @@ pub enum RegistryEvent {
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///
-    /// Note: this will only ever be sent if a
-    /// [`ResourceMap`](crate::resource::builtin::ResourceMap) is currently running
+    /// Note: this will only ever be sent if the
+    /// [`ResourceMap`](crate::resource_map::ResourceMap) feature is enabled
+    #[cfg(feature = "resource-map")]
     BundleUnloaded { id: NamespacedId },
     /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
     /// [input](crate::input::Input)
@@ -509,7 +521,7 @@ impl<M: Message> Input<M> for EventSender {
 ///
 /// This will always hold the entire history of events, even ones that happened before the receiver
 /// was created. This allows receivers to make models of the [`Registry`] using its entire state,
-/// like [`ResourceMap`](crate::resource::builtin::ResourceMap).
+/// like [`ResourceMap`](crate::resource_map::ResourceMap).
 #[derive(Debug)]
 #[cfg_attr(feature = "path-any", derive(PathAny))]
 pub struct EventReceiver {

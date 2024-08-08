@@ -51,11 +51,11 @@ pub unsafe trait PathAny: 'static {
 ///
 /// Like [`PathAny`], the [`PathId`] given must be unique from the ids of all other types.
 #[allow(clippy::module_name_repetitions)]
-pub unsafe trait ConstPathAny: 'static {
+pub unsafe trait PathAnyConst: 'static {
     const PATH_ID: PathId;
 }
 
-unsafe impl<T: ConstPathAny + 'static> PathAny for T {
+unsafe impl<T: PathAnyConst + 'static> PathAny for T {
     fn path_id(&self) -> &'static PathId {
         &Self::PATH_ID
     }
@@ -96,7 +96,7 @@ impl dyn PathAny {
 
 macro_rules! impl_any {
     ($($T:ident),*) => {
-        unsafe impl<$($T: ConstPathAny),*> ConstPathAny for ($($T,)*) {
+        unsafe impl<$($T: PathAnyConst),*> PathAnyConst for ($($T,)*) {
             const PATH_ID: PathId = PathId::new("std::tuple")
                 $(.join(&$T::PATH_ID))*;
         }

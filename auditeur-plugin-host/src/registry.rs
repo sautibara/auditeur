@@ -80,11 +80,7 @@ impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
             maybe_app: Finalized,
             message: PhantomData,
         };
-        app.add_bundle(
-            new_bundle!("auditeur:plugin_host_registry")
-                .with_resource_map()
-                .with_listener(finalized),
-        );
+        app.add_bundle(new_bundle!("auditeur:plugin_host_registry").with_listener(finalized));
     }
 }
 

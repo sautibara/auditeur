@@ -9,6 +9,13 @@ pub mod resource;
 
 #[cfg(feature = "path-any")]
 pub mod path_any;
+/// A macro that automatically provides an implementation of [`PathAny`](crate::path_any::PathAny)
+/// by implementing [`PathAnyConst`](crate::path_any::PathAnyConst)
+#[cfg(feature = "path-any")]
+pub use auditeur_macros::PathAny;
+
+#[cfg(feature = "resource-map")]
+pub mod resource_map;
 
 pub use auditeur_macros::{ident, resource};
 
@@ -34,9 +41,6 @@ pub use auditeur_macros::{ident, resource};
 /// # }
 /// ```
 pub use auditeur_macros::GetRef;
-
-#[cfg(feature = "path-any")]
-pub use auditeur_macros::PathAny;
 
 pub mod prelude {
     pub use crate::{
@@ -67,7 +71,7 @@ pub mod prelude {
     pub(crate) use tokio::sync::broadcast::Sender;
 }
 
-#[cfg_supertrait(feature = "path-any", path_any::ConstPathAny)]
+#[cfg_supertrait(feature = "path-any", path_any::PathAnyConst)]
 pub trait Message: Clone + Send + 'static {}
 
 #[macro_export]

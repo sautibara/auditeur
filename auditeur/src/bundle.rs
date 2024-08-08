@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::prelude::*;
 
-use crate::app::{loaded, loader, BuiltBundle, Constraint, EventSender, Loader};
+use crate::app::{loaded, loader, BuiltBundle, Constraint, Loader};
 
 /// Create a new bundle with the given identifier
 ///
@@ -195,14 +195,6 @@ impl<M: Message> Bundle<M> {
     pub fn add_constraint(mut self, constraint: Constraint) -> Self {
         self.constraints = std::mem::take(&mut self.constraints).insert(constraint);
         self
-    }
-}
-
-impl<M: Message> Bundle<M> {
-    /// Add a [`ResourceMap`](resource::builtin::ResourceMap) to the bundle, ensuring that it will
-    /// be loaded
-    pub fn with_resource_map(self) -> Self {
-        self.with_listener_with::<EventSender, _>(resource::builtin::ResourceMap::new)
     }
 }
 
