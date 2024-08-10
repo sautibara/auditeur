@@ -150,7 +150,7 @@ impl<M: Message> Bundle<M> {
     /// Add a [`Resource`] to this bundle, using the given [`Input`]
     pub fn with_resource_with<I: Input<M>, R: Resource>(
         self,
-        _func: impl FnOnce(I::Output) -> R + Send + 'static,
+        _func: impl FnOnce(I) -> R + Send + 'static,
     ) -> Self {
         todo!()
         // self.with(loader::With::<I, M, loaded::Resource<R>, _, _>::new(
@@ -161,7 +161,7 @@ impl<M: Message> Bundle<M> {
     /// Add a [`Listener`] to this bundle, using the given [`Input`]
     pub fn with_listener_with<I: Input<M>, L: Listener<M>>(
         self,
-        _func: impl FnOnce(I::Output) -> L + Send + 'static,
+        _func: impl FnOnce(I) -> L + Send + 'static,
     ) -> Self {
         todo!()
         // self.with(loader::With::<I, M, loaded::Listener<M, L>, _, _>::new(
@@ -172,7 +172,7 @@ impl<M: Message> Bundle<M> {
     /// Add a [`Watcher`] to this bundle, using the given [`Input`]
     pub fn with_watcher_with<I: Input<M>, W: Watcher<M>>(
         self,
-        _func: impl FnOnce(I::Output) -> W + Send + 'static,
+        _func: impl FnOnce(I) -> W + Send + 'static,
     ) -> Self {
         todo!()
         // self.with(loader::With::<I, M, loaded::Watcher<M, W>, _, _>::new(

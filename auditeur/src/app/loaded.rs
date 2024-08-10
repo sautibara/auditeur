@@ -60,7 +60,7 @@ pub trait Runner: Identifiable + Send {
 
 pub struct Listener<M: Message, L: ListenerTrait<M>> {
     inner: L,
-    input: <L::Input as Input<M>>::Output,
+    input: L::Input,
     receiver: Receiver<M>,
     event_receiver: EventReceiver,
 }
@@ -234,7 +234,7 @@ impl<R: ResourceTrait> Identifiable for Resource<R> {
 
 pub struct Watcher<M: Message, W: WatcherTrait<M>> {
     inner: W,
-    input: <W::Input as Input<M>>::Output,
+    input: W::Input,
     event_receiver: EventReceiver,
 }
 

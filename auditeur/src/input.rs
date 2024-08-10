@@ -1,13 +1,11 @@
-use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 
 use crate::prelude::*;
 
-pub trait Input<M: Message>: Send + 'static {
-    type Output: Send + Sync;
-
+pub trait Input<M: Message>: Sized + Send + Sync + 'static {
     /// Create [`Self::Output`] using the given [`Registry`] and id `as_resource`
     ///
     /// # Errors
@@ -16,7 +14,7 @@ pub trait Input<M: Message>: Send + 'static {
     fn create(
         registry: &Registry<M>,
         as_resource: NamespacedIdRef,
-    ) -> impl Future<Output = Result<Self::Output, Error>> + Send;
+    ) -> impl Future<Output = Result<Self, Error>> + Send;
 
     #[must_use]
     fn constraints() -> Constraints {
@@ -24,27 +22,45 @@ pub trait Input<M: Message>: Send + 'static {
     }
 }
 
-pub struct Get<M: Message, T: Listener<M> + GetRef> {
-    phantom_data: PhantomData<(M, T)>,
+#[derive(Clone, Copy)]
+pub struct Get<T: Resource + GetRef>(T::Ref);
+
+impl<T: Resource + GetRef> Get<T> {
+    pub fn deref_move(this: Self) -> T::Ref {
+        this.0
+    }
 }
 
-impl<M: Message, T: Listener<M> + GetRef> Input<M> for Get<M, T> {
-    type Output = T::Ref;
-
+impl<M: Message, T: Resource + GetRef> Input<M> for Get<T> {
     async fn create(
         registry: &Registry<M>,
         as_resource: NamespacedIdRef<'_>,
-    ) -> Result<Self::Output, Error> {
-        registry
-            .get_as::<T>(as_resource)
-            .await
-            .ok_or_else(|| Error::DowncastFailed {
-                id: T::const_ident().into(),
-            })
+    ) -> Result<Self, Error> {
+        let reference =
+            registry
+                .get_as::<T>(as_resource)
+                .await
+                .ok_or_else(|| Error::DowncastFailed {
+                    id: T::const_ident().into(),
+                })?;
+        Ok(Self(reference))
     }
 
     fn constraints() -> Constraints {
         Constraints::empty().after_resource(T::const_ident())
+    }
+}
+
+impl<T: Resource + GetRef> Deref for Get<T> {
+    type Target = T::Ref;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: Resource + GetRef> DerefMut for Get<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -115,10 +131,8 @@ pub mod maybe_get_ref {
 macro_rules! impl_input {
     ($($T:ident),*) => {
         impl<M: Message, $($T: Input<M>),*> Input<M> for ($($T,)*) {
-            type Output = ($($T::Output,)*);
-
             #[allow(unused_variables)]
-            async fn create(registry: &Registry<M>, as_resource: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+            async fn create(registry: &Registry<M>, as_resource: NamespacedIdRef<'_>) -> Result<Self, Error> {
                 futures::try_join!($($T::create(registry, as_resource),)*)
             }
 

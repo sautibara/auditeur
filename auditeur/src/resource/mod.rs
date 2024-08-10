@@ -4,6 +4,7 @@ use crate::{app::RegistryEvent, prelude::*};
 
 use anyhow::Result;
 use auditeur_macros::cfg_supertrait;
+use futures::Future;
 
 pub mod builtin;
 
@@ -37,18 +38,14 @@ impl<T: Identifiable + crate::Any> Resource for T {}
 pub trait Listener<M: Message>: Resource + Send {
     type Input: Input<M>;
 
-    async fn handle(
-        &mut self,
-        message: M,
-        input: &mut <Self::Input as Input<M>>::Output,
-    ) -> Result<()>;
+    async fn handle(&mut self, message: M, input: &mut Self::Input) -> Result<()>;
 
-    async fn init(&mut self, input: &mut <Self::Input as Input<M>>::Output) -> Result<()> {
+    async fn init(&mut self, input: &mut Self::Input) -> Result<()> {
         let _ = input;
         Ok(())
     }
 
-    async fn exit(&mut self, input: &mut <Self::Input as Input<M>>::Output) -> Result<()> {
+    async fn exit(&mut self, input: &mut Self::Input) -> Result<()> {
         let _ = input;
         Ok(())
     }
@@ -56,7 +53,7 @@ pub trait Listener<M: Message>: Resource + Send {
     async fn registry_event(
         &mut self,
         event: RegistryEvent,
-        input: &mut <Self::Input as Input<M>>::Output,
+        input: &mut Self::Input,
     ) -> Result<()> {
         let _ = (event, input);
         Ok(())
@@ -74,9 +71,9 @@ pub trait Listener<M: Message>: Resource + Send {
 pub trait Watcher<M: Message>: Resource + Send {
     type Input: Input<M>;
 
-    async fn run(&mut self, input: &mut <Self::Input as Input<M>>::Output) -> anyhow::Result<()>;
+    async fn run(&mut self, input: &mut Self::Input) -> anyhow::Result<()>;
 
-    async fn exit(&mut self, _input: &mut <Self::Input as Input<M>>::Output) -> anyhow::Result<()> {
+    async fn exit(&mut self, _input: &mut Self::Input) -> anyhow::Result<()> {
         Ok(())
     }
 

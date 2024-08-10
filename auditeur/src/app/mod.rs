@@ -618,18 +618,14 @@ impl<M: Message> Registry<M> {
 
 #[cfg(feature = "runtime-loading")]
 impl<M: Message> Input<M> for Registry<M> {
-    type Output = Self;
-
     /// Use a registry [handle](Self::handle) as an input to a running resource
-    async fn create(registry: &Self, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+    async fn create(registry: &Self, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.handle())
     }
 }
 
 impl<M: Message> Input<M> for Sender<M> {
-    type Output = Self;
-
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.message_sender())
     }
 }
@@ -818,9 +814,7 @@ impl Stopper {
 }
 
 impl<M: Message> Input<M> for Stopper {
-    type Output = Self;
-
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.stopper())
     }
 }
@@ -848,9 +842,7 @@ impl EventSender {
 }
 
 impl<M: Message> Input<M> for EventSender {
-    type Output = Self;
-
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.event_sender())
     }
 }
@@ -923,9 +915,7 @@ impl EventReceiver {
 }
 
 impl<M: Message> Input<M> for EventReceiver {
-    type Output = Self;
-
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.event_receiver())
     }
 }
