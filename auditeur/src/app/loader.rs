@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use crate::prelude::*;
 
 use crate::resource::Listener as ListenerTrait;
+use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
 use super::loaded;
@@ -65,18 +66,18 @@ impl<M: Message, L: ListenerTrait<M>> Loader<M> for Listener<M, L> {
     }
 }
 
-pub struct Resource<R: DynamicResource> {
+pub struct Resource<R: ResourceTrait> {
     resource: R,
 }
 
-impl<R: DynamicResource> Resource<R> {
+impl<R: ResourceTrait> Resource<R> {
     pub const fn new(resource: R) -> Self {
         Self { resource }
     }
 }
 
 #[async_trait]
-impl<M: Message, R: DynamicResource> Loader<M> for Resource<R> {
+impl<M: Message, R: ResourceTrait> Loader<M> for Resource<R> {
     async fn load(
         self: Box<Self>,
         registry: &Registry<M>,

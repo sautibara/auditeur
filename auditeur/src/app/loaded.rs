@@ -7,6 +7,7 @@ use tokio::sync::broadcast::Receiver;
 
 use crate::prelude::*;
 
+use crate::resource::Identifiable;
 use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
@@ -40,7 +41,7 @@ fn handle_recv_error<T>(
 
 /// A [resource](mod@crate::resource) that has already been loaded into a [`Registry`]
 #[allow(clippy::module_name_repetitions)] // without Loaded, it would conflict with Resource
-pub trait LoadedResource: ResourceTrait + Send + Sync {
+pub trait LoadedResource: Identifiable + Send + Sync {
     /// Optionally provide a [`Runner`] to run in the main loop
     ///
     /// This runner is joined alongside every other runner, if it is given
@@ -53,7 +54,7 @@ pub trait LoadedResource: ResourceTrait + Send + Sync {
 
 /// An object that can run a simple async function, see [`LoadedResource::runner`]
 #[async_trait]
-pub trait Runner: ResourceTrait + Send {
+pub trait Runner: Identifiable + Send {
     async fn run(self: Box<Self>);
 }
 
@@ -118,7 +119,7 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     }
 }
 
-impl<M: Message, L: ListenerTrait<M>> ResourceTrait for Listener<M, L> {
+impl<M: Message, L: ListenerTrait<M>> Identifiable for Listener<M, L> {
     fn ident(&self) -> NamespacedIdRef<'static> {
         self.inner.ident()
     }
@@ -167,13 +168,13 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
     }
 }
 
-pub struct Resource<R: DynamicResource> {
+pub struct Resource<R: ResourceTrait> {
     resource: R,
     #[cfg(feature = "runtime-loading")]
     event_receiver: EventReceiver,
 }
 
-impl<R: DynamicResource> Resource<R> {
+impl<R: ResourceTrait> Resource<R> {
     #[cfg_attr(
         not(feature = "runtime-loading"),
         allow(unused_variables, clippy::missing_const_for_fn)
@@ -187,7 +188,7 @@ impl<R: DynamicResource> Resource<R> {
     }
 }
 
-impl<R: DynamicResource> LoadedResource for Resource<R> {
+impl<R: ResourceTrait> LoadedResource for Resource<R> {
     fn runner(self: Box<Self>) -> Option<Box<dyn Runner>> {
         #[cfg(not(feature = "runtime-loading"))]
         return None;
@@ -202,7 +203,7 @@ impl<R: DynamicResource> LoadedResource for Resource<R> {
 
 #[async_trait]
 #[cfg(feature = "runtime-loading")]
-impl<R: DynamicResource> Runner for Resource<R> {
+impl<R: ResourceTrait> Runner for Resource<R> {
     async fn run(mut self: Box<Self>) {
         while let Some(event) = self.event_receiver.recv().await {
             match event {
@@ -218,7 +219,7 @@ impl<R: DynamicResource> Runner for Resource<R> {
     }
 }
 
-impl<R: DynamicResource> ResourceTrait for Resource<R> {
+impl<R: ResourceTrait> Identifiable for Resource<R> {
     fn ident(&self) -> NamespacedIdRef<'static> {
         self.resource.ident()
     }
@@ -312,7 +313,7 @@ impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     }
 }
 
-impl<M: Message, W: WatcherTrait<M>> ResourceTrait for Watcher<M, W> {
+impl<M: Message, W: WatcherTrait<M>> Identifiable for Watcher<M, W> {
     fn ident(&self) -> NamespacedIdRef<'static> {
         self.inner.ident()
     }

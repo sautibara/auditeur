@@ -56,14 +56,14 @@ impl<M: Message, T: Listener<M> + GetRef> Input<M> for Get<M, T> {
 /// # Examples
 ///
 /// ```
-/// # // see the doctest for bundle::Supplier for why this is necessary
-/// # use auditeur::input;
+/// # // see the doc test for bundle::Supplier for why this is necessary
+/// # use auditeur::{input, path_any};
 /// # pub fn main() {
-/// use auditeur::GetRef;
+/// use auditeur::prelude::*;
 /// use auditeur::input::GetRef;
 /// use std::sync::Arc;
 ///
-/// #[derive(Clone, GetRef)]
+/// #[derive(Clone, GetRef, PathAny)]
 /// pub struct Shared(Arc<usize>);
 ///
 /// let shared: Shared = Shared(Arc::new(0));

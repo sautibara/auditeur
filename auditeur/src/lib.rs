@@ -5,12 +5,82 @@ pub mod app;
 pub mod bundle;
 pub mod input;
 pub mod namespaced_id;
-pub mod resource;
-pub use auditeur_macros::{ident, resource};
-
 #[cfg(feature = "path-any")]
 pub mod path_any;
-/// A macro that automatically provides an implementation of [`PathAny`](crate::path_any::PathAny)
+pub mod resource;
+
+/// A macro that returns a parsed [`NamespacedId`]
+///
+/// # Examples
+///
+/// ```
+/// # // see the doctest for bundle::Supplier for why this is necessary
+/// # use auditeur::namespaced_id;
+/// # pub fn main() {
+/// use auditeur::prelude::*;
+///
+/// assert_eq!(
+///     ident!("namespace:id"),
+///     NamespacedIdRef {
+///         namespace: "namespace",
+///         id: "id",
+///     },
+/// );
+/// # }
+/// ```
+pub use auditeur_macros::ident;
+
+/// A macro to implement [`Resource`] for a type
+///
+/// This automatically implements [`Identifiable`], [`Any`], and if necessary, [`MaybeGetRef`]
+///
+/// # Examples
+///
+/// ```
+/// # // see the doctest for bundle::Supplier for why this is necessary
+/// # use auditeur::{namespaced_id, resource, path_any};
+/// # pub fn main() {
+/// use auditeur::prelude::*;
+///
+/// #[resource("test:useful_resource")]
+/// struct UsefulResource;
+///
+/// assert_eq!(UsefulResource.ident(), ident!("test:useful_resource"));
+/// # }
+/// ```
+pub use auditeur_macros::resource;
+
+/// A macro to automate implementing [`GetRef`](crate::input::GetRef) using [`Clone`]
+///
+/// # Examples
+///
+/// ```
+/// # // see the doc test for bundle::Supplier for why this is necessary
+/// # use auditeur::{input, path_any};
+/// # pub fn main() {
+/// use auditeur::prelude::*;
+/// use auditeur::input::GetRef;
+/// use std::sync::Arc;
+///
+/// #[derive(Clone, GetRef, PathAny)]
+/// pub struct Shared(Arc<usize>);
+///
+/// let shared: Shared = Shared(Arc::new(0));
+/// let reference: Shared = shared.get_ref();
+///
+/// assert!(Arc::ptr_eq(&shared.0, &reference.0));
+/// # }
+/// ```
+pub use auditeur_macros::GetRef;
+
+/// A macro that automatically provides an implementation of
+/// [`MaybeGetRef`](crate::input::MaybeGetRef)
+///
+/// See [`MaybeGetRef`](crate::input::MaybeGetRef) for more information on why this is necessary
+#[cfg(feature = "runtime-loading")]
+pub use auditeur_macros::MaybeGetRef;
+
+/// A macro that automatically provides an implementation of [`PathAny`]
 /// by implementing [`PathAnyConst`](crate::path_any::PathAnyConst)
 #[cfg(feature = "path-any")]
 pub use auditeur_macros::PathAny;
@@ -29,36 +99,6 @@ pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn A
     Box::<dyn std::any::Any + 'static>::downcast(object)
 }
 
-/// A macro that automatically provides an implementation of
-/// [`MaybeGetRef`](crate::input::MaybeGetRef)
-///
-/// See [`MaybeGetRef`](crate::input::MaybeGetRef) for more information on why this is necessary
-#[cfg(feature = "runtime-loading")]
-pub use auditeur_macros::MaybeGetRef;
-
-/// A macro to automate implementing [`GetRef`](crate::input::GetRef) using [`Clone`]
-///
-/// # Examples
-///
-/// ```
-/// # // see the doc test for bundle::Supplier for why this is necessary
-/// # use auditeur::input;
-/// # pub fn main() {
-/// use auditeur::GetRef;
-/// use auditeur::input::GetRef;
-/// use std::sync::Arc;
-///
-/// #[derive(Clone, GetRef)]
-/// pub struct Shared(Arc<usize>);
-///
-/// let shared: Shared = Shared(Arc::new(0));
-/// let reference: Shared = shared.get_ref();
-///
-/// assert!(Arc::ptr_eq(&shared.0, &reference.0));
-/// # }
-/// ```
-pub use auditeur_macros::GetRef;
-
 pub mod prelude {
     pub use crate::{
         app::{Constraints, RegistryEvent, Stopper},
@@ -66,14 +106,16 @@ pub mod prelude {
         ident,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
-        resource::{DynamicResource, Listener, Resource, Watcher},
+        resource::{Identifiable, Listener, Resource, Watcher},
         Error as AuditeurError, GetRef,
     };
 
+    #[cfg(feature = "path-any")]
+    pub use crate::path_any::PathAny;
     #[allow(unused_imports)] // false positive?
     pub(crate) use crate::Any;
     #[cfg(feature = "path-any")]
-    pub use crate::PathAny;
+    pub use auditeur_macros::PathAny;
 
     pub(crate) use crate::Error;
     pub(crate) use crate::{

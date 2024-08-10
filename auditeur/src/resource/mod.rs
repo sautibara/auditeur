@@ -1,3 +1,5 @@
+//! Items that can be added to an [`App`] and potentially run
+
 use crate::{app::RegistryEvent, prelude::*};
 
 use anyhow::Result;
@@ -5,25 +7,34 @@ use auditeur_macros::cfg_supertrait;
 
 pub mod builtin;
 
-pub trait Resource: Send + Sync + 'static {
+/// A type that has an associated [`NamespacedId`] that uniquely represents it
+pub trait Identifiable: Send + Sync + 'static {
     fn ident(&self) -> NamespacedIdRef<'static>;
     fn const_ident() -> NamespacedIdRef<'static>
     where
         Self: Sized;
 }
 
-// TODO: find a better name for this
-#[allow(clippy::module_name_repetitions)]
+/// An item that can be added to an [`App`]
+///
+/// Resources are [`Identifiable`] by a specific [`NamespacedId`] that uniquely represents them.
+/// If they are a [`Listener`] or [`Watcher`], they may also run code in the main async loop, and
+/// if they implement [`GetRef`], other resources may obtain synchronized references of them.
+///
+/// To implement this trait, use [`#[resource]`](macro@crate::resource)
 #[cfg_supertrait(feature = "runtime-loading", crate::input::MaybeGetRef)]
-pub trait DynamicResource: Resource + crate::Any {}
+pub trait Resource: Identifiable + crate::Any {}
 
 #[cfg(feature = "runtime-loading")]
-impl<T: Resource + crate::Any + crate::input::MaybeGetRef> DynamicResource for T {}
+impl<T: Identifiable + crate::Any + crate::input::MaybeGetRef> Resource for T {}
 #[cfg(not(feature = "runtime-loading"))]
-impl<T: Resource + crate::Any> DynamicResource for T {}
+impl<T: Identifiable + crate::Any> Resource for T {}
 
+/// A [`Resource`] that listens to the main [`Message`] channel
+///
+/// [`Input`]s are the way that [`Listener`]s are able to communicate with the rest of the [`App`]
 #[async_trait]
-pub trait Listener<M: Message>: DynamicResource + Send {
+pub trait Listener<M: Message>: Resource + Send {
     type Input: Input<M>;
 
     async fn handle(
@@ -56,8 +67,11 @@ pub trait Listener<M: Message>: DynamicResource + Send {
     }
 }
 
+/// A [`Resource`] that runs its own method in the main async loop
+///
+/// The main use of `Watcher`s is that they can ask for [`Input`]s from the rest of the [`App`]
 #[async_trait]
-pub trait Watcher<M: Message>: DynamicResource + Send {
+pub trait Watcher<M: Message>: Resource + Send {
     type Input: Input<M>;
 
     async fn run(&mut self, input: &mut <Self::Input as Input<M>>::Output) -> anyhow::Result<()>;

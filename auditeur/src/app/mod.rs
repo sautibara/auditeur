@@ -276,7 +276,7 @@ impl RegistryState {
     #[must_use]
     #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
     #[inline]
-    async fn get_as<R: DynamicResource + GetRef>(
+    async fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef<'_>,
         event_sender: &EventSender,
@@ -325,7 +325,7 @@ impl BuildingRegistry {
     }
 
     #[must_use]
-    fn get_as<R: DynamicResource + GetRef>(
+    fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef,
         event_sender: &EventSender,
@@ -358,7 +358,7 @@ impl RunningRegistry {
     }
 
     #[must_use]
-    async fn get_as<R: DynamicResource + GetRef>(
+    async fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef<'_>,
         event_sender: &EventSender,
@@ -541,7 +541,7 @@ impl<M: Message> Registry<M> {
     // as resources could get a reference and then immediately drop it, confusing the ResourceMap
     // (the map would think that the resource would still contain the reference).
     #[must_use]
-    pub async fn get_as<R: DynamicResource + GetRef>(
+    pub async fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef<'_>,
     ) -> Option<R::Ref> {
@@ -722,7 +722,7 @@ impl GetRequest {
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
     /// [`GetRef`] and send the result back to the original asker.
     #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub fn check<R: DynamicResource>(&self, resource: &R) {
+    pub fn check<R: Resource>(&self, resource: &R) {
         if !self.matches::<R>() {
             return;
         }
@@ -746,7 +746,7 @@ impl GetRequest {
 
     /// Returns `true` if `resource` if the resource that is asked for by this request
     #[inline]
-    pub fn matches<R: DynamicResource>(&self) -> bool {
+    pub fn matches<R: Resource>(&self) -> bool {
         R::const_ident() == self.id
     }
 
@@ -806,7 +806,7 @@ impl Stopper {
 
     /// Stop the resource `R`, if it exists
     #[inline]
-    pub fn stop<R: Resource>(&self) {
+    pub fn stop<R: Identifiable>(&self) {
         self.stop_id(R::const_ident());
     }
 

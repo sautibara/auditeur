@@ -97,7 +97,7 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     match id {
         Ok(NamespacedId { namespace, id }) => quote!(
-            impl #impl_generics #resource_mod::Resource for #ident #type_generics #where_clause {
+            impl #impl_generics #resource_mod::Identifiable for #ident #type_generics #where_clause {
                 fn ident(&self) -> #id_mod::NamespacedIdRef<'static> {
                     #id_mod::NamespacedIdRef {
                         namespace: #namespace,
