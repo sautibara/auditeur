@@ -3,7 +3,7 @@ use proc_macro::TokenStream;
 use proc_macro2::Span;
 use proc_macro_crate::crate_name;
 use quote::{quote, quote_spanned, ToTokens};
-use syn::{Ident, Item, spanned::Spanned, parenthesized, Token, GenericParam, WhereClause, TypeParamBound, parse_macro_input, ItemStruct, LitStr, Attribute, Expr, ExprLit, Lit, punctuated::Punctuated, ItemTrait, Generics};
+use syn::{Ident, Item, spanned::Spanned, parenthesized, Token, GenericParam, WhereClause, TypeParamBound, parse_macro_input, ItemStruct, LitStr, Attribute, Expr, ExprLit, Lit, punctuated::Punctuated, ItemTrait};
 
 mod namespaced_id;
 
@@ -36,6 +36,11 @@ impl Auditeur {
         Self { root }
     }
 
+    #[cfg(feature = "runtime-loading")]
+    pub const fn crate_name(&self) -> &proc_macro2::TokenStream {
+        &self.root
+    }
+
     pub fn id(&self) -> proc_macro2::TokenStream {
         let root = &self.root;
         quote! { #root::namespaced_id }
@@ -51,6 +56,7 @@ impl Auditeur {
         quote! { #root::input }
     }
 
+    #[cfg(feature = "path-any")]
     pub fn path_any(&self) -> proc_macro2::TokenStream {
         let root = &self.root;
         quote! { #root::path_any }
@@ -82,6 +88,11 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[cfg(not(feature = "path-any"))]
     let path_any_impl = quote!();
 
+    #[cfg(feature = "runtime-loading")]
+    let maybe_get_ref_impl = implement_maybe_get_ref(&ident, &generics, &auditeur);
+    #[cfg(not(feature = "runtime-loading"))]
+    let maybe_get_ref_impl = quote!();
+
     let CustomGenerics { impl_generics, type_generics, where_clause } = generics;
 
     match id {
@@ -106,6 +117,7 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             #path_any_impl
+            #maybe_get_ref_impl
 
             #item
         ),
@@ -169,6 +181,47 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
     }.into()
 }
 
+#[proc_macro_derive(MaybeGetRef)]
+#[cfg(feature = "runtime-loading")]
+pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as Item);
+
+    let (ident, generics, attrs) = match item {
+        Item::Struct(strct) => (strct.ident, strct.generics, strct.attrs),
+        Item::Enum(enm) => (enm.ident, enm.generics, enm.attrs),
+        _ => {
+            return quote_spanned! {
+                item.span() => compile_error!("item must be a struct or enum"),
+            }.into();
+        },
+    };
+
+    let generics = CustomGenerics::from_attr_or_generics(&attrs, &generics);
+    let generics = match generics {
+        Ok(generics) => generics,
+        Err(error) => return error.into_compile_error().into(),
+    };
+
+    implement_maybe_get_ref(&ident, &generics, &Auditeur::new()).into()
+}
+
+#[cfg(feature = "runtime-loading")]
+fn implement_maybe_get_ref(ident: &Ident, generics: &CustomGenerics, auditeur: &Auditeur) -> proc_macro2::TokenStream {
+    let input_mod = auditeur.input();
+    let crate_name = auditeur.crate_name();
+
+    let CustomGenerics { impl_generics, type_generics, where_clause } = generics;
+
+    quote! {
+        impl #impl_generics #input_mod::MaybeGetRef for #ident #type_generics #where_clause {
+            fn maybe_get_ref(&self) -> Option<Box<dyn #crate_name::Any + Send + Sync>> {
+                use #input_mod::maybe_get_ref::Specialization as _;
+                (&mut &*self).specialization()
+            }
+        }
+    }
+}
+
 #[cfg(feature = "path-any")]
 #[proc_macro_derive(PathAny, attributes(custom_generics))]
 pub fn path_any(item: TokenStream) -> TokenStream {
@@ -207,9 +260,10 @@ pub fn implement_path_any_external(ident: TokenStream) -> TokenStream {
 #[cfg(feature = "path-any")]
 struct PathAnyExternal {
     ident: Ident,
-    generics: Generics,
+    generics: syn::Generics,
 }
 
+#[cfg(feature = "path-any")]
 impl syn::parse::Parse for PathAnyExternal {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let ident = input.parse()?;
@@ -217,7 +271,7 @@ impl syn::parse::Parse for PathAnyExternal {
             let _: Token![,] = input.parse()?;
             input.parse()?
         } else {
-            Generics::default()
+            syn::Generics::default()
         };
         Ok(Self { ident, generics })
     }
@@ -322,6 +376,7 @@ struct GenericArgList {
 }
 
 impl GenericArgList {
+    #[cfg(feature = "path-any")]
     pub fn iter(&self) -> impl Iterator<Item = &GenericParam> {
         self.params.as_ref().map(Punctuated::iter).into_iter().flatten()
     }

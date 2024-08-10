@@ -6,6 +6,7 @@ pub mod bundle;
 pub mod input;
 pub mod namespaced_id;
 pub mod resource;
+pub use auditeur_macros::{ident, resource};
 
 #[cfg(feature = "path-any")]
 pub mod path_any;
@@ -14,10 +15,26 @@ pub mod path_any;
 #[cfg(feature = "path-any")]
 pub use auditeur_macros::PathAny;
 
-#[cfg(feature = "resource-map")]
-pub mod resource_map;
+#[cfg(feature = "path-any")]
+pub use path_any::PathAny as Any;
+#[cfg(not(feature = "path-any"))]
+pub use std::any::Any;
 
-pub use auditeur_macros::{ident, resource};
+#[cfg(all(feature = "runtime-loading", feature = "path-any"))]
+pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
+    path_any::downcast(object)
+}
+#[cfg(all(feature = "runtime-loading", not(feature = "path-any")))]
+pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
+    Box::<dyn std::any::Any + 'static>::downcast(object)
+}
+
+/// A macro that automatically provides an implementation of
+/// [`MaybeGetRef`](crate::input::MaybeGetRef)
+///
+/// See [`MaybeGetRef`](crate::input::MaybeGetRef) for more information on why this is necessary
+#[cfg(feature = "runtime-loading")]
+pub use auditeur_macros::MaybeGetRef;
 
 /// A macro to automate implementing [`GetRef`](crate::input::GetRef) using [`Clone`]
 ///
@@ -53,6 +70,8 @@ pub mod prelude {
         Error as AuditeurError, GetRef,
     };
 
+    #[allow(unused_imports)] // false positive?
+    pub(crate) use crate::Any;
     #[cfg(feature = "path-any")]
     pub use crate::PathAny;
 
@@ -72,7 +91,7 @@ pub mod prelude {
 }
 
 #[cfg_supertrait(feature = "path-any", path_any::PathAnyConst)]
-pub trait Message: Clone + Send + 'static {}
+pub trait Message: Clone + Send + Sync + 'static {}
 
 #[macro_export]
 macro_rules! bake_message {

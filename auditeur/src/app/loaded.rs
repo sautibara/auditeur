@@ -40,7 +40,7 @@ fn handle_recv_error<T>(
 
 /// A [resource](mod@crate::resource) that has already been loaded into a [`Registry`]
 #[allow(clippy::module_name_repetitions)] // without Loaded, it would conflict with Resource
-pub trait LoadedResource: ResourceTrait + Send {
+pub trait LoadedResource: ResourceTrait + Send + Sync {
     /// Optionally provide a [`Runner`] to run in the main loop
     ///
     /// This runner is joined alongside every other runner, if it is given
@@ -65,8 +65,8 @@ pub struct Listener<M: Message, L: ListenerTrait<M>> {
 }
 
 impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
-    pub fn build(listener: L, registry: &Registry<M>) -> Result<Self, Error> {
-        let input = <L::Input as Input<M>>::create(registry, listener.ident())?;
+    pub async fn build(listener: L, registry: &Registry<M>) -> Result<Self, Error> {
+        let input = <L::Input as Input<M>>::create(registry, listener.ident()).await?;
         Ok(Self {
             inner: listener,
             input,
@@ -89,8 +89,16 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
             Self::handle_result(Err(anyhow!("registry event channel closed")));
             return ControlFlow::Break(());
         };
-        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == self.ident())
-            || matches!(message, RegistryEvent::Exit);
+        let to_exit = match message {
+            RegistryEvent::Stop(ref id) if *id == self.ident() => true,
+            RegistryEvent::Exit => true,
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::Get(ref get_request) => {
+                get_request.check(&self.inner);
+                false
+            }
+            _ => false,
+        };
         Self::handle_result(self.inner.registry_event(message, &mut self.input).await);
         then_continue(!to_exit)
     }
@@ -161,21 +169,52 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
 
 pub struct Resource<R: DynamicResource> {
     resource: R,
+    #[cfg(feature = "runtime-loading")]
+    event_receiver: EventReceiver,
 }
 
 impl<R: DynamicResource> Resource<R> {
-    pub const fn new(resource: R) -> Self {
-        Self { resource }
+    #[cfg_attr(
+        not(feature = "runtime-loading"),
+        allow(unused_variables, clippy::missing_const_for_fn)
+    )]
+    pub fn new<M: Message>(resource: R, registry: &Registry<M>) -> Self {
+        Self {
+            resource,
+            #[cfg(feature = "runtime-loading")]
+            event_receiver: registry.event_receiver(),
+        }
     }
 }
 
 impl<R: DynamicResource> LoadedResource for Resource<R> {
     fn runner(self: Box<Self>) -> Option<Box<dyn Runner>> {
-        None
+        #[cfg(not(feature = "runtime-loading"))]
+        return None;
+        #[cfg(feature = "runtime-loading")]
+        return Some(self);
     }
 
     fn resource(&self) -> &dyn Any {
         &self.resource
+    }
+}
+
+#[async_trait]
+#[cfg(feature = "runtime-loading")]
+impl<R: DynamicResource> Runner for Resource<R> {
+    async fn run(mut self: Box<Self>) {
+        while let Some(event) = self.event_receiver.recv().await {
+            match event {
+                RegistryEvent::Stop(ref id) if *id == self.ident() => break,
+                RegistryEvent::Exit => break,
+                #[cfg(feature = "runtime-loading")]
+                RegistryEvent::Get(ref get_request) => {
+                    get_request.check(&self.resource);
+                }
+                _ => (),
+            }
+        }
     }
 }
 
@@ -199,8 +238,8 @@ pub struct Watcher<M: Message, W: WatcherTrait<M>> {
 }
 
 impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
-    pub fn build(watcher: W, registry: &Registry<M>) -> Result<Self, Error> {
-        let input = <W::Input as Input<M>>::create(registry, watcher.ident())?;
+    pub async fn build(watcher: W, registry: &Registry<M>) -> Result<Self, Error> {
+        let input = <W::Input as Input<M>>::create(registry, watcher.ident()).await?;
         Ok(Self {
             inner: watcher,
             input,
@@ -213,8 +252,20 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
             Self::handle_result(Err(anyhow!("registry event channel closed")));
             return ControlFlow::Break(());
         };
-        let to_exit = matches!(message, RegistryEvent::Stop { ref id } if *id == W::const_ident())
-            || matches!(message, RegistryEvent::Exit);
+        let to_exit = match message {
+            RegistryEvent::Stop(ref id) if *id == W::const_ident() => true,
+            RegistryEvent::Exit => true,
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::Get(ref get_request) => {
+                if *get_request.id() == W::const_ident() {
+                    // FIXME: find a workaround for this
+                    error!("tried to use Get<_> on a Watcher after the app loaded");
+                    get_request.cancel();
+                }
+                false
+            }
+            _ => false,
+        };
         then_continue(!to_exit)
     }
 

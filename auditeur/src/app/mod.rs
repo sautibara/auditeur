@@ -14,27 +14,35 @@
 //!     a resource into a [`LoadedResource`]
 //! - When the app begins being built, a [`Registry`] is created to hold each [`LoadedResource`]
 //! - Each [`Loader`] is loaded into the registry based on its [`Constraints`]
-//!     - [`Constraints`] are necessary so that resources can ensure that the other resources they
-//!     access through [`Get<_>`](crate::input::Get) are already loaded
+//!     - [`Constraints`] are essentially a list of resources that must be loaded before loading
+//!     another resource
+//!     - These are necessary so that resources can ensure that the other resources they access
+//!     through [`Get<_>`](crate::input::Get) are already loaded
 //! - Once loaded, resources are each built into a [`LoadedResource`]
-//!     - [`LoadedResource`]s allow for dynamically accessing the contained resource, which enables
-//!     [`Registry::get_as`] and thus [`input::Get<_>`](crate::input::Get) to work
-//!     - If the resource calls for any [`Input`]s, the [`LoadedResource`] contains them
+//!     - [`LoadedResource`]s build the [`Input`]s for their resources from the registry
+//!     - [`LoadedResource`]s allow for dynamically accessing the contained resource by the
+//!     registry, enabling [`input::Get<_>`](crate::input::Get) to work
 //!     - Then, [`LoadedResource`]s may also provide a [`Runner`] to run in the main loop, which is
 //!     how listeners and watchers are run
-//! - When the registry is [run](Registry::run), each [`Runner`] is
-//! [joined](futures::future::join_all) until they all finish
+//! - When the registry is [run](Registry::run), each [`Runner`] is asynchronously run at the same
+//! time until they all finish
 //!
 //! The basic pipeline: [`impl Resource`](Resource) / [`impl Listener`](Listener) /
 //! [`impl Watcher`](Watcher) -> [`dyn Loader`](Loader) -> [`dyn LoadedResource`](LoadedResource)
 //! -> (optionally) [`dyn Runner`](Runner)
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::Arc;
 
+use async_recursion::async_recursion;
+#[cfg(feature = "runtime-loading")]
+use log::error;
 use log::warn;
-use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast;
 use tokio::sync::watch;
+#[cfg(feature = "runtime-loading")]
+use tokio::sync::{mpsc, oneshot};
 
 use crate::bundle;
 use crate::input::GetRef;
@@ -43,6 +51,11 @@ use crate::prelude::*;
 mod constraints;
 pub(crate) mod loaded;
 pub(crate) mod loader;
+
+#[cfg(feature = "resource-map")]
+mod resource_map;
+#[cfg(feature = "resource-map")]
+pub use resource_map::ResourceMap;
 
 pub use loaded::LoadedResource;
 pub use loaded::Runner;
@@ -99,7 +112,7 @@ impl<M: Message> App<M> {
         #[cfg(feature = "resource-map")]
         this.add_bundle(
             new_bundle!("auditeur:resource_map")
-                .with_listener_with::<EventSender, _>(crate::resource_map::ResourceMap::new),
+                .with_listener_with::<EventSender, _>(ResourceMap::new),
         );
         this
     }
@@ -146,7 +159,7 @@ impl<M: Message> App<M> {
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
     pub async fn run(self) -> Result<(), Error> {
-        let registry = self.build()?;
+        let registry = self.build().await?;
         registry.run().await;
         Ok(())
     }
@@ -157,18 +170,19 @@ impl<M: Message> App<M> {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub fn build(mut self) -> Result<Registry<M>, Error> {
+    pub async fn build(mut self) -> Result<Registry<M>, Error> {
         let mut registry = Registry::new(self.capacity);
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
-            self.resolve_loader(&mut registry, &loader)?;
+            self.resolve_loader(&mut registry, &loader).await?;
         }
         Ok(registry)
     }
 
-    fn resolve_loader(
+    #[async_recursion]
+    async fn resolve_loader(
         &mut self,
         registry: &mut Registry<M>,
         id: &NamespacedId,
@@ -184,15 +198,17 @@ impl<M: Message> App<M> {
         // bundles always have to be resolved first
         // this doesn't cause a loop because resolve_bundle already [`Option::take`]s the bundle
         // out of the list, so it can't be loaded again
-        self.resolve_bundle(registry, &bundle)?;
+        self.resolve_bundle(registry, &bundle).await?;
         // if there are constraints, we must load them first
-        self.resolve_constraints(registry, &loader.constraints())?;
+        self.resolve_constraints(registry, &loader.constraints())
+            .await?;
         // then we can finally load the loader
-        registry.add_loader(loader, bundle)?;
+        registry.add_loader(loader, bundle).await?;
         Ok(())
     }
 
-    fn resolve_bundle(
+    #[async_recursion]
+    async fn resolve_bundle(
         &mut self,
         registry: &mut Registry<M>,
         id: &NamespacedId,
@@ -207,27 +223,171 @@ impl<M: Message> App<M> {
         };
         // parent bundles always have to be resolved first
         if let Some(parent) = &bundle.parent {
-            self.resolve_bundle(registry, parent)?;
+            self.resolve_bundle(registry, parent).await?;
         }
         // then the constraints also have to be resolved
-        self.resolve_constraints(registry, &bundle.constraints)?;
+        self.resolve_constraints(registry, &bundle.constraints)
+            .await?;
         // then the bundle can finally be added to the registry
         registry.add_bundle(id.clone(), bundle);
         Ok(())
     }
 
-    fn resolve_constraints(
+    async fn resolve_constraints(
         &mut self,
         registry: &mut Registry<M>,
         constraints: &Constraints,
     ) -> Result<(), Error> {
         for constraint in constraints {
             match constraint {
-                Constraint::AfterResource { id } => self.resolve_loader(registry, id)?,
-                Constraint::AfterBundle { id } => self.resolve_bundle(registry, id)?,
+                Constraint::AfterResource { id } => self.resolve_loader(registry, id).await?,
+                Constraint::AfterBundle { id } => self.resolve_bundle(registry, id).await?,
             }
         }
         Ok(())
+    }
+}
+
+/// The underlying state of a [`Registry`]. This separates the main underlying functionality of the
+/// registry into two states: building and running. If the `runtime-loading` feature isn't enabled,
+/// only the building state is compiled, as we can never access a registry after it starts running.
+/// If the feature is enabled, both states are compiled, and channels are used to talk between the
+/// running registry and its handles.
+///
+/// The "main underlying functionality" is in practice [adding resources](Self::add_boxed) and
+/// [getting handles to already-added resources](Self::get_as)
+enum RegistryState {
+    Building(BuildingRegistry),
+    #[cfg(feature = "runtime-loading")]
+    Running(RunningRegistry),
+}
+
+impl RegistryState {
+    #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
+    #[inline]
+    async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
+        match self {
+            Self::Building(registry) => registry.add_boxed_resource(resource),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(registry) => registry.add_boxed_resource(resource).await,
+        }
+    }
+
+    #[must_use]
+    #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
+    #[inline]
+    async fn get_as<R: DynamicResource + GetRef>(
+        &self,
+        reference_holder: NamespacedIdRef<'_>,
+        event_sender: &EventSender,
+    ) -> Option<R::Ref> {
+        match self {
+            Self::Building(registry) => registry.get_as::<R>(reference_holder, event_sender),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(registry) => registry.get_as::<R>(reference_holder, event_sender).await,
+        }
+    }
+
+    /// Returns `true` if the registry state is [`Running`].
+    ///
+    /// [`Running`]: RegistryState::Running
+    #[must_use]
+    #[cfg(feature = "runtime-loading")]
+    const fn is_running(&self) -> bool {
+        matches!(self, Self::Running(..))
+    }
+}
+
+struct BuildingRegistry {
+    resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
+    #[cfg(feature = "runtime-loading")]
+    resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
+    #[cfg(feature = "runtime-loading")]
+    resource_receiver: mpsc::Receiver<Box<dyn LoadedResource>>,
+}
+
+impl BuildingRegistry {
+    fn new() -> Self {
+        #[cfg(feature = "runtime-loading")]
+        let (resource_sender, resource_receiver) = mpsc::channel(64);
+
+        Self {
+            resources: HashMap::new(),
+            #[cfg(feature = "runtime-loading")]
+            resource_sender,
+            #[cfg(feature = "runtime-loading")]
+            resource_receiver,
+        }
+    }
+
+    fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
+        self.resources.insert(resource.ident().into(), resource);
+    }
+
+    #[must_use]
+    fn get_as<R: DynamicResource + GetRef>(
+        &self,
+        reference_holder: NamespacedIdRef,
+        event_sender: &EventSender,
+    ) -> Option<R::Ref> {
+        let id = R::const_ident().into();
+        let loaded = self.resources.get(&id)?;
+        let reference = loaded.resource().downcast_ref::<R>().map(GetRef::get_ref);
+        // only send the event if the reference actually succeeded
+        if reference.is_some() {
+            event_sender.send(RegistryEvent::Reference {
+                by: reference_holder.into(),
+                to: id,
+            });
+        } else {
+            warn!("attempt to downcast {} failed", id);
+        }
+        reference
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+struct RunningRegistry {
+    resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
+}
+
+#[cfg(feature = "runtime-loading")]
+impl RunningRegistry {
+    async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
+        let _ = self.resource_sender.send(resource).await;
+    }
+
+    #[must_use]
+    async fn get_as<R: DynamicResource + GetRef>(
+        &self,
+        reference_holder: NamespacedIdRef<'_>,
+        event_sender: &EventSender,
+    ) -> Option<R::Ref> {
+        let id = R::const_ident().into_owned();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let get_request = GetRequest {
+            id: id.clone(),
+            sender: std::sync::Mutex::new(Some(sender)),
+        };
+        // FIXME: by using an EventSender, the requests actually never get dropped
+        // - it all stays in the main Vec, awaiting new receivers
+        // this should be separated into another channel for only Get requests
+        event_sender.send(RegistryEvent::Get(Arc::new(get_request)));
+        // if the request if fulfilled, this will return Some
+        // if it isn't and all requests get dropped, the channel drops and returns a RecvError
+        let reference = receiver.await.ok()?;
+        // and then, the actual reference gets downcasted
+        let Ok(reference) = crate::downcast(reference) else {
+            // downcasting shouldn't ever fail, so this is an important log
+            error!("attempt to downcast {} failed", id);
+            return None;
+        };
+        // the reference worked! we can send the message now
+        event_sender.send(RegistryEvent::Reference {
+            by: reference_holder.into(),
+            to: id,
+        });
+        Some(*reference)
     }
 }
 
@@ -245,9 +405,9 @@ impl<M: Message> App<M> {
 /// - To recieve notifications about what happens to the registry, use [`Self::event_receiver`]
 /// - To listen to messages, use [`Self::message_reciever`]
 pub struct Registry<M: Message> {
-    message_sender: Sender<M>,
+    message_sender: broadcast::Sender<M>,
     event_sender: EventSender,
-    resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
+    state: RegistryState,
 }
 
 impl<M: Message> Registry<M> {
@@ -255,25 +415,75 @@ impl<M: Message> Registry<M> {
         Self {
             message_sender: Sender::new(capacity),
             event_sender: EventSender::new(),
-            resources: HashMap::new(),
+            state: RegistryState::Building(BuildingRegistry::new()),
         }
     }
 
     /// Asynchronously run each [`Runner`] that has been registered, until they all exit
+    #[cfg(not(feature = "runtime-loading"))]
     pub async fn run(self) {
-        let futures = self
+        let RegistryState::Building(building_registry) = self.state;
+
+        let futures = building_registry
             .resources
             .into_values()
             .filter_map(LoadedResource::runner)
             // clone the event sender for each runner
             .zip(std::iter::repeat(self.event_sender.clone()))
-            .map(|(runner, sender)| async move {
-                let id = runner.ident().into_owned();
-                sender.send(RegistryEvent::Running { id: id.clone() });
-                runner.run().await;
-                sender.send(RegistryEvent::Stopped { id });
-            });
+            .map(|(runner, sender)| Self::run_runner(runner, sender));
         futures::future::join_all(futures).await;
+    }
+
+    /// Asynchronously run each [`Runner`] that has been registered, until they all exit
+    ///
+    /// # Panics
+    ///
+    /// - If using the `runtime-loading` feature and this is called on a registry handle
+    #[cfg(feature = "runtime-loading")]
+    pub async fn run(self) {
+        use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+
+        let RegistryState::Building(building_registry) = self.state else {
+            panic!("tried to run an already running registry");
+        };
+
+        let mut receiver = building_registry.resource_receiver;
+        // build all of the initial futures into a FuturesUnordered now
+        let mut futures: FuturesUnordered<_> = building_registry
+            .resources
+            .into_values()
+            .filter_map(LoadedResource::runner)
+            // clone the event sender for each runner
+            .zip(std::iter::repeat(self.event_sender.clone()))
+            .map(|(runner, sender)| Self::run_runner(runner, sender))
+            .collect();
+        // drop the sender now so we don't keep the channel alive
+        // (which would mess with the complete condition)
+        drop(building_registry.resource_sender);
+
+        // the registry listens for any new futures to add to the queue
+        loop {
+            futures::select! {
+                // this is simply to poll the FuturesUnordered stream
+                // thus, we don't care about the result
+                _ = futures.next() => (),
+                resource = receiver.recv().fuse() => {
+                    if let Some(runner) = resource.and_then(LoadedResource::runner) {
+                        let sender = self.event_sender.clone();
+                        futures.push(Self::run_runner(runner, sender));
+                    }
+                },
+                // this automatically gets called if there aren't any more futures or event senders
+                complete => break,
+            };
+        }
+    }
+
+    async fn run_runner(runner: Box<dyn Runner>, sender: EventSender) {
+        let id = runner.ident().into_owned();
+        sender.send(RegistryEvent::Running(id.clone()));
+        runner.run().await;
+        sender.send(RegistryEvent::Stopped(id));
     }
 
     /// Load a [`Loader`] into the registry, adding the [`LoadedResource`] it contains. The
@@ -286,7 +496,7 @@ impl<M: Message> Registry<M> {
     /// # Errors
     ///
     /// - If the [`Loader`] returns an error; see [`Loader::load`]
-    pub fn add_loader(
+    pub async fn add_loader(
         &mut self,
         loader: Box<dyn Loader<M>>,
         bundle: NamespacedId,
@@ -295,21 +505,23 @@ impl<M: Message> Registry<M> {
             id: loader.ident().into(),
             bundle,
         });
-        let resource = loader.load(self)?;
-        Ok(self.add_boxed(resource))
+        let resource = loader.load(self).await?;
+        Ok(self.add_boxed_resource(resource).await)
     }
 
     /// Add an already-loaded resource to the registry. The resource can be accessed through
     /// [`Self::get_as`], and if it provides a [`Runner`], the runner will be run in the main loop
-    pub fn add_boxed(&mut self, runner: Box<dyn LoadedResource>) -> &mut Self {
-        self.event_sender.send(RegistryEvent::Loaded {
-            id: runner.ident().into(),
-        });
-        self.resources.insert(runner.ident().into(), runner);
+    pub async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) -> &mut Self {
+        self.event_sender
+            .send(RegistryEvent::Loaded(resource.ident().into()));
+        self.state.add_boxed_resource(resource).await;
         self
     }
 
-    /// Add a bundle to the registry
+    /// Register a bundle to the registry
+    ///
+    /// Note: This only adds the "specification" of the bundle to the registry (i.e. its id,
+    /// potential parent, ids of its child resources and bundles, etc) - not its actual resources
     pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
         self.event_sender.send(RegistryEvent::BundleLoading {
             id,
@@ -320,37 +532,61 @@ impl<M: Message> Registry<M> {
         self
     }
 
-    /// Get a cloned reference to a loaded resource, using `reference_holder` as the holder of the
-    /// reference for [`RegistryEvent::Reference`] (see
-    /// [`ResourceMap`](crate::resource_map::ResourceMap) for why this information is
-    /// necessary).
+    /// Get a [synchronized reference](GetRef) to a loaded resource, using `reference_holder` as
+    /// the designated holder of the reference for [`RegistryEvent::Reference`] (see
+    /// [`ResourceMap`] for why this information is necessary).
     ///
-    /// This uses [`Any`](std::any::Any) in order to get the contained object, if it exists.
+    /// This uses [`Any`] in order to get the contained object, if it exists.
     // NOTE: in a previous version, this returned Option<&R>. But that messes with RegistryEvent,
     // as resources could get a reference and then immediately drop it, confusing the ResourceMap
     // (the map would think that the resource would still contain the reference).
     #[must_use]
-    pub fn get_as<R: DynamicResource + GetRef>(
+    pub async fn get_as<R: DynamicResource + GetRef>(
         &self,
-        reference_holder: NamespacedIdRef,
+        reference_holder: NamespacedIdRef<'_>,
     ) -> Option<R::Ref> {
-        let id = R::const_ident().into();
-        let loaded = self.resources.get(&id)?;
-        let reference = loaded.resource().downcast_ref::<R>().map(GetRef::get_ref);
-        // only send the event if the reference actually succeeded
-        if reference.is_some() {
-            self.event_sender.send(RegistryEvent::Reference {
-                by: reference_holder.into(),
-                to: id,
-            });
-        } else {
-            warn!("attempt to downcast {} failed", id);
-        }
-        reference
+        self.state
+            .get_as::<R>(reference_holder, &self.event_sender)
+            .await
     }
 }
 
-/// These are methods to access the various channels that the registry contains
+/// Utilities for managing an already-running [`Registry`]
+///
+/// Notice that these are only accessable through the `runtime-loading` feature
+#[cfg(feature = "runtime-loading")]
+impl<M: Message> Registry<M> {
+    /// Obtain a handle to the [`Registry`], which can be used to manage it externally
+    ///
+    /// The handle acts the same as a normal, still-building registry, but it uses channels to
+    /// communicate and send new loaders to the currently-running registry.
+    ///
+    /// Note: This is only accessable through the `runtime-loading` feature
+    ///
+    /// Note: Under the feature, [`Registry`] also implements [`Input`] by calling this function
+    #[must_use]
+    pub fn handle(&self) -> Self {
+        let resource_sender = match &self.state {
+            RegistryState::Running(running) => running.resource_sender.clone(),
+            RegistryState::Building(building) => building.resource_sender.clone(),
+        };
+        let implementation = RegistryState::Running(RunningRegistry { resource_sender });
+        Self {
+            message_sender: self.message_sender.clone(),
+            event_sender: self.event_sender.clone(),
+            state: implementation,
+        }
+    }
+
+    /// Returns `true` if this [`Registry`] instance is a [handle](Self::handle) to an
+    /// already-running registry
+    #[must_use]
+    pub const fn is_handle(&self) -> bool {
+        self.state.is_running()
+    }
+}
+
+/// Methods to access the various channels that the registry contains
 impl<M: Message> Registry<M> {
     #[must_use]
     pub fn message_sender(&self) -> Sender<M> {
@@ -358,7 +594,7 @@ impl<M: Message> Registry<M> {
     }
 
     #[must_use]
-    pub fn message_reciever(&self) -> Receiver<M> {
+    pub fn message_reciever(&self) -> broadcast::Receiver<M> {
         self.message_sender.subscribe()
     }
 
@@ -380,10 +616,20 @@ impl<M: Message> Registry<M> {
     }
 }
 
+#[cfg(feature = "runtime-loading")]
+impl<M: Message> Input<M> for Registry<M> {
+    type Output = Self;
+
+    /// Use a registry [handle](Self::handle) as an input to a running resource
+    async fn create(registry: &Self, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
+        Ok(registry.handle())
+    }
+}
+
 impl<M: Message> Input<M> for Sender<M> {
     type Output = Self;
 
-    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
         Ok(registry.message_sender())
     }
 }
@@ -399,7 +645,7 @@ pub enum RegistryEvent {
     /// Note: this is automatically handled for both [listeners](crate::resource::Listener) and
     /// [watchers](crate::resource::Watcher), but custom [`Runner`]s will have to listen to this
     /// message themselves.
-    Stop { id: NamespacedId },
+    Stop(NamespacedId),
     /// `id` has begun being loaded into the main [`Registry`]
     ///
     /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
@@ -412,28 +658,27 @@ pub enum RegistryEvent {
     ///
     /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
     /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
-    Loaded { id: NamespacedId },
+    Loaded(NamespacedId),
     /// `id` has started running
     ///
     /// Note: this only is emitted for resources that have [`Runner`]s, like
     /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
     /// [Resources](crate::resource::Resource) are never run, they never emit this message.
-    Running { id: NamespacedId },
+    Running(NamespacedId),
     /// `id` has stopped running
     ///
     /// Note: this only is emitted for resources that are [`Runner`]s, like
     /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
     /// [Resources](crate::resource::Resource) are never run, they never emit this message - see
     /// [`Self::Unloaded`] instead, if that information is needed.
-    Stopped { id: NamespacedId },
+    Stopped(NamespacedId),
     /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
     /// [references](crate::input::Get) of it from other [resources](mod@crate::resource) have been
     /// dropped
     ///
-    /// Note: this will only ever be sent if the
-    /// [`ResourceMap`](crate::resource_map::ResourceMap) feature is enabled
+    /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
-    Unloaded { id: NamespacedId },
+    Unloaded(NamespacedId),
     /// A bundle has started loading into the registry
     BundleLoading {
         id: NamespacedId,
@@ -443,13 +688,106 @@ pub enum RegistryEvent {
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///
-    /// Note: this will only ever be sent if the
-    /// [`ResourceMap`](crate::resource_map::ResourceMap) feature is enabled
+    /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
-    BundleUnloaded { id: NamespacedId },
+    BundleUnloaded(NamespacedId),
     /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
     /// [input](crate::input::Input)
     Reference { by: NamespacedId, to: NamespacedId },
+    /// There is a [`Get<_>`](crate::input::Get) request that must be fulfilled
+    ///
+    /// Note: this will only ever be sent if the `runtime-loading` feature is enabled
+    #[cfg(feature = "runtime-loading")]
+    Get(Arc<GetRequest>),
+}
+
+/// A request to all [resources](mod@crate::resource) to fulfil a [`Get<_>`](crate::input::Get) input
+///
+/// Under the hood, this is sent to all running resources as a [`RegistryEvent`]. Each resource
+/// checks if the request's id matches their own, and if so, uses
+/// [`MaybeGetRef`](crate::input::MaybeGetRef) to try to create the reference to send back. If the
+/// trait succeeds, they send the result back to the asker.
+///
+/// `MaybeGetRef` is used because there must be a trait that works for all resources. The
+/// underlying runner won't be able to know if the type it represents implements [`GetRef`], so
+/// instead it must be able to use a trait that works either way.
+#[cfg(feature = "runtime-loading")]
+pub struct GetRequest {
+    id: NamespacedId,
+    sender: std::sync::Mutex<Option<oneshot::Sender<Box<dyn Any + Send + Sync>>>>,
+}
+
+#[cfg(feature = "runtime-loading")]
+impl GetRequest {
+    /// Check if `resource` is the resource that is asked for by the request, and if so, call
+    /// [`GetRef`] and send the result back to the original asker.
+    #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
+    pub fn check<R: DynamicResource>(&self, resource: &R) {
+        if !self.matches::<R>() {
+            return;
+        }
+        let Some(sender) = self
+            .sender
+            .lock()
+            .expect("GetRequest lock shouldn't be poisoned")
+            .take()
+        else {
+            // this could only happen with a name collision
+            warn!("resource matches GetRequest, but the channel was already used");
+            return;
+        };
+        #[allow(clippy::option_if_let_else)] // not using the return type...
+        if let Some(reference) = resource.maybe_get_ref() {
+            let _ = sender.send(reference);
+        } else {
+            warn!("resource matches GetRequest, but MaybeGetRef returned None");
+        }
+    }
+
+    /// Returns `true` if `resource` if the resource that is asked for by this request
+    #[inline]
+    pub fn matches<R: DynamicResource>(&self) -> bool {
+        R::const_ident() == self.id
+    }
+
+    /// Returns the [id](NamespacedId) of the resource that the request is asking for
+    pub const fn id(&self) -> &NamespacedId {
+        &self.id
+    }
+
+    /// Cancels the get request, instantly returning nothing
+    ///
+    /// This should only be used by the resource that this request is for if they are sure that
+    /// they can't fulfil the request.
+    pub fn cancel(&self) {
+        if let Ok(mut sender) = self.sender.lock() {
+            *sender = None;
+        }
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl PartialEq for GetRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl Eq for GetRequest {}
+
+#[cfg(feature = "runtime-loading")]
+impl Debug for GetRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.id)
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl std::hash::Hash for GetRequest {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 /// A handle on a [`Registry`] that can be used to stop one single resource or exit the entire
@@ -475,14 +813,14 @@ impl Stopper {
     /// Stop the resource with id `id`, if it exists
     pub fn stop_id(&self, id: NamespacedIdRef<'_>) {
         let id = id.into_owned();
-        self.sender.send(RegistryEvent::Stop { id });
+        self.sender.send(RegistryEvent::Stop(id));
     }
 }
 
 impl<M: Message> Input<M> for Stopper {
     type Output = Self;
 
-    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
         Ok(registry.stopper())
     }
 }
@@ -512,7 +850,7 @@ impl EventSender {
 impl<M: Message> Input<M> for EventSender {
     type Output = Self;
 
-    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
         Ok(registry.event_sender())
     }
 }
@@ -521,7 +859,7 @@ impl<M: Message> Input<M> for EventSender {
 ///
 /// This will always hold the entire history of events, even ones that happened before the receiver
 /// was created. This allows receivers to make models of the [`Registry`] using its entire state,
-/// like [`ResourceMap`](crate::resource_map::ResourceMap).
+/// like [`ResourceMap`].
 #[derive(Debug)]
 #[cfg_attr(feature = "path-any", derive(PathAny))]
 pub struct EventReceiver {
@@ -587,7 +925,7 @@ impl EventReceiver {
 impl<M: Message> Input<M> for EventReceiver {
     type Output = Self;
 
-    fn create(registry: &Registry<M>, _: NamespacedIdRef) -> Result<Self::Output, Error> {
+    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self::Output, Error> {
         Ok(registry.event_receiver())
     }
 }
@@ -745,3 +1083,31 @@ impl EventTryRecvError {
 // - This is fine because then there's no chance of a Handle ever being needed again: since no new
 //   resources can be added (since there is no Handle), none will ask for a new Handle in the
 //   future
+
+// add_resource_with and such redo
+//
+// Instead of add_resource_with, do something like a Create trait
+//
+// ```
+// trait Create {
+//     // similar to input for resources
+//     type RegistryInput: Input;
+//     // input given when adding the type to an App
+//     // necessary for things like a LibraryHandle
+//     type ExternalInput;
+//
+//     fn create(
+//         registry_input: Self::RegistryInput::Output,
+//         external_input: ExternalInput,
+//     ) -> Self;
+// }
+// ```
+//
+// ```
+// let app = App::new(32)
+//     .with_bundle(
+//         new_bundle!("bundle:bundle")
+//             .with_listener::<Library>(())
+//             .with_resource::<QueueLimit>(32)
+//     );
+// ```

@@ -18,9 +18,7 @@ struct LoadedResource {
 
 impl Drop for LoadedResource {
     fn drop(&mut self) {
-        self.sender.send(RegistryEvent::Unloaded {
-            id: self.id.clone(),
-        });
+        self.sender.send(RegistryEvent::Unloaded(self.id.clone()));
     }
 }
 
@@ -33,9 +31,8 @@ struct LoadedBundle {
 
 impl Drop for LoadedBundle {
     fn drop(&mut self) {
-        self.sender.send(RegistryEvent::BundleUnloaded {
-            id: self.id.clone(),
-        });
+        self.sender
+            .send(RegistryEvent::BundleUnloaded(self.id.clone()));
     }
 }
 
@@ -180,11 +177,11 @@ impl<M: Message> Listener<M> for ResourceMap {
             RegistryEvent::Reference { by, to } => {
                 self.add_reference(&by, &to)?;
             }
-            RegistryEvent::Running { id } => {
+            RegistryEvent::Running(id) => {
                 let resource = self.clone_resource(&id)?;
                 self.runners.insert(id, resource);
             }
-            RegistryEvent::Stopped { id } => {
+            RegistryEvent::Stopped(id) => {
                 self.runners.remove(&id);
             }
             _ => (),

@@ -94,7 +94,7 @@ impl<M: Message> Listener<M> for PluginRegistry<M, Finalized> {
     }
 
     async fn registry_event(&mut self, event: RegistryEvent, (): &mut ()) -> Result<()> {
-        if let RegistryEvent::BundleUnloaded { id } = event {
+        if let RegistryEvent::BundleUnloaded(id) = event {
             self.libraries.remove(&id);
             debug!("unloaded bundle `{id}`'s library");
         }

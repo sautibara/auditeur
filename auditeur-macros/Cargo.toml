@@ -17,6 +17,7 @@ proc-macro = true
 
 [features]
 path-any = []
+runtime-loading = []
 
 [lints.clippy]
 enum_glob_use = "warn"

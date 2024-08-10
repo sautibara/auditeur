@@ -47,7 +47,7 @@ impl PluginContext {
 /// freed by unloading.
 ///
 /// All [resources](mod@auditeur::resource)'s lifetimes are automatically handled by the
-/// [`ResourceMap`](auditeur::resource_map::ResourceMap), so they will never unload while
+/// [`ResourceMap`](auditeur::app::ResourceMap), so they will never unload while
 /// being used. However, trait objects given to other plugins may cause undefined behavior if all
 /// handles are dropped and the code that the trait object links to is called. To prevent this,
 /// handles can be put within the trait objects to ensure that the library lasts at least as long
@@ -59,7 +59,7 @@ impl PluginContext {
 /// ## Exiting too Early
 ///
 /// If a listener or watcher sends resources to other threads and then exits, those references will
-/// be forgotten by the main [`ResourceMap`](auditeur::resource_map::ResourceMap), leading to
+/// be forgotten by the main [`ResourceMap`](auditeur::app::ResourceMap), leading to
 /// libraries being freed too early.
 // TODO: example here
 #[derive(Clone)]

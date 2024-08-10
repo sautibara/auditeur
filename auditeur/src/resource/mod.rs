@@ -5,23 +5,22 @@ use auditeur_macros::cfg_supertrait;
 
 pub mod builtin;
 
-// #[cfg_supertrait(feature = "path-any", crate::path_any::PathAny, std::any::Any)]
-pub trait Resource: Send + 'static {
+pub trait Resource: Send + Sync + 'static {
     fn ident(&self) -> NamespacedIdRef<'static>;
     fn const_ident() -> NamespacedIdRef<'static>
     where
         Self: Sized;
 }
 
-#[cfg_supertrait(feature = "path-any", crate::path_any::PathAny, std::any::Any)]
 // TODO: find a better name for this
 #[allow(clippy::module_name_repetitions)]
-pub trait DynamicResource: Resource {}
+#[cfg_supertrait(feature = "runtime-loading", crate::input::MaybeGetRef)]
+pub trait DynamicResource: Resource + crate::Any {}
 
-#[cfg(feature = "path-any")]
-impl<T: Resource + crate::path_any::PathAny> DynamicResource for T {}
-#[cfg(not(feature = "path-any"))]
-impl<T: Resource + std::any::Any> DynamicResource for T {}
+#[cfg(feature = "runtime-loading")]
+impl<T: Resource + crate::Any + crate::input::MaybeGetRef> DynamicResource for T {}
+#[cfg(not(feature = "runtime-loading"))]
+impl<T: Resource + crate::Any> DynamicResource for T {}
 
 #[async_trait]
 pub trait Listener<M: Message>: DynamicResource + Send {

@@ -1,10 +1,32 @@
+//! A replacement for [`std::any::Any`] that plays well with dynamic linking
+//!
+//! [`std::any::Any`] uses [`TypeId`](std::any::TypeId)s, which are based on information only
+//! available at the specific time that objects are compiled - they can (and do) change between
+//! different compilations. This becomes problematic when it comes to dynamic linking, as then,
+//! objects are usually compiled separately. [`PathAny`], on the other hand, uses [`PathId`]s,
+//! which are based on the module path of a type. This doesn't change between compilations, but it
+//! does incite other problems.
+//!
+//! The tradeoff is twofold. For one, since this allows separate compilations to match the same
+//! [`PathId`], it could lead to an object expecting one structure of a type (its specific fields,
+//! methods, etc) to be given a different structure - code can be changed between compilations. In
+//! `auditeur-plugin-host`, this is protected against by compiling all plugins at the same time.
+//! Another issue is that, since it rests on information that isn't readily available for every
+//! type (its module path), the [`PathAny`] trait must be derived separately for every type that
+//! wants to implement it - it can't be automatically implemented for all types as
+//! [`Any`](std::any::Any) is.
+
 use bevy_utils_proc_macros::all_tuples;
 
+/// A unique identifier for a type and its generics using module paths
+///
+/// See the [module documentation](crate::path_any) for why this type is necessary
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct PathId(PathIdInner);
 
-// Separate the enum so that the implementation details are private
+/// A separate [`PathId`] enum so that the implementation details are private
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[doc(hidden)]
 pub enum PathIdInner {
     Single(&'static str),
     Joined(&'static PathId, &'static PathId),
@@ -24,11 +46,12 @@ impl PathId {
     }
 }
 
-/// A trait to emulate dynamic typing similar to [`Any`](std::any::Any), that plays well with FFI
+/// A trait to emulate dynamic typing which uses [`PathId`]s
 ///
-/// Instead of integers provided by the compiler used in [`std::any`], this uses the module paths
-/// of each type and their generics. However, this requires implementing the trait for every type
-/// that wants to use it, which brings some unsafety and issues with ergonomics.
+/// The implementation is separated into [`Self::path_id`] and [`Self::path_id_sized`], as the only
+/// way to find the specific [`PathId`] of a type, even without an instance of the type, is through
+/// this trait. [`std::any::Any`] is able to use [`TypeId`](std::any::TypeId), which doesn't have
+/// this limitation, as the functionality is built into the compiler.
 ///
 /// # Safety
 ///
@@ -45,7 +68,7 @@ pub unsafe trait PathAny: 'static {
 /// [`PathAny`] implemented using an associated constant
 ///
 /// Note: Since the trait has an associated constant, it cannot be used to create trait objects.
-/// Use [`PathAny`] instead.
+/// Use [`PathAny`] instead for this use-case.
 ///
 /// # Safety
 ///
@@ -91,6 +114,35 @@ impl dyn PathAny {
         debug_assert!(self.is::<T>());
         // SAFETY: caller guarantees that T is the correct type
         unsafe { &*(self as *const dyn PathAny).cast::<T>() }
+    }
+}
+
+/// Attempt to downcast the box to a concrete type.
+///
+/// # Errors
+///
+/// - Returns the original `object` if the downcast failed
+pub fn downcast<T: PathAny>(object: Box<dyn PathAny>) -> Result<Box<T>, Box<dyn PathAny>> {
+    if object.is::<T>() {
+        unsafe { Ok(downcast_unchecked::<T>(object)) }
+    } else {
+        Err(object)
+    }
+}
+
+/// Downcasts the box to a concrete type.
+///
+/// For a safe alternative see [`downcast`].
+///
+/// # Safety
+///
+/// The object must be an instance of `T`
+#[must_use]
+pub unsafe fn downcast_unchecked<T: PathAny>(object: Box<dyn PathAny>) -> Box<T> {
+    debug_assert!(object.is::<T>());
+    unsafe {
+        let raw: *mut dyn PathAny = Box::into_raw(object);
+        Box::from_raw(raw.cast::<T>())
     }
 }
 
