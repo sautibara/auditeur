@@ -28,4 +28,4 @@ nursery = "warn"
 [features]
 path-any = ["auditeur-macros/path-any"]
 resource-map = []
-runtime-loading = []
+runtime-loading = ["auditeur-macros/runtime-loading"]

@@ -9,6 +9,7 @@ edition = "2021"
 auditeur = { version = "0.1.0", path = "../auditeur", features = [
   "path-any",
   "resource-map",
+  "runtime-loading",
 ] }
 auditeur-plugin-macros = { version = "0.1.0", path = "../auditeur-plugin-macros" }
 stabby-macros = { version = "6.2.2" }
