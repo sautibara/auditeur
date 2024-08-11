@@ -291,7 +291,7 @@ impl Arena {
 
     fn fetch_options<'cb>(host: GitHost) -> (git2::FetchOptions<'cb>, GitFetchMethod) {
         let mut callbacks = git2::RemoteCallbacks::new();
-        let env_var = format!("AUDITEUR_SSH_{}", host.name());
+        let env_var = format!("AUDITEUR_SSH_{}", host.name().to_uppercase());
         let ssh = std::env::var(env_var).map_or(GitFetchMethod::Https, |key| {
             let key = PathBuf::from(key);
             callbacks.credentials(move |_url, user_from_url, cred_type| {

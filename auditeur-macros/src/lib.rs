@@ -4,10 +4,9 @@ use proc_macro2::Span;
 use proc_macro_crate::crate_name;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
-    parenthesized, parse_macro_input, parse_quote, parse_str, punctuated::Punctuated,
-    spanned::Spanned, Attribute, Expr, ExprLit, FnArg, GenericParam, Ident, ImplItem, Item,
-    ItemImpl, ItemStruct, ItemTrait, Lit, LitStr, Meta, MetaNameValue, Pat, Token, Type,
-    TypeParamBound, WhereClause,
+    parenthesized, parse_macro_input, parse_quote, punctuated::Punctuated, spanned::Spanned,
+    Attribute, Expr, ExprLit, FnArg, GenericParam, Ident, ImplItem, Item, ItemImpl, ItemStruct,
+    ItemTrait, Lit, LitStr, Pat, Token, Type, TypeParamBound, WhereClause,
 };
 
 mod namespaced_id;
@@ -41,7 +40,6 @@ impl Auditeur {
         Self { root }
     }
 
-    #[cfg(feature = "runtime-loading")]
     pub const fn crate_name(&self) -> &proc_macro2::TokenStream {
         &self.root
     }
@@ -351,13 +349,13 @@ pub fn create(_: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-#[proc_macro_derive(Create, attributes(message))]
+#[proc_macro_derive(Create)]
 pub fn create_derive(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 
-    let (ident, mut attrs) = match item {
-        Item::Struct(strct) => (strct.ident, strct.attrs),
-        Item::Enum(enm) => (enm.ident, enm.attrs),
+    let ident = match item {
+        Item::Struct(strct) => strct.ident,
+        Item::Enum(enm) => enm.ident,
         _ => {
             return quote_spanned! {
                 item.span() => compile_error!("item must be a struct or enum"),
@@ -366,38 +364,13 @@ pub fn create_derive(item: TokenStream) -> TokenStream {
         }
     };
 
-    let Some(message) = extract_attr(&mut attrs, "message").next() else {
-        return syn::Error::new(
-            Span::call_site(),
-            r#"the message type wasn't specified, try `#[message = "Message"]`?"#,
-        )
-        .into_compile_error()
-        .into();
-    };
-
-    let Meta::NameValue(MetaNameValue {
-        value: Expr::Lit(ExprLit {
-            lit: Lit::Str(ref lit_str),
-            ..
-        }),
-        ..
-    }) = message.meta
-    else {
-        return syn::Error::new(message.meta.span(), r#"#[message] must have a string literal on the right side, try #[message = "Message"]"#)
-            .into_compile_error()
-            .into();
-    };
-
-    let message: syn::Type = match parse_str(&lit_str.value()) {
-        Ok(message) => message,
-        Err(err) => return err.into_compile_error().into(),
-    };
-
     let auditeur = Auditeur::new();
+    let crate_name = auditeur.crate_name();
     let resource_mod = auditeur.resource();
 
     quote! {
-        impl #resource_mod::Create<#message> for #ident {
+        // we can be generic over message because there are no inputs to depend on it
+        impl<M: #crate_name::Message> #resource_mod::Create<M> for #ident {
             type RegistryInput = ();
             type ExternalInput = ();
             async fn create((): (), (): ()) -> Self {
