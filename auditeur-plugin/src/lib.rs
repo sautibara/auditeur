@@ -24,6 +24,7 @@ pub struct PluginContext {
 }
 
 impl PluginContext {
+    #[cfg(feature = "loading")]
     const fn new(handle: LibraryHandle) -> Self {
         Self { handle }
     }
