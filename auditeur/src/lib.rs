@@ -50,6 +50,9 @@ pub use auditeur_macros::ident;
 /// ```
 pub use auditeur_macros::resource;
 
+pub use auditeur_macros::create;
+pub use auditeur_macros::Create;
+
 /// A macro to automate implementing [`GetRef`](crate::input::GetRef) using [`Clone`]
 ///
 /// # Examples
@@ -103,12 +106,14 @@ pub mod prelude {
     pub use crate::{
         app::{Constraints, RegistryEvent, Stopper},
         bundle::Bundle,
-        ident,
+        create, ident,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
-        resource::{Identifiable, Listener, Resource, Watcher},
+        resource::{Create, Identifiable, Listener, Resource, Watcher},
         Error as AuditeurError, GetRef,
     };
+
+    pub use auditeur_macros::Create;
 
     #[cfg(feature = "path-any")]
     pub use crate::path_any::PathAny;

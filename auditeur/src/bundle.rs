@@ -106,16 +106,19 @@ impl<M: Message> Bundle<M> {
     ///
     /// Resources are never run, they only provide themselves to [listeners](Listener),
     /// [watchers](Watcher), or other resources with [`input::Get<_>`](crate::input::Get)
-    pub fn with_resource<R: Resource>(self, resource: R) -> Self {
-        self.with(loader::Resource::new(resource))
+    pub fn with_resource<R: Resource + Create<M>>(self, external_input: R::ExternalInput) -> Self {
+        self.with(loader::Resource::<M, R>::new(external_input))
     }
 
     /// Add a [`Listener`] to this bundle
     ///
     /// Listeners run in the main loop, listening to the main message channel. Like watchers, they
     /// can use [inputs](Input) to reference and talk to other [resources](mod@crate::resource).
-    pub fn with_listener<L: Listener<M>>(self, listener: L) -> Self {
-        self.with(loader::Listener::new(listener))
+    pub fn with_listener<L: Listener<M> + Create<M>>(
+        self,
+        external_input: L::ExternalInput,
+    ) -> Self {
+        self.with(loader::Listener::<M, L>::new(external_input))
     }
 
     /// Add a [`Watcher`] to this bundle
@@ -123,8 +126,8 @@ impl<M: Message> Bundle<M> {
     /// Watchers run in the main loop but never recieve from the main message channel (although
     /// they can send to it). Like listeners, they can use [inputs](Input) to reference and talk to
     /// other [resources](mod@crate::resource).
-    pub fn with_watcher<W: Watcher<M>>(self, watcher: W) -> Self {
-        self.with(loader::Watcher::new(watcher))
+    pub fn with_watcher<W: Watcher<M> + Create<M>>(self, external_input: W::ExternalInput) -> Self {
+        self.with(loader::Watcher::<M, W>::new(external_input))
     }
 
     /// Add another bundle to this bundle
@@ -142,42 +145,6 @@ impl<M: Message> Bundle<M> {
     pub fn with<L: Loader<M> + 'static>(mut self, loader: L) -> Self {
         self.loaders.push(Box::new(loader));
         self
-    }
-}
-
-/// These methods allow building a [resource](mod@crate::resource) using some specified [`Input`]s
-impl<M: Message> Bundle<M> {
-    /// Add a [`Resource`] to this bundle, using the given [`Input`]
-    pub fn with_resource_with<I: Input<M>, R: Resource>(
-        self,
-        _func: impl FnOnce(I) -> R + Send + 'static,
-    ) -> Self {
-        todo!()
-        // self.with(loader::With::<I, M, loaded::Resource<R>, _, _>::new(
-        //     |output, _| async { Ok(loaded::Resource::new(func(output))) },
-        // ))
-    }
-
-    /// Add a [`Listener`] to this bundle, using the given [`Input`]
-    pub fn with_listener_with<I: Input<M>, L: Listener<M>>(
-        self,
-        _func: impl FnOnce(I) -> L + Send + 'static,
-    ) -> Self {
-        todo!()
-        // self.with(loader::With::<I, M, loaded::Listener<M, L>, _, _>::new(
-        //     |output, registry| loaded::Listener::build(func(output), registry),
-        // ))
-    }
-
-    /// Add a [`Watcher`] to this bundle, using the given [`Input`]
-    pub fn with_watcher_with<I: Input<M>, W: Watcher<M>>(
-        self,
-        _func: impl FnOnce(I) -> W + Send + 'static,
-    ) -> Self {
-        todo!()
-        // self.with(loader::With::<I, M, loaded::Watcher<M, W>, _, _>::new(
-        //     |output, registry| loaded::Watcher::build(func(output), registry),
-        // ))
     }
 }
 

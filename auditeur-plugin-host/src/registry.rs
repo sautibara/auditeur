@@ -27,6 +27,13 @@ pub struct PluginRegistry<M: Message, A> {
     message: PhantomData<M>,
 }
 
+#[create]
+impl<M: Message> Create<M> for PluginRegistry<M, Finalized> {
+    async fn create(#[external] registry: Self) -> Self {
+        registry
+    }
+}
+
 impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
     pub fn new(app: &'app mut App<M>) -> Self {
         Self {
@@ -81,7 +88,10 @@ impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
             maybe_app: Finalized,
             message: PhantomData,
         };
-        app.add_bundle(new_bundle!("auditeur:plugin_host_registry").with_listener(finalized));
+        app.add_bundle(
+            new_bundle!("auditeur:plugin_host_registry")
+                .with_listener::<PluginRegistry<M, Finalized>>(finalized),
+        );
     }
 }
 

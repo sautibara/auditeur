@@ -21,6 +21,7 @@ use auditeur_plugin::auditeur::{app::App, prelude::*, Message};
 use config::{PluginName, Source};
 use futures::Future;
 use log::error;
+use registry::Finalized;
 use thiserror::Error;
 
 pub mod arena;
@@ -61,7 +62,10 @@ impl<M: Message> AppExt for App<M> {
         }
         // SAFETY: we add the registry immediately below, but in a bundle
         let registry = unsafe { registry.finalize() };
-        self.with_bundle(new_bundle!("auditeur:plugin_host").with_listener(registry))
+        self.with_bundle(
+            new_bundle!("auditeur:plugin_host")
+                .with_listener::<PluginRegistry<M, Finalized>>(registry),
+        )
     }
 }
 

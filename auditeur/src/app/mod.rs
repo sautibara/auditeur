@@ -110,10 +110,7 @@ impl<M: Message> App<M> {
             bundles: HashMap::new(),
         };
         #[cfg(feature = "resource-map")]
-        this.add_bundle(
-            new_bundle!("auditeur:resource_map")
-                .with_listener_with::<EventSender, _>(ResourceMap::new),
-        );
+        this.add_bundle(new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(()));
         this
     }
 
@@ -821,22 +818,23 @@ impl<M: Message> Input<M> for Stopper {
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "path-any", derive(PathAny))]
-pub(crate) struct EventSender {
+#[doc(hidden)] // forced to be public because it's used as an input
+pub struct EventSender {
     watch: watch::Sender<Vec<RegistryEvent>>,
 }
 
 impl EventSender {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             watch: watch::Sender::new(Vec::new()),
         }
     }
 
-    pub fn send(&self, event: RegistryEvent) {
+    pub(crate) fn send(&self, event: RegistryEvent) {
         self.watch.send_modify(|vec| vec.push(event));
     }
 
-    pub fn subscribe(&self) -> EventReceiver {
+    pub(crate) fn subscribe(&self) -> EventReceiver {
         EventReceiver::new(self.watch.subscribe())
     }
 }

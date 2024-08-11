@@ -84,8 +84,9 @@ pub struct ResourceMap {
     bundle_queue: HashMap<NamespacedId, LoadedBundle>,
 }
 
-impl ResourceMap {
-    pub(crate) fn new(sender: EventSender) -> Self {
+#[create]
+impl<M: Message> Create<M> for ResourceMap {
+    async fn create(sender: EventSender) -> Self {
         Self {
             sender,
             runners: HashMap::new(),
@@ -95,7 +96,9 @@ impl ResourceMap {
             bundle_queue: HashMap::new(),
         }
     }
+}
 
+impl ResourceMap {
     fn add_resource(&mut self, id: NamespacedId, parent: &NamespacedId) -> Result<()> {
         let parent = self.clone_bundle(parent)?;
         self.resource_queue.insert(

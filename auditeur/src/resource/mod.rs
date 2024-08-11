@@ -58,10 +58,6 @@ pub trait Listener<M: Message>: Resource + Send {
         let _ = (event, input);
         Ok(())
     }
-
-    fn constraints(&self) -> Constraints {
-        Self::Input::constraints()
-    }
 }
 
 /// A [`Resource`] that runs its own method in the main async loop
@@ -80,4 +76,15 @@ pub trait Watcher<M: Message>: Resource + Send {
     fn constraints(&self) -> Constraints {
         Self::Input::constraints()
     }
+}
+
+pub trait Create<M: Message> {
+    type RegistryInput: Input<M>;
+    type ExternalInput: Send;
+
+    #[allow(opaque_hidden_inferred_bound)] // false positive?
+    fn create(
+        registry: Self::RegistryInput,
+        external: Self::ExternalInput,
+    ) -> impl Future<Output = Self> + Send;
 }

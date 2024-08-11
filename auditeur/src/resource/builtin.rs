@@ -5,6 +5,14 @@ use crate::{app, prelude::*};
 #[resource("auditeur:logger")]
 pub struct Logger;
 
+impl<M: Message> Create<M> for Logger {
+    type RegistryInput = ();
+    type ExternalInput = ();
+    async fn create((): (), (): ()) -> Self {
+        Self
+    }
+}
+
 #[async_trait]
 impl<M: Message + std::fmt::Debug> Listener<M> for Logger {
     type Input = app::EventReceiver;
