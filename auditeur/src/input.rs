@@ -90,7 +90,7 @@ impl<T: Resource + GetRef> DerefMut for Get<T> {
 /// ```
 pub trait GetRef {
     /// A synchronized reference to the original [`Resource`]
-    type Ref: Send + Sync + crate::Any;
+    type Ref: Clone + crate::Any + Send + Sync;
     /// Get a synchronized reference to `Self`
     fn get_ref(&self) -> Self::Ref;
 }
@@ -105,26 +105,49 @@ pub trait GetRef {
 /// [`#[derive(MaybeGetRef)]`](macro@crate::MaybeGetRef)
 #[cfg(feature = "runtime-loading")]
 pub trait MaybeGetRef {
-    fn maybe_get_ref(&self) -> Option<Box<dyn crate::Any + Send + Sync>>;
+    fn maybe_get_ref(&self) -> Option<Box<dyn CloneAny>>;
 }
 
 #[doc(hidden)]
 #[cfg(feature = "runtime-loading")]
 pub mod maybe_get_ref {
+    use super::CloneAny;
+
     pub trait Specialization {
-        fn specialization(&self) -> Option<Box<dyn crate::Any + Send + Sync>>;
+        fn specialization(&self) -> Option<Box<dyn CloneAny>>;
     }
 
     impl<T> Specialization for &T {
-        fn specialization(&self) -> Option<Box<dyn crate::Any + Send + Sync>> {
+        fn specialization(&self) -> Option<Box<dyn CloneAny>> {
             None
         }
     }
 
     impl<T: super::GetRef + crate::Any> Specialization for &mut &T {
-        fn specialization(&self) -> Option<Box<dyn crate::Any + Send + Sync>> {
+        fn specialization(&self) -> Option<Box<dyn CloneAny>> {
             Some(Box::new(self.get_ref()))
         }
+    }
+}
+
+/// A trait that allows for [cloning](Clone) within a trait object and dynamic typing
+///
+/// This trait is used only in [`MaybeGetRef`] and is implemented for all types that implement
+/// [`Clone`] and [`Any`]
+#[cfg(feature = "runtime-loading")]
+pub trait CloneAny: crate::Any + Send + Sync {
+    fn clone_any(&self) -> Box<dyn CloneAny>;
+    fn as_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+#[cfg(feature = "runtime-loading")]
+impl<T: Clone + crate::Any + Send + Sync> CloneAny for T {
+    fn clone_any(&self) -> Box<dyn CloneAny> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(self: Box<Self>) -> Box<dyn PathAny> {
+        self
     }
 }
 

@@ -442,7 +442,6 @@ fn implement_maybe_get_ref(
     auditeur: &Auditeur,
 ) -> proc_macro2::TokenStream {
     let input_mod = auditeur.input();
-    let crate_name = auditeur.crate_name();
 
     let CustomGenerics {
         impl_generics,
@@ -452,7 +451,7 @@ fn implement_maybe_get_ref(
 
     quote! {
         impl #impl_generics #input_mod::MaybeGetRef for #ident #type_generics #where_clause {
-            fn maybe_get_ref(&self) -> Option<Box<dyn #crate_name::Any + Send + Sync>> {
+            fn maybe_get_ref(&self) -> Option<Box<dyn #input_mod::CloneAny>> {
                 use #input_mod::maybe_get_ref::Specialization as _;
                 (&mut &*self).specialization()
             }

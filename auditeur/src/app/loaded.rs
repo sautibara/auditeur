@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use futures::pin_mut;
+use log::warn;
 use log::{debug, error};
 use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
@@ -228,7 +229,10 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
         })
     }
 
-    fn handle_meta(message: Option<RegistryEvent>) -> ControlFlow<()> {
+    fn handle_meta(
+        message: Option<RegistryEvent>,
+        #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::CloneAny>,
+    ) -> ControlFlow<()> {
         let Some(message) = message else {
             Self::handle_result(Err(anyhow!("registry event channel closed")));
             return ControlFlow::Break(());
@@ -239,9 +243,13 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(ref get_request) => {
                 if get_request.id() == W::const_ident() {
-                    // FIXME: find a workaround for this
-                    error!("tried to use Get<_> on a Watcher after the app loaded");
-                    get_request.cancel();
+                    #[allow(clippy::option_if_let_else)] // doesn't return anything
+                    if let Some(reference) = reference {
+                        get_request.send(reference.clone_any());
+                    } else {
+                        warn!("id matched GetRequest, but MaybeGetRef returned None");
+                        get_request.cancel();
+                    }
                 }
                 false
             }
@@ -274,23 +282,30 @@ impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
 #[async_trait]
 impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     async fn run(mut self: Box<Self>) {
+        #[cfg(feature = "runtime-loading")]
+        let reference = self.inner.maybe_get_ref();
         let mut meta_receiver = self.event_receiver.resubscribe();
-        let meta_loop = async move {
+        {
+            let run = self.inner.run(&mut self.input);
+            pin_mut!(run);
             loop {
-                let message = meta_receiver.recv().await;
-                let res = Self::handle_meta(message);
-                if res.is_break() {
-                    break;
+                select! {
+                    biased;
+                    message = meta_receiver.recv() => {
+                        let res = Self::handle_meta(
+                            message,
+                            #[cfg(feature = "runtime-loading")] reference.as_deref(),
+                        );
+                        if res.is_break() {
+                            break;
+                        }
+                    }
+                    res = &mut run => {
+                        Self::handle_result(res);
+                        break;
+                    },
                 }
             }
-        };
-        pin_mut!(meta_loop);
-        select! {
-            biased;
-            () = &mut meta_loop => { }
-            res = self.inner.run(&mut self.input) => {
-                Self::handle_result(res);
-            },
         }
 
         debug!("'{}' exited", self.ident());

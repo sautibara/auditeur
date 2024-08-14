@@ -449,7 +449,7 @@ impl RunningRegistry {
         // if it isn't and all requests get dropped, the channel drops and returns a RecvError
         let reference = receiver.await.ok()?;
         // and then, the actual reference gets downcasted
-        let Ok(reference) = crate::downcast(reference) else {
+        let Ok(reference) = crate::downcast(reference.as_any()) else {
             // downcasting shouldn't ever fail, so this is an important log
             error!("attempt to downcast {} failed", id);
             return None;
@@ -829,7 +829,7 @@ pub enum RegistryEvent {
 #[cfg(feature = "runtime-loading")]
 pub struct GetRequest {
     id: NamespacedId,
-    sender: std::sync::Mutex<Option<oneshot::Sender<Box<dyn Any + Send + Sync>>>>,
+    sender: std::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::CloneAny>>>>,
 }
 
 #[cfg(feature = "runtime-loading")]
@@ -854,21 +854,12 @@ impl GetRequest {
         if !self.matches_ref(resource) {
             return;
         }
-        let Some(sender) = self
-            .sender
-            .lock()
-            .expect("GetRequest lock shouldn't be poisoned")
-            .take()
-        else {
-            // this could only happen with a name collision
-            warn!("resource matches GetRequest, but the channel was already used");
-            return;
-        };
         #[allow(clippy::option_if_let_else)] // not using the return type...
         if let Some(reference) = resource.maybe_get_ref() {
-            let _ = sender.send(reference);
+            self.send(reference);
         } else {
             warn!("resource matches GetRequest, but MaybeGetRef returned None");
+            self.cancel();
         }
     }
 
@@ -890,6 +881,21 @@ impl GetRequest {
         if let Ok(mut sender) = self.sender.lock() {
             *sender = None;
         }
+    }
+
+    /// Fulfils the request by sending `reference`
+    pub(crate) fn send(&self, reference: Box<dyn crate::input::CloneAny>) {
+        let Some(sender) = self
+            .sender
+            .lock()
+            .expect("GetRequest lock shouldn't be poisoned")
+            .take()
+        else {
+            // this could only happen with a name collision
+            warn!("resource matches GetRequest, but the channel was already used");
+            return;
+        };
+        let _ = sender.send(reference);
     }
 }
 
