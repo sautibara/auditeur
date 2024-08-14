@@ -32,10 +32,10 @@
 //! -> (optionally) [`dyn Runner`](Runner)
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use async_recursion::async_recursion;
 #[cfg(feature = "runtime-loading")]
@@ -55,7 +55,7 @@ pub(crate) mod loaded;
 pub(crate) mod loader;
 
 #[cfg(feature = "resource-map")]
-mod resource_map;
+pub mod resource_map;
 #[cfg(feature = "resource-map")]
 pub use resource_map::ResourceMap;
 
@@ -262,6 +262,15 @@ enum RegistryState {
 }
 
 impl RegistryState {
+    /// Returns `true` if the registry state is [`Running`].
+    ///
+    /// [`Running`]: RegistryState::Running
+    #[must_use]
+    #[cfg(feature = "runtime-loading")]
+    const fn is_running(&self) -> bool {
+        matches!(self, Self::Running(..))
+    }
+
     #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
     #[inline]
     async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
@@ -269,6 +278,15 @@ impl RegistryState {
             Self::Building(registry) => registry.add_boxed_resource(resource),
             #[cfg(feature = "runtime-loading")]
             Self::Running(registry) => registry.add_boxed_resource(resource).await,
+        }
+    }
+
+    #[inline]
+    fn add_bundle(&mut self, bundle: NamespacedId) {
+        match self {
+            Self::Building(registry) => registry.add_bundle(bundle),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(_) => (),
         }
     }
 
@@ -287,18 +305,28 @@ impl RegistryState {
         }
     }
 
-    /// Returns `true` if the registry state is [`Running`].
-    ///
-    /// [`Running`]: RegistryState::Running
-    #[must_use]
-    #[cfg(feature = "runtime-loading")]
-    const fn is_running(&self) -> bool {
-        matches!(self, Self::Running(..))
+    #[inline]
+    fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        match self {
+            Self::Building(registry) => registry.loaded_resources(),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(registry) => registry.loaded_resources(),
+        }
+    }
+
+    #[inline]
+    fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        match self {
+            Self::Building(registry) => registry.loaded_bundles(),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(registry) => registry.loaded_bundles(),
+        }
     }
 }
 
 struct BuildingRegistry {
     resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
+    bundles: HashSet<NamespacedId>,
     #[cfg(feature = "runtime-loading")]
     resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
     #[cfg(feature = "runtime-loading")]
@@ -312,6 +340,7 @@ impl BuildingRegistry {
 
         Self {
             resources: HashMap::new(),
+            bundles: HashSet::new(),
             #[cfg(feature = "runtime-loading")]
             resource_sender,
             #[cfg(feature = "runtime-loading")]
@@ -321,6 +350,10 @@ impl BuildingRegistry {
 
     fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
         self.resources.insert(resource.ident().into(), resource);
+    }
+
+    fn add_bundle(&mut self, bundle: NamespacedId) {
+        self.bundles.insert(bundle);
     }
 
     #[must_use]
@@ -346,11 +379,20 @@ impl BuildingRegistry {
         }
         reference
     }
+
+    fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        self.resources.keys().cloned().collect()
+    }
+
+    fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        self.bundles.clone()
+    }
 }
 
 #[cfg(feature = "runtime-loading")]
 struct RunningRegistry {
     resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
+    map: resource_map::Handle,
 }
 
 #[cfg(feature = "runtime-loading")]
@@ -391,6 +433,14 @@ impl RunningRegistry {
         });
         Some(*reference)
     }
+
+    fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        self.map.loaded_resources()
+    }
+
+    fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        self.map.loaded_bundles()
+    }
 }
 
 /// A list of registered and loaded [resources](LoadedResource), built from an [`App`], that can be run as a main loop
@@ -429,7 +479,7 @@ impl<M: Message> Registry<M> {
         let futures = building_registry
             .resources
             .into_values()
-            .filter_map(LoadedResource::runner)
+            .filter_map(|resource| resource.runner().ok())
             // clone the event sender for each runner
             .zip(std::iter::repeat(self.event_sender.clone()))
             .map(|(runner, sender)| Self::run_runner(runner, sender));
@@ -525,6 +575,7 @@ impl<M: Message> Registry<M> {
     /// Note: This only adds the "specification" of the bundle to the registry (i.e. its id,
     /// potential parent, ids of its child resources and bundles, etc) - not its actual resources
     pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
+        self.state.add_bundle(id.clone());
         self.event_sender.send(RegistryEvent::BundleLoading {
             id,
             parent: bundle.parent,
@@ -566,18 +617,34 @@ impl<M: Message> Registry<M> {
     /// Note: This is only accessable through the `runtime-loading` feature
     ///
     /// Note: Under the feature, [`Registry`] also implements [`Input`] by calling this function
-    #[must_use]
-    pub fn handle(&self) -> Self {
-        let resource_sender = match &self.state {
-            RegistryState::Running(running) => running.resource_sender.clone(),
-            RegistryState::Building(building) => building.resource_sender.clone(),
+    ///
+    /// # Errors
+    ///
+    /// - If [`ResourceMap`] hasn't been loaded yet
+    pub fn handle(&self, reference_holder: NamespacedIdRef<'_>) -> Result<Self, Error> {
+        let (resource_sender, map) = match &self.state {
+            RegistryState::Running(running) => {
+                (running.resource_sender.clone(), running.map.clone())
+            }
+            RegistryState::Building(building) => (
+                building.resource_sender.clone(),
+                building
+                    .get_as::<ResourceMap>(reference_holder, &self.event_sender)
+                    .ok_or_else(|| Error::LoaderNotFound {
+                        id: ResourceMap::const_ident().into_owned(),
+                    })?,
+            ),
         };
-        let implementation = RegistryState::Running(RunningRegistry { resource_sender });
-        Self {
+        let implementation = RegistryState::Running(RunningRegistry {
+            resource_sender,
+            map,
+        });
+        let handle = Self {
             message_sender: self.message_sender.clone(),
             event_sender: self.event_sender.clone(),
             state: implementation,
-        }
+        };
+        Ok(handle)
     }
 
     /// Returns `true` if this [`Registry`] instance is a [handle](Self::handle) to an
@@ -618,11 +685,30 @@ impl<M: Message> Registry<M> {
     }
 }
 
+/// Methods to access the current state of the registry
+impl<M: Message> Registry<M> {
+    /// Returns a set of the [`NamespacedId`]s of each [`Resource`] that is currently loaded
+    #[must_use]
+    pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        self.state.loaded_resources()
+    }
+
+    /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] that is currently loaded
+    #[must_use]
+    pub fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        self.state.loaded_bundles()
+    }
+}
+
 #[cfg(feature = "runtime-loading")]
 impl<M: Message> Input<M> for Registry<M> {
     /// Use a registry [handle](Self::handle) as an input to a running resource
-    async fn create(registry: &Self, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
-        Ok(registry.handle())
+    async fn create(registry: &Self, reference_holder: NamespacedIdRef<'_>) -> Result<Self, Error> {
+        registry.handle(reference_holder)
+    }
+
+    fn constraints() -> Constraints {
+        Constraints::empty().after_resource(ResourceMap::const_ident())
     }
 }
 
@@ -698,6 +784,7 @@ pub enum RegistryEvent {
     #[cfg(feature = "runtime-loading")]
     Get(Arc<GetRequest>),
     /// Added a resource to the [`Registry`] that doesn't provide a [`Runner`]
+    #[cfg(feature = "runtime-loading")]
     NonRunnable(ResourceSupplier),
 }
 
@@ -803,15 +890,18 @@ impl std::hash::Hash for GetRequest {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "runtime-loading")]
 pub struct ResourceSupplier {
     arc: Arc<ResourceSupplierInner>,
 }
 
+#[cfg(feature = "runtime-loading")]
 struct ResourceSupplierInner {
     id: NamespacedId,
-    resource: Mutex<Option<Box<dyn LoadedResource>>>,
+    resource: std::sync::Mutex<Option<Box<dyn LoadedResource>>>,
 }
 
+#[cfg(feature = "runtime-loading")]
 impl ResourceSupplier {
     /// Get the [`NamespacedId`] of the inner resource
     #[must_use]
@@ -822,7 +912,7 @@ impl ResourceSupplier {
     fn new(resource: Box<dyn LoadedResource>) -> Self {
         let arc = ResourceSupplierInner {
             id: resource.ident().into_owned(),
-            resource: Mutex::new(Some(resource)),
+            resource: std::sync::Mutex::new(Some(resource)),
         };
         Self { arc: Arc::new(arc) }
     }
@@ -837,20 +927,24 @@ impl ResourceSupplier {
     }
 }
 
+#[cfg(feature = "runtime-loading")]
 impl Debug for ResourceSupplier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ResourceSupplier")
     }
 }
 
+#[cfg(feature = "runtime-loading")]
 impl PartialEq for ResourceSupplier {
     fn eq(&self, other: &Self) -> bool {
         self.arc.id == other.arc.id
     }
 }
 
+#[cfg(feature = "runtime-loading")]
 impl Eq for ResourceSupplier {}
 
+#[cfg(feature = "runtime-loading")]
 impl Hash for ResourceSupplier {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.arc.id.hash(state);

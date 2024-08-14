@@ -1,3 +1,6 @@
+//! A dependency tree of the [resources](mod@crate::resource) and [bundles](crate::Bundle) that are
+//! currently loaded
+
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock, Weak},
@@ -289,6 +292,7 @@ impl crate::input::GetRef for ResourceMap {
 
 impl Handle {
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] loaded in the [`Registry`]
+    #[must_use]
     pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
         self.shared
             .resources
@@ -299,6 +303,7 @@ impl Handle {
     }
 
     /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] loaded in the [`Registry`]
+    #[must_use]
     pub fn loaded_bundles(&self) -> HashSet<NamespacedId> {
         self.shared
             .bundles
@@ -309,6 +314,7 @@ impl Handle {
     }
 
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] running in the main loop
+    #[must_use]
     pub fn running_resources(&self) -> HashSet<NamespacedId> {
         self.shared
             .runners

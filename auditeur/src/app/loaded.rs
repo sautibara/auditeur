@@ -15,11 +15,6 @@ use crate::resource::Watcher as WatcherTrait;
 use super::EventReceiver;
 use super::RegistryEvent;
 
-#[cfg(feature = "path-any")]
-use crate::path_any::PathAny as Any;
-#[cfg(not(feature = "path-any"))]
-use std::any::Any;
-
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
     if conditional {
         ControlFlow::Continue(())
@@ -145,7 +140,7 @@ impl<M: Message, L: ListenerTrait<M>> LoadedResource for Listener<M, L> {
         &self.inner
     }
 
-    fn resource_any(&self) -> &dyn PathAny {
+    fn resource_any(&self) -> &dyn Any {
         &self.inner
     }
 
@@ -199,7 +194,7 @@ impl<R: ResourceTrait> LoadedResource for Resource<R> {
         &self.resource
     }
 
-    fn resource_any(&self) -> &dyn PathAny {
+    fn resource_any(&self) -> &dyn Any {
         &self.resource
     }
 }
@@ -267,7 +262,7 @@ impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
         &self.inner
     }
 
-    fn resource_any(&self) -> &dyn PathAny {
+    fn resource_any(&self) -> &dyn Any {
         &self.inner
     }
 
