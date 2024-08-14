@@ -94,20 +94,18 @@ pub(crate) struct BuiltBundle {
 /// added first is kept.
 #[must_use = "An app does nothing unless it is run"]
 pub struct App<M: Message> {
-    capacity: usize,
     loaders: HashMap<NamespacedId, Option<BundledLoader<M>>>,
     bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
 }
 
 impl<M: Message> App<M> {
-    /// Create a new app with a specified `capacity` of messages for each channel
+    /// Create a new app
     #[cfg_attr(
         not(feature = "resource-map"),
         allow(clippy::let_and_return, unused_mut)
     )]
-    pub fn new(capacity: usize) -> Self {
+    pub fn new() -> Self {
         let mut this = Self {
-            capacity,
             loaders: HashMap::new(),
             bundles: HashMap::new(),
         };
@@ -153,31 +151,55 @@ impl<M: Message> App<M> {
 
     /// [Build](Self::build) the `App` and run all [runners](Runner) to completion
     ///
+    /// - `capacity`: the capacity of the message channel - how many messages the channel
+    /// can hold before listeners start to lag
+    ///
     /// # Errors
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn run(self) -> Result<(), Error> {
-        let registry = self.build().await?;
+    pub async fn run(self, capacity: usize) -> Result<(), Error> {
+        let registry = self.build(capacity).await?;
         registry.run().await;
         Ok(())
     }
 
     /// Build the `App` into a [`Registry`], without running it
     ///
+    ///  - `capacity`: the capacity of the message channel - how many messages the channel
+    /// can hold before listeners start to lag
+    ///
     /// # Errors
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn build(mut self) -> Result<Registry<M>, Error> {
-        let mut registry = Registry::new(self.capacity);
+    pub async fn build(self, capacity: usize) -> Result<Registry<M>, Error> {
+        let mut registry = Registry::new(capacity);
+        self.add_to_registry(&mut registry).await?;
+        Ok(registry)
+    }
+
+    /// Add the `App` into a [`Registry`], without running it
+    ///
+    /// # Errors
+    ///
+    /// - If one of the loaders failed to build
+    /// - If a dependency wasn't found
+    pub async fn add_to_registry(mut self, registry: &mut Registry<M>) -> Result<(), Error> {
+        // add the loaders and bundles that have already been loaded in the registry to our list
+        // this is necessary so that constraints can know that their dependencies have already been
+        // loaded
+        self.loaders
+            .extend(registry.loaded_resources().into_iter().map(|id| (id, None)));
+        self.bundles
+            .extend(registry.loaded_bundles().into_iter().map(|id| (id, None)));
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
-            self.resolve_loader(&mut registry, &loader).await?;
+            self.resolve_loader(registry, &loader).await?;
         }
-        Ok(registry)
+        Ok(())
     }
 
     #[async_recursion]
@@ -244,6 +266,12 @@ impl<M: Message> App<M> {
             }
         }
         Ok(())
+    }
+}
+
+impl<M: Message> Default for App<M> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
