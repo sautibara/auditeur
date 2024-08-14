@@ -1,14 +1,17 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Weak},
+    sync::{Arc, RwLock, Weak},
 };
 
 use anyhow::{anyhow, bail};
+use log::trace;
 
 use crate::{app::EventSender, prelude::*};
 
 struct LoadedResource {
     id: NamespacedId,
+    #[cfg(feature = "runtime-loading")]
+    resource: RwLock<Option<Box<dyn super::LoadedResource>>>,
     // hold a strong reference to the parent bundle to keep it alive
     _bundle: Arc<LoadedBundle>,
     // and strong references to all of its dependencies for the same reason
@@ -19,6 +22,32 @@ struct LoadedResource {
 impl Drop for LoadedResource {
     fn drop(&mut self) {
         self.sender.send(RegistryEvent::Unloaded(self.id.clone()));
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl LoadedResource {
+    fn supply_owned(&self, resource: Box<dyn super::LoadedResource>) {
+        trace!(
+            "adding {} to the ResourceMap as a NonRunnable",
+            resource.ident()
+        );
+        let mut resource_option = self
+            .resource
+            .write()
+            .expect("ResourceMap LoadedResource RwLock shouldn't be poisoned");
+        *resource_option = Some(resource);
+    }
+
+    /// Runs `func` on the contained owned resource, if it exists
+    fn with_owned(&self, func: impl FnOnce(&dyn super::LoadedResource)) {
+        let resource_option = self
+            .resource
+            .read()
+            .expect("ResourceMap LoadedResource RwLock shouldn't be poisoned");
+        if let Some(resource) = resource_option.as_deref() {
+            func(resource);
+        }
     }
 }
 
@@ -58,7 +87,7 @@ impl Drop for LoadedBundle {
 // keep their parents alive, if they exist. From this, dependencies are always kept alive at least
 // as long as their dependents.
 // TODO: add methods to actually view the entire map
-#[resource("audituer:resource_map")]
+#[resource("auditeur:resource_map")]
 pub struct ResourceMap {
     sender: EventSender,
     /// A map of all of the currently running resources
@@ -105,6 +134,8 @@ impl ResourceMap {
             id.clone(),
             LoadedResource {
                 id,
+                #[cfg(feature = "runtime-loading")]
+                resource: RwLock::new(None),
                 _bundle: parent,
                 dependencies: Vec::new(),
                 sender: self.sender.clone(),
@@ -159,6 +190,11 @@ impl ResourceMap {
         by.dependencies.push(to);
         Ok(())
     }
+
+    fn get_resource(&self, id: impl Into<NamespacedId>) -> Option<Arc<LoadedResource>> {
+        let id = id.into();
+        self.resources.get(&id).and_then(Weak::upgrade)
+    }
 }
 
 #[async_trait]
@@ -186,6 +222,20 @@ impl<M: Message> Listener<M> for ResourceMap {
             }
             RegistryEvent::Stopped(id) => {
                 self.runners.remove(&id);
+            }
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::NonRunnable(supplier) => {
+                if let Some(resource) = self.get_resource(supplier.id()) {
+                    if let Some(owned) = supplier.take() {
+                        resource.supply_owned(owned);
+                    }
+                }
+            }
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::Get(get_request) => {
+                if let Some(resource_info) = self.get_resource(get_request.id()) {
+                    resource_info.with_owned(|owned| get_request.check_ref(owned.resource()));
+                }
             }
             _ => (),
         }

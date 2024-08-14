@@ -80,7 +80,7 @@ impl<M: Message, R: ResourceTrait + Create<M>> Loader<M> for Resource<M, R> {
     ) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = R::RegistryInput::create(registry, R::const_ident()).await?;
         let resource = R::create(registry_input, self.external_input).await;
-        Ok(Box::new(loaded::Resource::new(resource, registry)))
+        Ok(Box::new(loaded::Resource::new(resource)))
     }
 
     fn constraints(&self) -> Constraints {

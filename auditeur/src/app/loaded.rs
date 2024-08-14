@@ -45,11 +45,19 @@ pub trait LoadedResource: Identifiable + Send + Sync {
     /// Optionally provide a [`Runner`] to run in the main loop
     ///
     /// This runner is joined alongside every other runner, if it is given
-    fn runner(self: Box<Self>) -> Option<Box<dyn Runner>>;
-    /// Obtain a reference to the original resource, wrapped in an [`Any`]
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`Err(Self)`] if this resource doesn't provide a runner
+    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>>;
+    /// Obtain a reference to the original resource within a trait object
+    fn resource(&self) -> &dyn ResourceTrait;
+    /// Obtain a reference to the original resource within an [`Any`] trait object
     ///
     /// This allows [`Registry::get_as`] to give a cloned version of the resource
-    fn resource(&self) -> &dyn Any;
+    ///
+    /// Note: this will be deprecated once trait upcasting coercion stabilizes
+    fn resource_any(&self) -> &dyn Any;
 }
 
 /// An object that can run a simple async function, see [`LoadedResource::runner`]
@@ -133,12 +141,16 @@ impl<M: Message, L: ListenerTrait<M>> Identifiable for Listener<M, L> {
 }
 
 impl<M: Message, L: ListenerTrait<M>> LoadedResource for Listener<M, L> {
-    fn resource(&self) -> &dyn Any {
+    fn resource(&self) -> &dyn ResourceTrait {
         &self.inner
     }
 
-    fn runner(self: Box<Self>) -> Option<Box<dyn Runner>> {
-        Some(self)
+    fn resource_any(&self) -> &dyn PathAny {
+        &self.inner
+    }
+
+    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>> {
+        Ok(self)
     }
 }
 
@@ -170,52 +182,25 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
 
 pub struct Resource<R: ResourceTrait> {
     resource: R,
-    #[cfg(feature = "runtime-loading")]
-    event_receiver: EventReceiver,
 }
 
 impl<R: ResourceTrait> Resource<R> {
-    #[cfg_attr(
-        not(feature = "runtime-loading"),
-        allow(unused_variables, clippy::missing_const_for_fn)
-    )]
-    pub fn new<M: Message>(resource: R, registry: &Registry<M>) -> Self {
-        Self {
-            resource,
-            #[cfg(feature = "runtime-loading")]
-            event_receiver: registry.event_receiver(),
-        }
+    pub const fn new(resource: R) -> Self {
+        Self { resource }
     }
 }
 
 impl<R: ResourceTrait> LoadedResource for Resource<R> {
-    fn runner(self: Box<Self>) -> Option<Box<dyn Runner>> {
-        #[cfg(not(feature = "runtime-loading"))]
-        return None;
-        #[cfg(feature = "runtime-loading")]
-        return Some(self);
+    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>> {
+        Err(self)
     }
 
-    fn resource(&self) -> &dyn Any {
+    fn resource(&self) -> &dyn ResourceTrait {
         &self.resource
     }
-}
 
-#[async_trait]
-#[cfg(feature = "runtime-loading")]
-impl<R: ResourceTrait> Runner for Resource<R> {
-    async fn run(mut self: Box<Self>) {
-        while let Some(event) = self.event_receiver.recv().await {
-            match event {
-                RegistryEvent::Stop(ref id) if *id == self.ident() => break,
-                RegistryEvent::Exit => break,
-                #[cfg(feature = "runtime-loading")]
-                RegistryEvent::Get(ref get_request) => {
-                    get_request.check(&self.resource);
-                }
-                _ => (),
-            }
-        }
+    fn resource_any(&self) -> &dyn PathAny {
+        &self.resource
     }
 }
 
@@ -258,7 +243,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
             RegistryEvent::Exit => true,
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(ref get_request) => {
-                if *get_request.id() == W::const_ident() {
+                if get_request.id() == W::const_ident() {
                     // FIXME: find a workaround for this
                     error!("tried to use Get<_> on a Watcher after the app loaded");
                     get_request.cancel();
@@ -278,12 +263,16 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
 }
 
 impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
-    fn resource(&self) -> &dyn Any {
+    fn resource(&self) -> &dyn ResourceTrait {
         &self.inner
     }
 
-    fn runner(self: Box<Self>) -> Option<Box<dyn Runner>> {
-        Some(self)
+    fn resource_any(&self) -> &dyn PathAny {
+        &self.inner
+    }
+
+    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>> {
+        Ok(self)
     }
 }
 

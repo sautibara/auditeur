@@ -33,7 +33,9 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_recursion::async_recursion;
 #[cfg(feature = "runtime-loading")]
@@ -329,7 +331,10 @@ impl BuildingRegistry {
     ) -> Option<R::Ref> {
         let id = R::const_ident().into();
         let loaded = self.resources.get(&id)?;
-        let reference = loaded.resource().downcast_ref::<R>().map(GetRef::get_ref);
+        let reference = loaded
+            .resource_any()
+            .downcast_ref::<R>()
+            .map(GetRef::get_ref);
         // only send the event if the reference actually succeeded
         if reference.is_some() {
             event_sender.send(RegistryEvent::Reference {
@@ -445,15 +450,15 @@ impl<M: Message> Registry<M> {
         };
 
         let mut receiver = building_registry.resource_receiver;
-        // build all of the initial futures into a FuturesUnordered now
-        let mut futures: FuturesUnordered<_> = building_registry
-            .resources
-            .into_values()
-            .filter_map(LoadedResource::runner)
-            // clone the event sender for each runner
-            .zip(std::iter::repeat(self.event_sender.clone()))
-            .map(|(runner, sender)| Self::run_runner(runner, sender))
-            .collect();
+        let mut futures = FuturesUnordered::new();
+        for resource in building_registry.resources.into_values() {
+            match resource.runner() {
+                Ok(runner) => futures.push(Self::run_runner(runner, self.event_sender.clone())),
+                Err(resource) => self
+                    .event_sender
+                    .send(RegistryEvent::NonRunnable(ResourceSupplier::new(resource))),
+            }
+        }
         // drop the sender now so we don't keep the channel alive
         // (which would mess with the complete condition)
         drop(building_registry.resource_sender);
@@ -465,7 +470,7 @@ impl<M: Message> Registry<M> {
                 // thus, we don't care about the result
                 _ = futures.next() => (),
                 resource = receiver.recv().fuse() => {
-                    if let Some(runner) = resource.and_then(LoadedResource::runner) {
+                    if let Some(runner) = resource.and_then(|resource| resource.runner().ok()) {
                         let sender = self.event_sender.clone();
                         futures.push(Self::run_runner(runner, sender));
                     }
@@ -692,6 +697,8 @@ pub enum RegistryEvent {
     /// Note: this will only ever be sent if the `runtime-loading` feature is enabled
     #[cfg(feature = "runtime-loading")]
     Get(Arc<GetRequest>),
+    /// Added a resource to the [`Registry`] that doesn't provide a [`Runner`]
+    NonRunnable(ResourceSupplier),
 }
 
 /// A request to all [resources](mod@crate::resource) to fulfil a [`Get<_>`](crate::input::Get) input
@@ -716,7 +723,20 @@ impl GetRequest {
     /// [`GetRef`] and send the result back to the original asker.
     #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
     pub fn check<R: Resource>(&self, resource: &R) {
-        if !self.matches::<R>() {
+        self.check_ref(resource);
+    }
+
+    /// Returns `true` if `R` if the resource that is asked for by this request
+    #[inline]
+    pub fn matches<R: Resource>(&self) -> bool {
+        R::const_ident() == self.id
+    }
+
+    /// Check if `resource` is the resource that is asked for by the request, and if so, call
+    /// [`GetRef`] and send the result back to the original asker.
+    #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
+    pub fn check_ref(&self, resource: &dyn Resource) {
+        if !self.matches_ref(resource) {
             return;
         }
         let Some(sender) = self
@@ -738,14 +758,13 @@ impl GetRequest {
     }
 
     /// Returns `true` if `resource` if the resource that is asked for by this request
-    #[inline]
-    pub fn matches<R: Resource>(&self) -> bool {
-        R::const_ident() == self.id
+    pub fn matches_ref(&self, resource: &dyn Resource) -> bool {
+        resource.ident() == self.id
     }
 
     /// Returns the [id](NamespacedId) of the resource that the request is asking for
-    pub const fn id(&self) -> &NamespacedId {
-        &self.id
+    pub fn id(&self) -> NamespacedIdRef {
+        self.id.referenced()
     }
 
     /// Cancels the get request, instantly returning nothing
@@ -780,6 +799,61 @@ impl Debug for GetRequest {
 impl std::hash::Hash for GetRequest {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+    }
+}
+
+#[derive(Clone)]
+pub struct ResourceSupplier {
+    arc: Arc<ResourceSupplierInner>,
+}
+
+struct ResourceSupplierInner {
+    id: NamespacedId,
+    resource: Mutex<Option<Box<dyn LoadedResource>>>,
+}
+
+impl ResourceSupplier {
+    /// Get the [`NamespacedId`] of the inner resource
+    #[must_use]
+    pub fn id(&self) -> NamespacedIdRef {
+        self.arc.id.referenced()
+    }
+
+    fn new(resource: Box<dyn LoadedResource>) -> Self {
+        let arc = ResourceSupplierInner {
+            id: resource.ident().into_owned(),
+            resource: Mutex::new(Some(resource)),
+        };
+        Self { arc: Arc::new(arc) }
+    }
+
+    pub(crate) fn take(&self) -> Option<Box<dyn LoadedResource>> {
+        let mut resource = self
+            .arc
+            .resource
+            .lock()
+            .expect("ResourceSupplier lock shouldn't be poisoned");
+        resource.take()
+    }
+}
+
+impl Debug for ResourceSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ResourceSupplier")
+    }
+}
+
+impl PartialEq for ResourceSupplier {
+    fn eq(&self, other: &Self) -> bool {
+        self.arc.id == other.arc.id
+    }
+}
+
+impl Eq for ResourceSupplier {}
+
+impl Hash for ResourceSupplier {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.arc.id.hash(state);
     }
 }
 
