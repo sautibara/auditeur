@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock, Weak},
 };
 
 use anyhow::{anyhow, bail};
+use dashmap::DashMap;
 use log::trace;
 
 use crate::{app::EventSender, prelude::*};
@@ -90,19 +91,8 @@ impl Drop for LoadedBundle {
 #[resource("auditeur:resource_map")]
 pub struct ResourceMap {
     sender: EventSender,
-    /// A map of all of the currently running resources
-    ///
-    /// These resources are the roots of what stays loaded, and as such, are stored as strong
-    /// references
-    runners: HashMap<NamespacedId, Arc<LoadedResource>>,
-    /// A map of all of the resources that have ever been loaded
-    ///
-    /// If the underlying Arc unloads (no strong references point to it anymore), that means that
-    /// the resource also must be unloaded. As such, this map holds no strong references to any of
-    /// these resources, allowing them to unload if necessary.
-    resources: HashMap<NamespacedId, Weak<LoadedResource>>,
-    /// A map of all of the bundles that have ever been loaded
-    bundles: HashMap<NamespacedId, Weak<LoadedBundle>>,
+    /// This contains all of the shared information
+    shared: Arc<Shared>,
     /// The resources that either aren't loaded or have no references yet
     ///
     /// These can't be put in the main resources map, as they'd need a reference to keep them alive
@@ -113,14 +103,32 @@ pub struct ResourceMap {
     bundle_queue: HashMap<NamespacedId, LoadedBundle>,
 }
 
+struct Shared {
+    /// A map of all of the currently running resources
+    ///
+    /// These resources are the roots of what stays loaded, and as such, are stored as strong
+    /// references
+    runners: DashMap<NamespacedId, Arc<LoadedResource>>,
+    /// A map of all of the resources that have ever been loaded
+    ///
+    /// If the underlying Arc unloads (no strong references point to it anymore), that means that
+    /// the resource also must be unloaded. As such, this map holds no strong references to any of
+    /// these resources, allowing them to unload if necessary.
+    resources: DashMap<NamespacedId, Weak<LoadedResource>>,
+    /// A map of all of the bundles that have ever been loaded
+    bundles: DashMap<NamespacedId, Weak<LoadedBundle>>,
+}
+
 #[create]
 impl<M: Message> Create<M> for ResourceMap {
     async fn create(sender: EventSender) -> Self {
         Self {
             sender,
-            runners: HashMap::new(),
-            resources: HashMap::new(),
-            bundles: HashMap::new(),
+            shared: Arc::new(Shared {
+                runners: DashMap::new(),
+                resources: DashMap::new(),
+                bundles: DashMap::new(),
+            }),
             resource_queue: HashMap::new(),
             bundle_queue: HashMap::new(),
         }
@@ -128,6 +136,14 @@ impl<M: Message> Create<M> for ResourceMap {
 }
 
 impl ResourceMap {
+    /// Obtain a [`Handle`] to the map
+    #[must_use]
+    pub fn handle(&self) -> Handle {
+        Handle {
+            shared: self.shared.clone(),
+        }
+    }
+
     fn add_resource(&mut self, id: NamespacedId, parent: &NamespacedId) -> Result<()> {
         let parent = self.clone_bundle(parent)?;
         self.resource_queue.insert(
@@ -160,9 +176,11 @@ impl ResourceMap {
     fn clone_resource(&mut self, id: &NamespacedId) -> Result<Arc<LoadedResource>> {
         if let Some(resource) = self.resource_queue.remove(id) {
             let resource = Arc::new(resource);
-            self.resources.insert(id.clone(), Arc::downgrade(&resource));
+            self.shared
+                .resources
+                .insert(id.clone(), Arc::downgrade(&resource));
             Ok(resource)
-        } else if let Some(resource) = self.resources.get(id).and_then(Weak::upgrade) {
+        } else if let Some(resource) = self.get_resource(id) {
             Ok(resource)
         } else {
             bail!("could not find resource: {id}");
@@ -172,9 +190,11 @@ impl ResourceMap {
     fn clone_bundle(&mut self, id: &NamespacedId) -> Result<Arc<LoadedBundle>> {
         if let Some(bundle) = self.bundle_queue.remove(id) {
             let bundle = Arc::new(bundle);
-            self.bundles.insert(id.clone(), Arc::downgrade(&bundle));
+            self.shared
+                .bundles
+                .insert(id.clone(), Arc::downgrade(&bundle));
             Ok(bundle)
-        } else if let Some(bundle) = self.bundles.get(id).and_then(Weak::upgrade) {
+        } else if let Some(bundle) = self.get_bundle(id) {
             Ok(bundle)
         } else {
             bail!("could not find bundle: {id}");
@@ -191,9 +211,18 @@ impl ResourceMap {
         Ok(())
     }
 
-    fn get_resource(&self, id: impl Into<NamespacedId>) -> Option<Arc<LoadedResource>> {
-        let id = id.into();
-        self.resources.get(&id).and_then(Weak::upgrade)
+    fn get_resource(&self, id: &NamespacedId) -> Option<Arc<LoadedResource>> {
+        self.shared
+            .resources
+            .get(id)
+            .and_then(|resource| resource.upgrade())
+    }
+
+    fn get_bundle(&self, id: &NamespacedId) -> Option<Arc<LoadedBundle>> {
+        self.shared
+            .bundles
+            .get(id)
+            .and_then(|resource| resource.upgrade())
     }
 }
 
@@ -218,14 +247,14 @@ impl<M: Message> Listener<M> for ResourceMap {
             }
             RegistryEvent::Running(id) => {
                 let resource = self.clone_resource(&id)?;
-                self.runners.insert(id, resource);
+                self.shared.runners.insert(id, resource);
             }
             RegistryEvent::Stopped(id) => {
-                self.runners.remove(&id);
+                self.shared.runners.remove(&id);
             }
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::NonRunnable(supplier) => {
-                if let Some(resource) = self.get_resource(supplier.id()) {
+                if let Some(resource) = self.get_resource(&supplier.id().into_owned()) {
                     if let Some(owned) = supplier.take() {
                         resource.supply_owned(owned);
                     }
@@ -233,12 +262,58 @@ impl<M: Message> Listener<M> for ResourceMap {
             }
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(get_request) => {
-                if let Some(resource_info) = self.get_resource(get_request.id()) {
+                if let Some(resource_info) = self.get_resource(&get_request.id().into_owned()) {
                     resource_info.with_owned(|owned| get_request.check_ref(owned.resource()));
                 }
             }
             _ => (),
         }
         Ok(())
+    }
+}
+
+/// A synchronized reference to a [`ResourceMap`] that allows querying the current state of the
+/// parent [`Registry`]
+#[derive(Clone)]
+#[cfg_attr(feature = "path-any", derive(PathAny))]
+pub struct Handle {
+    shared: Arc<Shared>,
+}
+
+impl crate::input::GetRef for ResourceMap {
+    type Ref = Handle;
+    fn get_ref(&self) -> Self::Ref {
+        self.handle()
+    }
+}
+
+impl Handle {
+    /// Returns a set of the [`NamespacedId`]s of each [`Resource`] loaded in the [`Registry`]
+    pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        self.shared
+            .resources
+            .iter()
+            .filter(|resource| resource.value().strong_count() != 0)
+            .map(|resource| resource.key().clone())
+            .collect()
+    }
+
+    /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] loaded in the [`Registry`]
+    pub fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        self.shared
+            .bundles
+            .iter()
+            .filter(|bundle| bundle.value().strong_count() != 0)
+            .map(|bundle| bundle.key().clone())
+            .collect()
+    }
+
+    /// Returns a set of the [`NamespacedId`]s of each [`Resource`] running in the main loop
+    pub fn running_resources(&self) -> HashSet<NamespacedId> {
+        self.shared
+            .runners
+            .iter()
+            .map(|runner| runner.key().clone())
+            .collect()
     }
 }
