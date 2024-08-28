@@ -69,7 +69,8 @@ pub trait Watcher<M: Message>: Resource + Send {
 
     async fn run(&mut self, input: &mut Self::Input) -> anyhow::Result<()>;
 
-    async fn exit(&mut self, _input: &mut Self::Input) -> anyhow::Result<()> {
+    async fn exit(&mut self, input: &mut Self::Input) -> anyhow::Result<()> {
+        let _ = input;
         Ok(())
     }
 

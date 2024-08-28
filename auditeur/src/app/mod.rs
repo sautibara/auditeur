@@ -864,6 +864,7 @@ impl GetRequest {
     }
 
     /// Returns `true` if `resource` if the resource that is asked for by this request
+    #[inline]
     pub fn matches_ref(&self, resource: &dyn Resource) -> bool {
         resource.ident() == self.id
     }
@@ -884,6 +885,9 @@ impl GetRequest {
     }
 
     /// Fulfils the request by sending `reference`
+    ///
+    /// Note: this doesn't actually check if the reference matches the request - use
+    /// [`Self::matches`] to check first
     pub(crate) fn send(&self, reference: Box<dyn crate::input::CloneAny>) {
         let Some(sender) = self
             .sender

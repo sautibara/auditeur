@@ -128,7 +128,7 @@ pub struct Plugin {
 enum PluginSerialized {
     // only a string - default to an enabled github source
     // ex: "sautibara/sautibara-rpc"
-    UrlOnly(GitShorthand),
+    UrlOnly(git::Shorthand),
     // no defaults, everything is included
     Full {
         // the source is flattened so it can be provided with only the source type

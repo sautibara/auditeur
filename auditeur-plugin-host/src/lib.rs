@@ -14,31 +14,105 @@
 // but since the trait objects reference code from their library, if the library gets unloaded,
 // they break (they can't find the thing that they're referencing, so they segfault)
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    borrow::Borrow,
+    collections::HashMap,
+    fmt::Display,
+    path::{Path, PathBuf},
+};
 
 use arena::Arena;
-use auditeur_plugin::auditeur::{app::App, prelude::*, Message};
-use config::{PluginName, Source};
+use auditeur_plugin::auditeur::{app::App, Message};
 use futures::Future;
 use log::error;
 use registry::Finalized;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod arena;
 pub mod config;
 pub mod registry;
+pub mod source;
 
 mod prelude {
     pub use crate::{
-        config::{self, GitShorthand, PluginName, Source},
+        config,
         registry::PluginRegistry,
-        Error, ErrorSink,
+        source::{self, git, Source},
+        Error, ErrorSink, PluginName,
     };
+    pub use auditeur_plugin::prelude::*;
 }
 
 use prelude::*;
 
 pub use auditeur_plugin;
+
+/// Spawn a blocking closure in [`tokio`], resuming any panics from the closure if they occur
+async fn spawn_blocking<F, R>(func: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match tokio::task::spawn_blocking(func).await {
+        Err(err) => std::panic::resume_unwind(err.into_panic()),
+        Ok(val) => val,
+    }
+}
+
+/// Serialize `value` to the file at `path`, using [`ron`]
+async fn serialize<T: Serialize + Send + Sync + 'static>(
+    path: PathBuf,
+    value: T,
+) -> Result<(), Error> {
+    spawn_blocking(move || {
+        let file = std::fs::File::create(&path)?;
+        ron::ser::to_writer(file, &value)
+            .map_err(|error| Error::Serialization { error, file: path })?;
+        Ok(())
+    })
+    .await
+}
+
+/// Deserialize `value` from to the file at `path`, using [`ron`]
+async fn deserialize<T: for<'de> Deserialize<'de> + Send + 'static>(
+    path: PathBuf,
+) -> Result<T, Error> {
+    spawn_blocking(move || {
+        let file = std::fs::File::open(&path)?;
+        let value = ron::de::from_reader(file)
+            .map_err(|error| Error::Deserialization { error, file: path })?;
+        Ok(value)
+    })
+    .await
+}
+
+/// Returns `true` if `path` exists and isn't empty
+fn path_exists_with_children(path: &Path) -> Result<bool, Error> {
+    Ok(path.exists() && path.is_dir() && std::fs::read_dir(path)?.next().is_some())
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct PluginName(pub String);
+
+impl Borrow<String> for PluginName {
+    fn borrow(&self) -> &String {
+        &self.0
+    }
+}
+
+impl Borrow<str> for PluginName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for PluginName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 pub trait AppExt {
     /// # Safety
