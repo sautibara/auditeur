@@ -146,7 +146,7 @@ debug = {debug}
         source: PathBuf,
         dependencies: &HashMap<PackageName, PluginName>,
         plugin: &PluginName,
-    ) -> Result<(), Error> {
+    ) -> Result<PackageName, Error> {
         let manifest = Manifest::load_dir(&source).await?;
 
         let Some(package) = manifest.package.as_ref() else {
@@ -183,9 +183,9 @@ debug = {debug}
             package_name: package_name.clone(),
             library_name,
         };
-        self.crates.insert(package_name, workspace_crate);
+        self.crates.insert(package_name.clone(), workspace_crate);
 
-        Ok(())
+        Ok(package_name)
     }
 
     fn create_dependency_link(

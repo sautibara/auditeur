@@ -36,9 +36,9 @@ pub mod source;
 
 mod prelude {
     pub use crate::{
-        config,
+        config::{self, host::Enabled},
         registry::PluginRegistry,
-        source::{self, git, Source},
+        source::{self, git, Source, Updated},
         Error, ErrorSink, PluginName,
     };
     pub use auditeur_plugin::prelude::*;
@@ -217,6 +217,11 @@ pub enum Error {
     DependencyNotFound {
         plugin: PluginName,
         dependency: PluginName,
+    },
+    #[error("compiler artifact for '{plugin}' ('{artifact}') has no filename")]
+    ArtifactHasNoFilename {
+        plugin: PluginName,
+        artifact: PathBuf,
     },
 }
 

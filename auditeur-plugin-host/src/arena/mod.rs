@@ -16,8 +16,9 @@ use log::{trace, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncWriteExt, process::Command};
 
-use crate::{config::host::Enabled, prelude::*, registry, source::Updated};
+use crate::{prelude::*, registry};
 
+mod binaries;
 mod manifest;
 mod source_list;
 mod workspace;

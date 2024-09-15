@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use crate::{prelude::*, source::Updated};
+use crate::prelude::*;
 
 #[derive(Clone, Debug)]
 pub enum Artifacts {
@@ -57,6 +57,22 @@ impl SourceList {
             sources: HashMap::new(),
             plugins: HashMap::new(),
         })
+    }
+
+    pub fn get_source(&self, source: &Source) -> Option<&LoadedSource> {
+        self.sources.get(source)
+    }
+
+    pub fn get_plugin(&self, plugin: &PluginName) -> Option<&LoadedPlugin> {
+        self.plugins.get(plugin)
+    }
+
+    pub const fn plugins(&self) -> &HashMap<PluginName, LoadedPlugin> {
+        &self.plugins
+    }
+
+    pub fn contains(&self, source: &Source) -> bool {
+        self.sources.contains_key(source)
     }
 
     pub async fn add_source(
