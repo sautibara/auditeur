@@ -182,8 +182,6 @@ pub enum Error {
         error: cargo_toml::Error,
         path: PathBuf,
     },
-    #[error("plugin '{0}' does not specify a package in its Cargo.toml")]
-    NoPackage(PluginName),
     #[error("plugin '{for_plugin}' requires dependency '{dependency}', which doesn't exist")]
     UnsatisfiedDependency {
         for_plugin: PluginName,
@@ -199,15 +197,26 @@ pub enum Error {
     InvalidRustc { found: String, expected: String },
     #[error("recieved message from cargo: {}", .0.message.rendered.as_deref().unwrap_or_default())]
     CargoMessage(cargo_metadata::CompilerMessage),
-    #[error("plugin '{name}' has no library crate (checked {})", manifest_path.display())]
-    PluginNoLibrary {
-        name: PluginName,
+    #[error(
+        "plugin '{plugin}' has no library crate (checked {})",
+        manifest_path.display(),
+    )]
+    LibraryExpected {
+        plugin: PluginName,
         manifest_path: PathBuf,
     },
-    #[error("plugin '{name}' has no package (checked {})", manifest_path.display())]
-    PluginNoPackage {
-        name: PluginName,
+    #[error(
+        "plugin '{plugin}' has no package (checked {})",
+        manifest_path.display()
+    )]
+    PackageExpected {
+        plugin: PluginName,
         manifest_path: PathBuf,
+    },
+    #[error("dependency '{dependency}' for plugin '{plugin}' was not found")]
+    DependencyNotFound {
+        plugin: PluginName,
+        dependency: PluginName,
     },
 }
 

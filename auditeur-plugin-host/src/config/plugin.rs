@@ -50,6 +50,13 @@ pub struct Single {
     pub dependencies: HashMap<PluginName, semver::VersionReq>,
 }
 
+impl Single {
+    #[must_use]
+    pub const fn name(&self) -> &PluginName {
+        &self.plugin.name
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::module_name_repetitions)]
 pub struct PluginInfo {

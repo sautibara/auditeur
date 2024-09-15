@@ -118,6 +118,7 @@ pub struct Arena {
 pub struct Plugin {
     pub source: Source,
     pub enabled: Enabled,
+    pub dependencies: Vec<Plugin>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -138,6 +139,8 @@ enum PluginSerialized {
         // skip serializing or deserializing if it's already the default value
         #[serde(default, skip_serializing_if = "is_default")]
         enabled: Enabled,
+        #[serde(default, skip_serializing_if = "is_default")]
+        dependencies: Vec<Plugin>,
     },
 }
 
@@ -178,6 +181,7 @@ impl From<Plugin> for PluginSerialized {
         Self::Full {
             source: plugin.source,
             enabled: plugin.enabled,
+            dependencies: plugin.dependencies,
         }
     }
 }
@@ -188,8 +192,17 @@ impl From<PluginSerialized> for Plugin {
             PluginSerialized::UrlOnly(url) => Self {
                 source: Source::Github(url),
                 enabled: Enabled::default(),
+                dependencies: vec![],
             },
-            PluginSerialized::Full { source, enabled } => Self { source, enabled },
+            PluginSerialized::Full {
+                source,
+                enabled,
+                dependencies,
+            } => Self {
+                source,
+                enabled,
+                dependencies,
+            },
         }
     }
 }
