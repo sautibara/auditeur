@@ -79,13 +79,14 @@ pub trait Watcher<M: Message>: Resource + Send {
     }
 }
 
-pub trait Create<M: Message> {
+pub trait Create<M: Message>: Sized {
     type RegistryInput: Input<M>;
     type ExternalInput: Send;
 
+    // TODO: accept a Result
     #[allow(opaque_hidden_inferred_bound)] // false positive?
     fn create(
         registry: Self::RegistryInput,
         external: Self::ExternalInput,
-    ) -> impl Future<Output = Self> + Send;
+    ) -> impl Future<Output = Result<Self, anyhow::Error>> + Send;
 }

@@ -102,6 +102,9 @@ pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn A
     Box::<dyn std::any::Any + 'static>::downcast(object)
 }
 
+#[doc(hidden)]
+pub use anyhow;
+
 pub mod prelude {
     pub use crate::{
         app::{Constraints, RegistryEvent, Stopper},
@@ -160,4 +163,10 @@ pub enum Error {
     BundleNotFound { id: NamespacedId },
     #[error("downcast of resource '{id}' failed, has it been loaded?")]
     DowncastFailed { id: NamespacedId },
+    #[error("resource '{id}' had an error: {error:?}")]
+    FromResource {
+        id: NamespacedId,
+        #[source]
+        error: anyhow::Error,
+    },
 }

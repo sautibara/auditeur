@@ -48,7 +48,12 @@ impl<M: Message, L: ListenerTrait<M> + Create<M>> Loader<M> for Listener<M, L> {
         registry: &Registry<M>,
     ) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = L::RegistryInput::create(registry, L::const_ident()).await?;
-        let listener = L::create(registry_input, self.external_input).await;
+        let listener = L::create(registry_input, self.external_input)
+            .await
+            .map_err(|error| Error::FromResource {
+                id: L::const_ident().into(),
+                error,
+            })?;
         let runner = loaded::Listener::build(listener, registry).await?;
         Ok(Box::new(runner))
     }
@@ -79,7 +84,12 @@ impl<M: Message, R: ResourceTrait + Create<M>> Loader<M> for Resource<M, R> {
         registry: &Registry<M>,
     ) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = R::RegistryInput::create(registry, R::const_ident()).await?;
-        let resource = R::create(registry_input, self.external_input).await;
+        let resource = R::create(registry_input, self.external_input)
+            .await
+            .map_err(|error| Error::FromResource {
+                id: R::const_ident().into(),
+                error,
+            })?;
         Ok(Box::new(loaded::Resource::new(resource)))
     }
 
@@ -109,7 +119,12 @@ impl<M: Message, W: WatcherTrait<M> + Create<M>> Loader<M> for Watcher<M, W> {
         registry: &Registry<M>,
     ) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = W::RegistryInput::create(registry, W::const_ident()).await?;
-        let watcher = W::create(registry_input, self.external_input).await;
+        let watcher = W::create(registry_input, self.external_input)
+            .await
+            .map_err(|error| Error::FromResource {
+                id: W::const_ident().into(),
+                error,
+            })?;
         let runner = loaded::Watcher::build(watcher, registry).await?;
         Ok(Box::new(runner))
     }

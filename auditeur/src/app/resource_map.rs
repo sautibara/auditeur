@@ -124,8 +124,8 @@ struct Shared {
 
 #[create]
 impl<M: Message> Create<M> for ResourceMap {
-    async fn create(sender: EventSender) -> Self {
-        Self {
+    async fn create(sender: EventSender) -> Result<Self> {
+        Ok(Self {
             sender,
             shared: Arc::new(Shared {
                 runners: DashMap::new(),
@@ -134,7 +134,7 @@ impl<M: Message> Create<M> for ResourceMap {
             }),
             resource_queue: HashMap::new(),
             bundle_queue: HashMap::new(),
-        }
+        })
     }
 }
 
