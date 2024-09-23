@@ -64,6 +64,12 @@ impl Shorthand {
             shorthand: self,
         }
     }
+
+    pub(crate) fn as_bytes(&self) -> impl Iterator<Item = u8> + '_ {
+        (self.user.as_bytes().iter().copied())
+            .chain(std::iter::once(0)) // just put a null byte in the middle
+            .chain(self.repo.as_bytes().iter().copied())
+    }
 }
 
 impl Display for Shorthand {

@@ -1,6 +1,9 @@
 use std::{
+    borrow::Borrow,
     fmt::Display,
+    ops::Deref,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use log::trace;
@@ -11,14 +14,8 @@ use crate::prelude::*;
 pub mod git;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Binary {
-    pub path: PathBuf,
-    pub name: PluginName,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum Source {
+pub enum Variant {
     // these are the top three git hosts
     // TODO: generic git source
     // TODO: choosing commit / version
@@ -29,17 +26,41 @@ pub enum Source {
     Builtin(Binary),
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Binary {
+    pub path: PathBuf,
+    pub name: PluginName,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(from = "Variant", into = "Variant")]
+pub struct Source {
+    variant: Variant,
+    id: OwnedId,
+}
+
 impl Source {
     pub fn new_git(user: impl Into<String>, repo: impl Into<String>, host: git::Host) -> Self {
         let shorthand = git::Shorthand {
             user: user.into(),
             repo: repo.into(),
         };
-        match host {
-            git::Host::Github => Self::Github(shorthand),
-            git::Host::Gitlab => Self::Gitlab(shorthand),
-            git::Host::Bitbucket => Self::Bitbucket(shorthand),
-        }
+        let variant = match host {
+            git::Host::Github => Variant::Github(shorthand),
+            git::Host::Gitlab => Variant::Gitlab(shorthand),
+            git::Host::Bitbucket => Variant::Bitbucket(shorthand),
+        };
+        variant.into()
+    }
+
+    #[must_use]
+    pub const fn variant(&self) -> &Variant {
+        &self.variant
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> &OwnedId {
+        &self.id
     }
 
     /// Load this source into the directory `parent_dir`
@@ -50,18 +71,18 @@ impl Source {
     /// - If there is an error with the filesystem
     pub async fn load_into(&self, parent_dir: &Path) -> Result<Artifact, Error> {
         trace!("  loading source '{self}'");
-        let artifact = match self {
-            Self::Github(shorthand) => {
+        let artifact = match &self.variant {
+            Variant::Github(shorthand) => {
                 Self::clone_git_into(shorthand.with_host(git::Host::Github), parent_dir).await?
             }
-            Self::Gitlab(shorthand) => {
+            Variant::Gitlab(shorthand) => {
                 Self::clone_git_into(shorthand.with_host(git::Host::Gitlab), parent_dir).await?
             }
-            Self::Bitbucket(shorthand) => {
+            Variant::Bitbucket(shorthand) => {
                 Self::clone_git_into(shorthand.with_host(git::Host::Bitbucket), parent_dir).await?
             }
-            Self::Builtin(binary) => Artifact::Binary(binary.clone()),
-            Self::Path(path) => Self::load_path_into(path, parent_dir).await?,
+            Variant::Builtin(binary) => Artifact::Binary(binary.clone()),
+            Variant::Path(path) => Self::load_path_into(path, parent_dir).await?,
         };
         Ok(artifact)
     }
@@ -111,12 +132,12 @@ impl Source {
 
 impl Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Github(shorthand) => write!(f, r#"( github: "{shorthand}" )"#),
-            Self::Gitlab(shorthand) => write!(f, r#"( gitlab: "{shorthand}" )"#),
-            Self::Bitbucket(shorthand) => write!(f, r#"( bitbucket: "{shorthand}" )"#),
-            Self::Path(path) => write!(f, r#"( path: "{}" )"#, path.display()),
-            Self::Builtin(Binary { path, name }) => {
+        match &self.variant {
+            Variant::Github(shorthand) => write!(f, r#"( github: "{shorthand}" )"#),
+            Variant::Gitlab(shorthand) => write!(f, r#"( gitlab: "{shorthand}" )"#),
+            Variant::Bitbucket(shorthand) => write!(f, r#"( bitbucket: "{shorthand}" )"#),
+            Variant::Path(path) => write!(f, r#"( path: "{}" )"#, path.display()),
+            Variant::Builtin(Binary { path, name }) => {
                 write!(
                     f,
                     r#"( builtin: ( path: "{}", name: {name} ) )"#,
@@ -124,6 +145,77 @@ impl Display for Source {
                 )
             }
         }
+    }
+}
+
+impl From<Variant> for Source {
+    fn from(variant: Variant) -> Self {
+        let id = match &variant {
+            Variant::Github(shorthand) => OwnedId::create(0, shorthand.as_bytes()),
+            Variant::Gitlab(shorthand) => OwnedId::create(1, shorthand.as_bytes()),
+            Variant::Bitbucket(shorthand) => OwnedId::create(2, shorthand.as_bytes()),
+            Variant::Path(path) => {
+                let bytes = path.as_os_str().as_encoded_bytes();
+                OwnedId::create(3, bytes.iter().copied())
+            }
+            Variant::Builtin(binary) => {
+                let bytes = binary.path.as_os_str().as_encoded_bytes();
+                OwnedId::create(4, bytes.iter().copied())
+            }
+        };
+        Self { variant, id }
+    }
+}
+
+impl From<Source> for Variant {
+    fn from(value: Source) -> Self {
+        value.variant
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct OwnedId(Arc<[u8]>);
+
+impl OwnedId {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes.into())
+    }
+
+    fn create(discriminant: u8, bytes: impl IntoIterator<Item = u8>) -> Self {
+        let mut vec = vec![discriminant];
+        vec.extend(bytes.into_iter());
+        Self::new(vec)
+    }
+}
+
+#[repr(transparent)]
+pub struct Id([u8]);
+
+impl Deref for OwnedId {
+    type Target = Id;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: OwnedId is #[repr(transparent)] as Arc<[u8]>
+        let bytes: &Arc<[u8]> = unsafe { &*(self as *const Self).cast() };
+        // coerce the &Arc<[u8]> into a &[u8]
+        let byte_slice: &[u8] = bytes;
+        // SAFETY: Id is #[repr(transparent)] as [u8]
+        let shared_id: &Id = unsafe { &*(byte_slice as *const [u8] as *const Id) };
+
+        shared_id
+    }
+}
+
+impl Borrow<Id> for OwnedId {
+    fn borrow(&self) -> &Id {
+        self
+    }
+}
+
+impl Borrow<Id> for Source {
+    fn borrow(&self) -> &Id {
+        &self.id
     }
 }
 
