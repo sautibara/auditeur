@@ -123,7 +123,7 @@ impl<M: Message> Bundle<M> {
 
     /// Add a [`Watcher`] to this bundle
     ///
-    /// Watchers run in the main loop but never recieve from the main message channel (although
+    /// Watchers run in the main loop but never receive from the main message channel (although
     /// they can send to it). Like listeners, they can use [inputs](Input) to reference and talk to
     /// other [resources](mod@crate::resource).
     pub fn with_watcher<W: Watcher<M> + Create<M>>(self, external_input: W::ExternalInput) -> Self {

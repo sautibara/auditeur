@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    fmt::Display,
+    fmt::{Debug, Display},
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
@@ -173,7 +173,7 @@ impl From<Source> for Variant {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct OwnedId(Arc<[u8]>);
 
@@ -186,6 +186,12 @@ impl OwnedId {
         let mut vec = vec![discriminant];
         vec.extend(bytes.into_iter());
         Self::new(vec)
+    }
+}
+
+impl Debug for OwnedId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", &**self)
     }
 }
 
@@ -204,6 +210,24 @@ impl Deref for OwnedId {
         let shared_id: &Id = unsafe { &*(byte_slice as *const [u8] as *const Id) };
 
         shared_id
+    }
+}
+
+impl Debug for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let variant = match self.0[0] {
+            0 => "Github",
+            1 => "Gitlab",
+            2 => "Bitbucket",
+            3 => "Path",
+            4 => "Builtin",
+            _ => unreachable!("These are the only variants possible now."),
+        };
+        write!(
+            f,
+            "source::Id::{variant}({})",
+            String::from_utf8_lossy(&self.0[1..])
+        )
     }
 }
 

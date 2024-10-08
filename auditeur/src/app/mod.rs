@@ -96,6 +96,8 @@ pub(crate) struct BuiltBundle {
 pub struct App<M: Message> {
     loaders: HashMap<NamespacedId, Option<BundledLoader<M>>>,
     bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
+    // TODO: check if adding App events is a good idea
+    events: Vec<RegistryEvent>,
 }
 
 impl<M: Message> App<M> {
@@ -105,13 +107,18 @@ impl<M: Message> App<M> {
         allow(clippy::let_and_return, unused_mut)
     )]
     pub fn new() -> Self {
-        let mut this = Self {
-            loaders: HashMap::new(),
-            bundles: HashMap::new(),
-        };
+        let mut this = Self::new_empty();
         #[cfg(feature = "resource-map")]
         this.add_bundle(new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(()));
         this
+    }
+
+    fn new_empty() -> Self {
+        Self {
+            loaders: HashMap::new(),
+            bundles: HashMap::new(),
+            events: Vec::new(),
+        }
     }
 
     /// Add a [`Bundle`] to the app, supplied by a [`Supplier`](bundle::Supplier)
@@ -199,6 +206,8 @@ impl<M: Message> App<M> {
         for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
             self.resolve_loader(registry, &loader).await?;
         }
+        // free events :)
+        registry.event_sender_ref().extend(self.events);
         Ok(())
     }
 
@@ -266,6 +275,26 @@ impl<M: Message> App<M> {
             }
         }
         Ok(())
+    }
+
+    pub fn add_error(&mut self, source: NamespacedId, error: anyhow::Error) {
+        self.events.push(RegistryEvent::Error(ErrorEvent {
+            source,
+            error: Arc::new(error),
+        }));
+    }
+
+    pub fn add_errors<I: IntoIterator<Item = anyhow::Error>>(
+        &mut self,
+        source: NamespacedIdRef<'_>,
+        errors: I,
+    ) {
+        self.events.extend(errors.into_iter().map(|error| {
+            RegistryEvent::Error(ErrorEvent {
+                source: source.into_owned(),
+                error: Arc::new(error),
+            })
+        }));
     }
 }
 
@@ -482,8 +511,8 @@ impl RunningRegistry {
 ///
 /// There are many bundled channels for notification passing:
 /// - To tell only one resource or the entire program to stop, use a [`Stopper`] through [`Self::stopper`]
-/// - To recieve notifications about what happens to the registry, use [`Self::event_receiver`]
-/// - To listen to messages, use [`Self::message_reciever`]
+/// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
+/// - To listen to messages, use [`Self::message_receiver`]
 pub struct Registry<M: Message> {
     message_sender: broadcast::Sender<M>,
     event_sender: EventSender,
@@ -585,6 +614,7 @@ impl<M: Message> Registry<M> {
             id: loader.ident().into(),
             bundle,
         });
+        // TODO: handle this error
         let resource = loader.load(self).await?;
         Ok(self.add_boxed_resource(resource).await)
     }
@@ -681,6 +711,11 @@ impl<M: Message> Registry<M> {
     pub const fn is_handle(&self) -> bool {
         self.state.is_running()
     }
+
+    /// Creates a new [`App`] that can eventually be added to this registry
+    pub fn new_app(&self) -> App<M> {
+        App::new_empty()
+    }
 }
 
 /// Methods to access the various channels that the registry contains
@@ -691,7 +726,7 @@ impl<M: Message> Registry<M> {
     }
 
     #[must_use]
-    pub fn message_reciever(&self) -> broadcast::Receiver<M> {
+    pub fn message_receiver(&self) -> broadcast::Receiver<M> {
         self.message_sender.subscribe()
     }
 
@@ -705,6 +740,11 @@ impl<M: Message> Registry<M> {
     #[must_use]
     pub(crate) fn event_sender(&self) -> EventSender {
         self.event_sender.clone()
+    }
+
+    #[must_use]
+    pub(crate) const fn event_sender_ref(&self) -> &EventSender {
+        &self.event_sender
     }
 
     #[must_use]
@@ -814,6 +854,48 @@ pub enum RegistryEvent {
     /// Added a resource to the [`Registry`] that doesn't provide a [`Runner`]
     #[cfg(feature = "runtime-loading")]
     NonRunnable(ResourceSupplier),
+    /// The resource `from` emitted `error`
+    Error(ErrorEvent),
+}
+
+#[derive(Clone, Debug)]
+pub struct ErrorEvent {
+    source: NamespacedId,
+    error: Arc<anyhow::Error>,
+}
+
+impl ErrorEvent {
+    fn new(source: NamespacedId, error: anyhow::Error) -> Self {
+        Self {
+            source,
+            error: Arc::new(error),
+        }
+    }
+
+    #[must_use]
+    pub fn source(&self) -> NamespacedIdRef {
+        self.source.referenced()
+    }
+
+    #[must_use]
+    pub fn error(&self) -> &anyhow::Error {
+        &self.error
+    }
+}
+
+impl PartialEq for ErrorEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source && Arc::ptr_eq(&self.error, &other.error)
+    }
+}
+
+impl Eq for ErrorEvent {}
+
+impl Hash for ErrorEvent {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.source.hash(state);
+        Arc::as_ptr(&self.error).hash(state);
+    }
 }
 
 /// A request to all [resources](mod@crate::resource) to fulfil a [`Get<_>`](crate::input::Get) input
@@ -1022,9 +1104,12 @@ impl<M: Message> Input<M> for Stopper {
     }
 }
 
+/// A sender for [`RegistryEvent`]s
+///
+/// Each of these events will always be read by every other receiver; see [`EventReceiver`] for
+/// more information about the channel.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "path-any", derive(PathAny))]
-#[doc(hidden)] // forced to be public because it's used as an input
 pub struct EventSender {
     watch: watch::Sender<Vec<RegistryEvent>>,
 }
@@ -1038,6 +1123,26 @@ impl EventSender {
 
     pub(crate) fn send(&self, event: RegistryEvent) {
         self.watch.send_modify(|vec| vec.push(event));
+    }
+
+    pub(crate) fn extend<I: IntoIterator<Item = RegistryEvent>>(&self, events: I) {
+        self.watch.send_modify(|vec| vec.extend(events));
+    }
+
+    pub fn send_error(&self, ident: impl Into<NamespacedId>, error: anyhow::Error) {
+        self.send(RegistryEvent::Error(ErrorEvent::new(ident.into(), error)));
+    }
+
+    pub fn send_errors<E: Into<anyhow::Error>>(
+        &self,
+        ident: impl Into<NamespacedId>,
+        errors: impl IntoIterator<Item = E>,
+    ) {
+        let ident = ident.into();
+        let events = errors
+            .into_iter()
+            .map(|err| RegistryEvent::Error(ErrorEvent::new(ident.clone(), err.into())));
+        self.extend(events);
     }
 
     pub(crate) fn subscribe(&self) -> EventReceiver {

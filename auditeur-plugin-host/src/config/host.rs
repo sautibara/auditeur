@@ -17,8 +17,9 @@ pub struct PluginManager;
 /// (
 ///   directories: (
 ///     data_root: "/home/thate/.local/share/sautibara-app",
-///     plugin_arena: "plugin_arena",
+///     workspace: "workspace",
 ///     compiled_plugins: "plugins",
+///     sources: "sources",
 ///   ),
 ///   arena: (
 ///     retain_build_artifacts: false,
@@ -71,8 +72,24 @@ impl Config {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Directories {
     data_root: PathBuf,
-    plugin_arena: PathBuf,
+    #[serde(default = "default_workspace")]
+    workspace: PathBuf,
+    #[serde(default = "default_compiled_plugins")]
     compiled_plugins: PathBuf,
+    #[serde(default = "default_sources")]
+    sources: PathBuf,
+}
+
+fn default_workspace() -> PathBuf {
+    PathBuf::from("workspace")
+}
+
+fn default_compiled_plugins() -> PathBuf {
+    PathBuf::from("plugins")
+}
+
+fn default_sources() -> PathBuf {
+    PathBuf::from("sources")
 }
 
 impl Directories {
@@ -81,8 +98,9 @@ impl Directories {
         let local_data_dir = project_dirs.data_local_dir();
         Self {
             data_root: local_data_dir.to_path_buf(),
-            plugin_arena: PathBuf::from("plugin_arena"),
-            compiled_plugins: PathBuf::from("plugins"),
+            workspace: default_workspace(),
+            compiled_plugins: default_compiled_plugins(),
+            sources: default_sources(),
         }
     }
 
@@ -97,14 +115,20 @@ impl Directories {
 
     /// Returns the path that holds the shared cargo workspace to compile plugins
     #[must_use]
-    pub fn arena_dir(&self) -> PathBuf {
-        self.extend_data_root_with(&self.plugin_arena)
+    pub fn workspace_dir(&self) -> PathBuf {
+        self.extend_data_root_with(&self.workspace)
     }
 
     /// Returns the path that holds compiled plugins for the app
     #[must_use]
-    pub fn plugin_dir(&self) -> PathBuf {
+    pub fn binary_dir(&self) -> PathBuf {
         self.extend_data_root_with(&self.compiled_plugins)
+    }
+
+    /// Returns the path that holds all plugin sources
+    #[must_use]
+    pub fn source_dir(&self) -> PathBuf {
+        self.extend_data_root_with(&self.sources)
     }
 }
 
@@ -156,7 +180,16 @@ impl Enabled {
     pub fn get(&self, name: &PluginName) -> bool {
         match self {
             Self::All(val) => *val,
-            Self::PerPlugin(map) => map.get(name).copied().unwrap_or_default(),
+            Self::PerPlugin(map) => map.get(name).copied().unwrap_or(true),
+        }
+    }
+
+    /// Returns `true` if all plugins are enabled
+    #[must_use]
+    pub fn all_enabled(&self) -> bool {
+        match self {
+            Self::All(val) => *val,
+            Self::PerPlugin(map) => map.values().all(|enabled| *enabled),
         }
     }
 }
@@ -173,13 +206,14 @@ fn is_default<T: Default + PartialEq>(val: &T) -> bool {
 
 impl From<Plugin> for PluginSerialized {
     fn from(plugin: Plugin) -> Self {
+        let variant = plugin.source.into();
         if is_default(&plugin.enabled) {
-            if let Source::Github(url) = plugin.source {
+            if let source::Variant::Github(url) = variant {
                 return Self::UrlOnly(url);
             }
         }
         Self::Full {
-            source: plugin.source,
+            source: variant.into(),
             enabled: plugin.enabled,
             dependencies: plugin.dependencies,
         }
@@ -190,7 +224,7 @@ impl From<PluginSerialized> for Plugin {
     fn from(plugin: PluginSerialized) -> Self {
         match plugin {
             PluginSerialized::UrlOnly(url) => Self {
-                source: Source::Github(url),
+                source: source::Variant::Github(url).into(),
                 enabled: Enabled::default(),
                 dependencies: vec![],
             },

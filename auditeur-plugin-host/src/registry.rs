@@ -1,46 +1,48 @@
-use std::{collections::HashMap, ffi::OsStr, marker::PhantomData};
+use std::{collections::HashMap, ffi::OsStr, marker::PhantomData, path::PathBuf};
 
-use auditeur_plugin::auditeur::{app::App, prelude::*, Message};
+use auditeur_plugin::auditeur::{
+    app::{App, EventReceiver, Registry},
+    prelude::*,
+    Message,
+};
 use log::{debug, trace};
+use tokio::select;
 
 use crate::Error;
 use auditeur_plugin::{loading::Plugin, LibraryHandle};
 
-pub struct Building<'app, M: Message> {
-    app: &'app mut App<M>,
-}
-#[derive(PathAny)]
-pub struct Finalized;
-
 /// A registry of all of the currently loaded plugins in the [`App`]
 ///
 /// This registry keeps a [`LibraryHandle`] of all loaded plugins, keeping their dynamic libraries
-/// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is recieved
+/// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is received
 /// for the plugin's bundle, so that the library isn't held for forever.
-#[must_use = "the registry *must* be added as a listener to the app, otherwise plugin code may be unloaded while running"]
+#[must_use = "if the registry isn't added to an app, the libraries that are loaded will be leaked"]
 #[resource("plugin_host:registry")]
-#[resource_custom_generics = "(M: Message) - (M, Finalized)"]
 #[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
-pub struct PluginRegistry<M: Message, A> {
+pub struct PluginRegistry<M: Message> {
     libraries: HashMap<NamespacedId, LibraryHandle>,
-    maybe_app: A,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>,
     message: PhantomData<M>,
 }
 
 #[create]
-impl<M: Message> Create<M> for PluginRegistry<M, Finalized> {
-    async fn create(#[external] registry: Self) -> Self {
-        registry
+impl<M: Message> Create<M> for PluginRegistry<M> {
+    async fn create(#[external] registry: Self) -> Result<Self> {
+        Ok(registry)
     }
 }
 
-impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
-    pub fn new(app: &'app mut App<M>) -> Self {
-        Self {
-            libraries: HashMap::new(),
-            maybe_app: Building { app },
-            message: PhantomData,
-        }
+impl<M: Message> PluginRegistry<M> {
+    pub fn new() -> (Self, PluginSender) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                libraries: HashMap::new(),
+                receiver,
+                message: PhantomData,
+            },
+            PluginSender { sender },
+        )
     }
 
     /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
@@ -59,55 +61,91 @@ impl<'app, M: Message> PluginRegistry<M, Building<'app, M>> {
     pub unsafe fn load_plugin_from_file_unchecked(
         &mut self,
         path: impl AsRef<OsStr>,
+        app: &mut App<M>,
     ) -> Result<&mut Self, Error> {
         let path = path.as_ref();
         trace!("loading binary at '{}' to app", path.to_string_lossy());
-        let plugin = Plugin::load_from_file_unchecked(path, self.maybe_app.app)?;
+        let plugin = Plugin::load_from_file_unchecked(path, app)?;
         self.libraries.insert(plugin.bundle, plugin.library);
         Ok(self)
     }
+}
 
-    /// # Safety
-    ///
-    /// If the registry is dropped before dynamically loaded resources added to the [`App`] are,
-    /// their shared libraries will be dropped, which will lead to undefined behavior (See
-    /// [`LibraryHandle`] for a more in-depth explanation). As such, the registry *must* be added
-    /// as a [`Listener`] to the app, which will keep it alive.
-    pub unsafe fn finalize(self) -> PluginRegistry<M, Finalized> {
-        PluginRegistry {
-            libraries: self.libraries,
-            maybe_app: Finalized,
-            message: PhantomData,
+impl<M: Message> Drop for PluginRegistry<M> {
+    fn drop(&mut self) {
+        // the registry should only get dropped when it's empty
+        if self.libraries.is_empty() {
+            return;
         }
-    }
-
-    pub fn finalize_and_add(self) {
-        let app = self.maybe_app.app;
-        let finalized = PluginRegistry {
-            libraries: self.libraries,
-            maybe_app: Finalized,
-            message: PhantomData,
-        };
-        app.add_bundle(
-            new_bundle!("auditeur:plugin_host_registry")
-                .with_listener::<PluginRegistry<M, Finalized>>(finalized),
-        );
+        // if the registry isn't empty, then leak the library handles just in case
+        #[allow(clippy::collection_is_never_read)]
+        let libraries: Vec<_> = self.libraries.drain().map(|(_, library)| library).collect();
+        libraries.leak();
     }
 }
 
 #[async_trait]
-impl<M: Message> Listener<M> for PluginRegistry<M, Finalized> {
-    type Input = ();
+impl<M: Message> Watcher<M> for PluginRegistry<M> {
+    type Input = (EventReceiver, Registry<M>, Stopper);
 
-    async fn handle(&mut self, _: M, (): &mut ()) -> Result<()> {
+    async fn run(&mut self, (_, _, stopper): &mut Self::Input) -> Result<()> {
+        // a strange workaround to avoid getting stopped: do it ourselves first
+        stopper.stop::<Self>();
         Ok(())
     }
 
-    async fn registry_event(&mut self, event: RegistryEvent, (): &mut ()) -> Result<()> {
-        if let RegistryEvent::BundleUnloaded(id) = event {
-            self.libraries.remove(&id);
-            debug!("unloaded bundle `{id}`'s library");
+    // I hate how much indentation this method has, but I don't see any way to improve it much...
+    async fn exit(&mut self, (registry_event, registry, _): &mut Self::Input) -> Result<()> {
+        let mut should_exit = false;
+        loop {
+            select! {
+                Some(event) = registry_event.recv() => {
+                    match event {
+                        RegistryEvent::BundleUnloaded(id) => {
+                            self.libraries.remove(&id);
+                            debug!("unloaded bundle `{id}`'s library");
+                            // we only should stop if all of the libraries are unloaded first
+                            if should_exit && self.libraries.is_empty() {
+                                break;
+                            }
+                        }
+                        // NOTE: extra stop signals are ignored
+                        RegistryEvent::Exit => {
+                            should_exit = true;
+                        }
+                        _ => (),
+                    }
+                },
+                Some(plugins) = self.receiver.recv() => {
+                    trace!("recieved plugins: {plugins:?}");
+                    let mut app = registry.new_app();
+                    // FIXME: check for necessary unloads
+                    // (when a plugin is updated, for example)
+                    for plugin in plugins {
+                        // TODO: handle this error
+                        // SAFETY: safety must be upheld by the caller of PluginSender::send
+                        let _ = unsafe { self.load_plugin_from_file_unchecked(plugin, &mut app) };
+                    }
+                    // TODO: handle this error
+                    let _ = app.add_to_registry(registry).await;
+                }
+            }
         }
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct PluginSender {
+    sender: tokio::sync::mpsc::UnboundedSender<Vec<PathBuf>>,
+}
+
+impl PluginSender {
+    /// # Safety
+    ///
+    /// Each of these plugins must adhere to the safety contract specified in
+    /// [`PluginRegistry::load_plugin_from_file_unchecked`]
+    pub unsafe fn send(&self, paths: Vec<PathBuf>) {
+        let _ = self.sender.send(paths);
     }
 }

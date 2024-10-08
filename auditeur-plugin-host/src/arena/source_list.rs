@@ -1,17 +1,17 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, hash::Hash, path::PathBuf};
 
 use crate::prelude::*;
 
 #[derive(Clone, Debug)]
 pub enum Artifacts {
     Plugins {
-        source: Arc<Source>,
+        source: SourceId,
         path: PathBuf,
         plugins: Vec<LoadedPlugin>,
         updated: Updated,
     },
     Binary {
-        source: Arc<Source>,
+        source: SourceId,
         binary: source::Binary,
     },
 }
@@ -29,21 +29,25 @@ pub enum LoadedSource {
 
 #[derive(Clone, Debug)]
 pub struct LoadedPlugin {
-    path: PathBuf,
-    source: Arc<Source>,
-    config: config::plugin::Single,
+    pub path: PathBuf,
+    pub source: SourceId,
+    pub config: config::plugin::Single,
 }
 
 impl LoadedPlugin {
     pub const fn name(&self) -> &PluginName {
         self.config.name()
     }
+
+    pub const fn id(&self) -> &SourceId {
+        &self.source
+    }
 }
 
 pub struct SourceList {
     path: PathBuf,
-    binaries: HashMap<PluginName, PathBuf>,
-    sources: HashMap<Arc<Source>, LoadedSource>,
+    binaries: HashMap<SourceId, PathBuf>,
+    sources: HashMap<SourceId, LoadedSource>,
     plugins: HashMap<PluginName, LoadedPlugin>,
 }
 
@@ -59,7 +63,10 @@ impl SourceList {
         })
     }
 
-    pub fn get_source(&self, source: &Source) -> Option<&LoadedSource> {
+    pub fn get_source<S: PartialEq + Eq + Hash>(&self, source: &S) -> Option<&LoadedSource>
+    where
+        SourceId: Borrow<S>,
+    {
         self.sources.get(source)
     }
 
@@ -71,28 +78,43 @@ impl SourceList {
         &self.plugins
     }
 
-    pub fn contains(&self, source: &Source) -> bool {
+    pub const fn binaries(&self) -> &HashMap<SourceId, PathBuf> {
+        &self.binaries
+    }
+
+    pub fn contains(&self, source: &SourceId) -> bool {
         self.sources.contains_key(source)
     }
 
-    pub async fn add_source(
+    pub async fn remove_source(
         &mut self,
-        source: Arc<Source>,
-    ) -> Result<(&LoadedSource, Updated), Error> {
+        source: &SourceId,
+    ) -> Result<Option<LoadedSource>, Error> {
+        let source = self.sources.remove(source);
+        if let Some(LoadedSource::Plugins { path, .. }) = &source {
+            tokio::fs::remove_dir(path).await?;
+        }
+        Ok(source)
+    }
+
+    pub async fn add_source(&mut self, source: &Source) -> Result<(&LoadedSource, Updated), Error> {
         let artifacts = self.load_source(source).await?;
         let updated = self.add_artifacts(artifacts);
         Ok(updated)
     }
 
-    pub async fn load_source(&self, source: Arc<Source>) -> Result<Artifacts, Error> {
+    pub async fn load_source(&self, source: &Source) -> Result<Artifacts, Error> {
         match source.load_into(&self.path).await? {
             source::Artifact::Path { path, updated } => Ok(Artifacts::Plugins {
-                plugins: Self::scan_workspace(path.clone(), &source).await?,
-                source,
+                plugins: Self::scan_workspace(path.clone(), source).await?,
+                source: source.id().clone(),
                 updated,
                 path,
             }),
-            source::Artifact::Binary(binary) => Ok(Artifacts::Binary { binary, source }),
+            source::Artifact::Binary(binary) => Ok(Artifacts::Binary {
+                source: source.id().clone(),
+                binary,
+            }),
         }
     }
 
@@ -111,13 +133,12 @@ impl SourceList {
                 for plugin in plugins {
                     self.plugins.insert(plugin.name().clone(), plugin);
                 }
-                let source = self.add_loaded_source(source, LoadedSource::Plugins { names, path });
+                let source = self.add_loaded_source(&source, LoadedSource::Plugins { names, path });
                 (source, updated)
             }
             Artifacts::Binary { source, binary } => {
-                self.binaries
-                    .insert(binary.name.clone(), binary.path.clone());
-                let source = self.add_loaded_source(source, LoadedSource::Binary { binary });
+                self.binaries.insert(source.clone(), binary.path.clone());
+                let source = self.add_loaded_source(&source, LoadedSource::Binary { binary });
                 (source, Updated(false))
             }
         }
@@ -125,19 +146,16 @@ impl SourceList {
 
     fn add_loaded_source(
         &mut self,
-        source: Arc<Source>,
+        source: &SourceId,
         loaded_source: LoadedSource,
     ) -> &LoadedSource {
         // using the entry api so that we can retain an immutable reference to the loaded source
         // Entry::insert_entry would be wonderful here, but it's not stabilized :(
-        self.sources.remove(&source);
-        self.sources.entry(source).or_insert(loaded_source)
+        self.sources.remove(source);
+        self.sources.entry(source.clone()).or_insert(loaded_source)
     }
 
-    async fn scan_workspace(
-        path: PathBuf,
-        source: &Arc<Source>,
-    ) -> Result<Vec<LoadedPlugin>, Error> {
+    async fn scan_workspace(path: PathBuf, source: &Source) -> Result<Vec<LoadedPlugin>, Error> {
         let mut plugins = vec![];
         // avoid recursion by using a queue
         // (recursion with async is iffy - it requires [`Box`]ing futures)
@@ -150,7 +168,7 @@ impl SourceList {
             let config = crate::deserialize::<config::Plugin>(config_path).await?;
             match config {
                 config::Plugin::Single(config) => plugins.push(LoadedPlugin {
-                    source: source.clone(),
+                    source: source.id().clone(),
                     config,
                     path,
                 }),

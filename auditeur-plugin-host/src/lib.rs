@@ -16,7 +16,6 @@
 
 use std::{
     borrow::Borrow,
-    collections::HashMap,
     fmt::Display,
     path::{Path, PathBuf},
 };
@@ -25,7 +24,6 @@ use arena::Arena;
 use auditeur_plugin::auditeur::{app::App, Message};
 use futures::Future;
 use log::error;
-use registry::Finalized;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -36,10 +34,10 @@ pub mod source;
 
 mod prelude {
     pub use crate::{
-        config::{self, host::Enabled},
+        config,
         registry::PluginRegistry,
-        source::{self, git, Source, Updated},
-        Error, ErrorSink, PluginName,
+        source::{self, git, OwnedId as SourceId, Source, Updated},
+        Error, PluginName,
     };
     pub use auditeur_plugin::prelude::*;
 }
@@ -124,22 +122,26 @@ pub trait AppExt {
     /// is from them having unsafe code or intentionally going past the safety checks, which isn't
     /// something that can be prevented. Thus, thus function isn't marked unsafe.
     #[allow(opaque_hidden_inferred_bound)] // I think this is a false positive?
-    fn with_plugin_system(self, config: &config::Host) -> impl Future<Output = Self>;
+    fn with_plugin_system(self, config: config::Host) -> impl Future<Output = Self>;
 }
 
 impl<M: Message> AppExt for App<M> {
-    async fn with_plugin_system(mut self, config: &config::Host) -> Self {
-        let mut registry = PluginRegistry::new(&mut self);
-        let mut arena = Arena::open_or_init(config).await;
-        if let Some(arena) = arena.build().await {
-            arena.add_to_registry(&mut registry);
+    async fn with_plugin_system(mut self, config: config::Host) -> Self {
+        let (mut registry, plugin_sender) = PluginRegistry::new();
+        let (mut arena, mut errors) = Arena::open_or_init(config, plugin_sender).await;
+        if let Ok(arena) = &mut arena {
+            let res = arena.add_to_plugin_registry(&mut registry, &mut self);
+            if let Err(err) = res {
+                errors.push(err);
+            }
         }
-        // SAFETY: we add the registry immediately below, but in a bundle
-        let registry = unsafe { registry.finalize() };
-        self.with_bundle(
+        self.add_bundle(
             new_bundle!("auditeur:plugin_host")
-                .with_listener::<PluginRegistry<M, Finalized>>(registry),
-        )
+                .with_watcher::<Arena>(arena.map_err(Into::into))
+                .with_watcher::<PluginRegistry<M>>(registry),
+        );
+        self.add_errors(Arena::const_ident(), errors.into_iter().map(Into::into));
+        self
     }
 }
 
@@ -182,11 +184,6 @@ pub enum Error {
         error: cargo_toml::Error,
         path: PathBuf,
     },
-    #[error("plugin '{for_plugin}' requires dependency '{dependency}', which doesn't exist")]
-    UnsatisfiedDependency {
-        for_plugin: PluginName,
-        dependency: PluginName,
-    },
     #[error("failed to serialize to file '{path}': {error}")]
     TomlSerialization {
         #[source]
@@ -195,7 +192,7 @@ pub enum Error {
     },
     #[error("invalid rustc version, found: '{found}', expected: '{expected}'")]
     InvalidRustc { found: String, expected: String },
-    #[error("recieved message from cargo: {}", .0.message.rendered.as_deref().unwrap_or_default())]
+    #[error("received message from cargo: {}", .0.message.rendered.as_deref().unwrap_or_default())]
     CargoMessage(cargo_metadata::CompilerMessage),
     #[error(
         "plugin '{plugin}' has no library crate (checked {})",
@@ -214,7 +211,7 @@ pub enum Error {
         manifest_path: PathBuf,
     },
     #[error("dependency '{dependency}' for plugin '{plugin}' was not found")]
-    DependencyNotFound {
+    PluginDependencyNotFound {
         plugin: PluginName,
         dependency: PluginName,
     },
@@ -231,67 +228,8 @@ impl From<cargo_metadata::CompilerMessage> for Error {
     }
 }
 
-pub struct ErrorSink {
-    plugin_map: HashMap<PluginName, Vec<Error>>,
-    source_map: HashMap<Source, Vec<Error>>,
-    generic: Vec<Error>,
-}
-
-impl ErrorSink {
-    fn new() -> Self {
-        Self {
-            plugin_map: HashMap::new(),
-            source_map: HashMap::new(),
-            generic: Vec::new(),
-        }
-    }
-
-    fn add_generic(&mut self, error: impl Into<Error>) {
-        let error = error.into();
-        error!("encountered error when loading plugin system: {error}");
-        self.generic.push(error);
-    }
-
-    #[must_use]
-    pub fn generic(&self) -> &[Error] {
-        &self.generic[..]
-    }
-
-    fn add_for_plugin(&mut self, name: PluginName, error: impl Into<Error>) {
-        let error = error.into();
-        error!("encountered error when loading plugin '{name}': {error}");
-        self.plugin_map.entry(name).or_default().push(error);
-    }
-
-    #[must_use]
-    pub const fn plugin_map(&self) -> &HashMap<PluginName, Vec<Error>> {
-        &self.plugin_map
-    }
-
-    #[must_use]
-    pub fn for_plugin(&self, name: &PluginName) -> &[Error] {
-        self.plugin_map
-            .get(name)
-            .map(|vec| &vec[..])
-            .unwrap_or_default()
-    }
-
-    fn add_for_source(&mut self, source: Source, error: impl Into<Error>) {
-        let error = error.into();
-        error!("encountered error when loading source '{source}': {error}");
-        self.source_map.entry(source).or_default().push(error);
-    }
-
-    #[must_use]
-    pub const fn source_map(&self) -> &HashMap<Source, Vec<Error>> {
-        &self.source_map
-    }
-
-    #[must_use]
-    pub fn for_source(&self, source: &Source) -> &[Error] {
-        self.source_map
-            .get(source)
-            .map(|vec| &vec[..])
-            .unwrap_or_default()
+impl From<Error> for Vec<Error> {
+    fn from(value: Error) -> Self {
+        vec![value]
     }
 }

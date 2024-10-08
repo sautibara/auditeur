@@ -87,30 +87,30 @@ impl Manifest {
     }
 
     pub fn copy_to_path(mut self, dest: impl AsRef<Path>) -> Self {
-        let dest = dest.as_ref();
+        // move the path first to get back the previous path
+        let prev = std::mem::replace(&mut self.path, dest.as_ref().join("Cargo.toml"));
+        let prev = prev.parent().unwrap_or_else(|| Path::new(""));
         // fix all the things!
         // Since we're moving the manifest, we have to move each and every path with it too
         if let Some(path) = self.inner.lib.as_mut().and_then(|lib| lib.path.as_mut()) {
-            Self::move_path(path, dest);
+            Self::move_path(path, prev);
         }
-        Self::move_products(&mut self.test, dest);
-        Self::move_products(&mut self.bin, dest);
-        Self::move_products(&mut self.example, dest);
+        Self::move_products(&mut self.test, prev);
+        Self::move_products(&mut self.bin, prev);
+        Self::move_products(&mut self.example, prev);
         // tests seem important enough to migrate
         // dependencies definitely do, though
-        Self::move_deps(&mut self.inner.dependencies, dest);
-        Self::move_deps(&mut self.inner.dev_dependencies, dest);
-        Self::move_deps(&mut self.inner.build_dependencies, dest);
+        Self::move_deps(&mut self.inner.dependencies, prev);
+        Self::move_deps(&mut self.inner.dev_dependencies, prev);
+        Self::move_deps(&mut self.inner.build_dependencies, prev);
         for target in self.inner.target.values_mut() {
-            Self::move_deps(&mut target.dependencies, dest);
-            Self::move_deps(&mut target.dev_dependencies, dest);
-            Self::move_deps(&mut target.build_dependencies, dest);
+            Self::move_deps(&mut target.dependencies, prev);
+            Self::move_deps(&mut target.dev_dependencies, prev);
+            Self::move_deps(&mut target.build_dependencies, prev);
         }
         for patch in self.inner.patch.values_mut() {
-            Self::move_deps(patch, dest);
+            Self::move_deps(patch, prev);
         }
-        // then we can just move the path - the actual file will be saved later
-        self.path = dest.join("Cargo.toml");
         // and oh yes this is modified
         self.modified = true;
         self
