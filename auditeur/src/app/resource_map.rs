@@ -12,6 +12,8 @@ use log::trace;
 
 use crate::{app::EventSender, prelude::*};
 
+use super::EventReceiver;
+
 struct LoadedResource {
     id: NamespacedId,
     #[cfg(feature = "runtime-loading")]
@@ -230,46 +232,59 @@ impl ResourceMap {
 }
 
 #[async_trait]
-impl<M: Message> Listener<M> for ResourceMap {
-    type Input = ();
+impl<M: Message> Watcher<M> for ResourceMap {
+    type Input = (EventReceiver, Stopper);
 
-    async fn handle(&mut self, _: M, (): &mut ()) -> Result<()> {
+    // insta-stop trick to control stopping
+    // this should be one of the last resources to exit
+    async fn run(&mut self, (_, stopper): &mut Self::Input) -> Result<()> {
+        stopper.stop::<Self>();
         Ok(())
     }
 
-    async fn registry_event(&mut self, event: RegistryEvent, (): &mut ()) -> Result<()> {
-        match event {
-            RegistryEvent::BundleLoading { id, parent, .. } => {
-                self.add_bundle(id, parent.as_ref())?;
-            }
-            RegistryEvent::Loading { id, bundle } => {
-                self.add_resource(id, &bundle)?;
-            }
-            RegistryEvent::Reference { by, to } => {
-                self.add_reference(&by, &to)?;
-            }
-            RegistryEvent::Running(id) => {
-                let resource = self.clone_resource(&id)?;
-                self.shared.runners.insert(id, resource);
-            }
-            RegistryEvent::Stopped(id) => {
-                self.shared.runners.remove(&id);
-            }
-            #[cfg(feature = "runtime-loading")]
-            RegistryEvent::NonRunnable(supplier) => {
-                if let Some(resource) = self.get_resource(&supplier.id().into_owned()) {
-                    if let Some(owned) = supplier.take() {
-                        resource.supply_owned(owned);
+    async fn exit(&mut self, (receiver, _): &mut Self::Input) -> Result<()> {
+        let mut should_exit = false;
+        while let Some(event) = receiver.recv().await {
+            match event {
+                RegistryEvent::BundleLoading { id, parent, .. } => {
+                    self.add_bundle(id, parent.as_ref())?;
+                }
+                RegistryEvent::Loading { id, bundle } => {
+                    self.add_resource(id, &bundle)?;
+                }
+                RegistryEvent::Reference { by, to } => {
+                    self.add_reference(&by, &to)?;
+                }
+                RegistryEvent::Running(id) => {
+                    let resource = self.clone_resource(&id)?;
+                    self.shared.runners.insert(id, resource);
+                }
+                RegistryEvent::Stopped(id) => {
+                    self.shared.runners.remove(&id);
+                    // this should be the last runner
+                    if should_exit && self.shared.runners.len() <= 1 {
+                        break;
                     }
                 }
-            }
-            #[cfg(feature = "runtime-loading")]
-            RegistryEvent::Get(get_request) => {
-                if let Some(resource_info) = self.get_resource(&get_request.id().into_owned()) {
-                    resource_info.with_owned(|owned| get_request.check_ref(owned.resource()));
+                #[cfg(feature = "runtime-loading")]
+                RegistryEvent::NonRunnable(supplier) => {
+                    if let Some(resource) = self.get_resource(&supplier.id().into_owned()) {
+                        if let Some(owned) = supplier.take() {
+                            resource.supply_owned(owned);
+                        }
+                    }
                 }
+                #[cfg(feature = "runtime-loading")]
+                RegistryEvent::Get(get_request) => {
+                    if let Some(resource_info) = self.get_resource(&get_request.id().into_owned()) {
+                        resource_info.with_owned(|owned| get_request.check_ref(owned.resource()));
+                    }
+                }
+                RegistryEvent::Exit => {
+                    should_exit = true;
+                }
+                _ => (),
             }
-            _ => (),
         }
         Ok(())
     }

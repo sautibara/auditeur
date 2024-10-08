@@ -109,7 +109,7 @@ impl<M: Message> App<M> {
     pub fn new() -> Self {
         let mut this = Self::new_empty();
         #[cfg(feature = "resource-map")]
-        this.add_bundle(new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(()));
+        this.add_bundle(new_bundle!("auditeur:resource_map").with_watcher::<ResourceMap>(()));
         this
     }
 
@@ -575,7 +575,11 @@ impl<M: Message> Registry<M> {
             futures::select! {
                 // this is simply to poll the FuturesUnordered stream
                 // thus, we don't care about the result
-                _ = futures.next() => (),
+                next = futures.next() => {
+                    if next.is_none() {
+                        break;
+                    }
+                },
                 resource = receiver.recv().fuse() => {
                     if let Some(runner) = resource.and_then(|resource| resource.runner().ok()) {
                         let sender = self.event_sender.clone();
