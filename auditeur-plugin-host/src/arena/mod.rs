@@ -144,25 +144,7 @@ impl Arena {
 
     async fn run_action(&mut self, action: Action) -> Result<(), Vec<Error>> {
         match action {
-            Action::LoadSource(source) => {
-                let Some(source) = self.state.sources.get(&source) else {
-                    return Ok(());
-                };
-
-                trace!("loading source '{}'", source.source);
-                let (loaded_source, _) = self.source_list.add_source(&source.source).await?;
-
-                // we don't care about loaded binaries, since we still check them in
-                // enabled_binaries
-                // if let (LoadedSource::Plugins { names, .. }, Updated(true)) = (loaded_source, updated)
-                if let LoadedSource::Plugins { names, .. } = loaded_source {
-                    self.actions.extend(
-                        names
-                            .iter()
-                            .map(|name| Action::AddToWorkspace(name.clone())),
-                    );
-                }
-            }
+            Action::LoadSource(source) => self.load_source(&source).await?,
             Action::RemoveSource(source) => {
                 let removed = self.source_list.remove_source(&source).await?;
                 trace!("removed source '{removed:?}'");
@@ -183,8 +165,8 @@ impl Arena {
                 let BuildArtifacts { artifacts, errors } =
                     self.workspace.compile(&plugin_names).await?;
                 // queue loading each new plugin
-                self.queue_loads(artifacts.values().cloned());
-                self.binaries.extend(artifacts.into_iter());
+                let paths = self.binaries.insert_copies(artifacts.into_iter()).await?;
+                self.queue_loads(paths);
                 if !errors.is_empty() {
                     return Err(errors.into_iter().map(Error::CargoMessage).collect());
                 }
@@ -196,6 +178,39 @@ impl Arena {
             }
         }
         // TODO: serialize
+        Ok(())
+    }
+
+    async fn load_source(&mut self, source: &SourceId) -> Result<(), Error> {
+        let Some(source) = self.state.sources.get(source) else {
+            return Ok(());
+        };
+
+        trace!("loading source '{}'", source.source);
+        let (loaded_source, updated) = self.source_list.add_source(&source.source).await?;
+
+        // we don't care about loaded binaries, since we still check them in
+        // enabled_binaries
+        if let LoadedSource::Plugins { names, .. } = loaded_source {
+            if updated.has_updated() {
+                // if the source has updated, we have to reload everything
+                let actions = names
+                    .iter()
+                    .map(|name| Action::AddToWorkspace(name.clone()));
+                self.actions.extend(actions);
+            } else {
+                // otherwise, we can reuse stuff
+                for name in names.clone() {
+                    if let Some(binary) = self.binaries.get(&name) {
+                        self.queue_load(binary.to_owned());
+                    } else if self.workspace.contains(&name) {
+                        self.queue_compile(name);
+                    } else {
+                        self.actions.push_back(Action::AddToWorkspace(name));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -217,6 +232,15 @@ impl Arena {
             if !vec.is_empty() {
                 self.actions.push_back(Action::Load(vec));
             }
+        }
+    }
+
+    fn queue_load(&mut self, path: PathBuf) {
+        if let Some(action) = self.actions.iter_mut().find_map(Action::as_load_mut) {
+            action.push(path);
+        } else {
+            let vec: Vec<_> = vec![path];
+            self.actions.push_back(Action::Load(vec));
         }
     }
 

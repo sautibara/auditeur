@@ -123,6 +123,10 @@ impl Workspace {
         Self::new(path, opts).await
     }
 
+    pub fn contains(&self, name: &PluginName) -> bool {
+        self.crates.contains_key(name)
+    }
+
     async fn check_version(&self) -> Result<(), Error> {
         let found_bytes = tokio::process::Command::new("rustc")
             .arg("--version")

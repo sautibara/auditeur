@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use crate::prelude::*;
 
@@ -42,6 +45,10 @@ impl Binaries {
         Ok(())
     }
 
+    pub fn get(&self, name: &PluginName) -> Option<&Path> {
+        self.binaries.get(name).map(|val| &**val)
+    }
+
     pub async fn remove_source(
         &mut self,
         source: &SourceId,
@@ -69,7 +76,19 @@ impl Binaries {
         &self.binaries
     }
 
-    pub async fn insert_copy(&mut self, name: PluginName, path: PathBuf) -> Result<(), Error> {
+    pub async fn insert_copies<I>(&mut self, iter: I) -> Result<Vec<PathBuf>, Error>
+    where
+        I: IntoIterator<Item = (PluginName, PathBuf)> + Send,
+        I::IntoIter: Send,
+    {
+        let mut paths = Vec::new();
+        for (name, path) in iter {
+            paths.push(self.insert_copy(name, path).await?.to_owned());
+        }
+        Ok(paths)
+    }
+
+    pub async fn insert_copy(&mut self, name: PluginName, path: PathBuf) -> Result<&Path, Error> {
         let Some(file_name) = path.file_name() else {
             return Err(Error::ArtifactHasNoFilename {
                 plugin: name,
@@ -78,14 +97,8 @@ impl Binaries {
         };
         let out_path = self.path.join(file_name);
         tokio::fs::copy(path, &out_path).await?;
-        self.binaries.insert(name, out_path);
+        self.binaries.insert(name.clone(), out_path);
         self.serialize().await?;
-        Ok(())
-    }
-}
-
-impl Extend<(PluginName, PathBuf)> for Binaries {
-    fn extend<T: IntoIterator<Item = (PluginName, PathBuf)>>(&mut self, iter: T) {
-        self.binaries.extend(iter);
+        Ok(&*self.binaries[&name])
     }
 }
