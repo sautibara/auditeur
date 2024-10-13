@@ -27,6 +27,16 @@ pub enum LoadedSource {
     },
 }
 
+impl LoadedSource {
+    pub const fn as_binary(&self) -> Option<&source::Binary> {
+        if let Self::Binary { binary } = self {
+            Some(binary)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LoadedPlugin {
     pub path: PathBuf,
@@ -46,7 +56,6 @@ impl LoadedPlugin {
 
 pub struct SourceList {
     path: PathBuf,
-    binaries: HashMap<SourceId, PathBuf>,
     sources: HashMap<SourceId, LoadedSource>,
     plugins: HashMap<PluginName, LoadedPlugin>,
 }
@@ -57,7 +66,6 @@ impl SourceList {
         tokio::fs::create_dir_all(&path).await?;
         Ok(Self {
             path,
-            binaries: HashMap::new(),
             sources: HashMap::new(),
             plugins: HashMap::new(),
         })
@@ -78,8 +86,10 @@ impl SourceList {
         &self.plugins
     }
 
-    pub const fn binaries(&self) -> &HashMap<SourceId, PathBuf> {
-        &self.binaries
+    pub fn binaries(&self) -> impl Iterator<Item = (&SourceId, &Binary)> + '_ {
+        self.sources
+            .iter()
+            .filter_map(|(id, source)| source.as_binary().map(|binary| (id, binary)))
     }
 
     pub fn contains(&self, source: &SourceId) -> bool {
@@ -137,7 +147,6 @@ impl SourceList {
                 (source, updated)
             }
             Artifacts::Binary { source, binary } => {
-                self.binaries.insert(source.clone(), binary.path.clone());
                 let source = self.add_loaded_source(&source, LoadedSource::Binary { binary });
                 (source, Updated(false))
             }

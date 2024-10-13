@@ -9,7 +9,7 @@ use super::source_list::{LoadedSource, SourceList};
 
 pub struct Binaries {
     path: PathBuf,
-    binaries: HashMap<PluginName, PathBuf>,
+    binaries: HashMap<PluginName, Binary>,
 }
 
 impl Binaries {
@@ -39,14 +39,14 @@ impl Binaries {
     }
 
     async fn remove(&mut self, name: &PluginName) -> Result<(), Error> {
-        if let Some(path) = self.binaries.remove(name) {
-            tokio::fs::remove_file(path).await?;
+        if let Some(binary) = self.binaries.remove(name) {
+            tokio::fs::remove_file(binary.path).await?;
         }
         Ok(())
     }
 
-    pub fn get(&self, name: &PluginName) -> Option<&Path> {
-        self.binaries.get(name).map(|val| &**val)
+    pub fn get(&self, name: &PluginName) -> Option<&Binary> {
+        self.binaries.get(name)
     }
 
     pub async fn remove_source(
@@ -72,33 +72,40 @@ impl Binaries {
             .filter(|&key| !self.binaries.contains_key(key))
     }
 
-    pub const fn binaries(&self) -> &HashMap<PluginName, PathBuf> {
+    pub const fn binaries(&self) -> &HashMap<PluginName, Binary> {
         &self.binaries
     }
 
-    pub async fn insert_copies<I>(&mut self, iter: I) -> Result<Vec<PathBuf>, Error>
+    pub async fn insert_copies<I>(&mut self, iter: I) -> Result<Vec<Binary>, Error>
     where
         I: IntoIterator<Item = (PluginName, PathBuf)> + Send,
         I::IntoIter: Send,
     {
-        let mut paths = Vec::new();
+        let mut libraries = Vec::new();
         for (name, path) in iter {
-            paths.push(self.insert_copy(name, path).await?.to_owned());
+            let binary = self.insert_copy(&name, &path).await?.to_owned();
+            libraries.push(binary);
         }
-        Ok(paths)
+        Ok(libraries)
     }
 
-    pub async fn insert_copy(&mut self, name: PluginName, path: PathBuf) -> Result<&Path, Error> {
+    pub async fn insert_copy(&mut self, name: &PluginName, path: &Path) -> Result<&Binary, Error> {
         let Some(file_name) = path.file_name() else {
             return Err(Error::ArtifactHasNoFilename {
-                plugin: name,
-                artifact: path,
+                plugin: name.clone(),
+                artifact: path.to_owned(),
             });
         };
         let out_path = self.path.join(file_name);
         tokio::fs::copy(path, &out_path).await?;
-        self.binaries.insert(name.clone(), out_path);
+        self.binaries.insert(
+            name.clone(),
+            Binary {
+                path: out_path,
+                name: name.clone(),
+            },
+        );
         self.serialize().await?;
-        Ok(&*self.binaries[&name])
+        Ok(&self.binaries[name])
     }
 }

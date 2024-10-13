@@ -1,4 +1,8 @@
-use std::{collections::HashMap, ffi::OsStr, marker::PhantomData, path::PathBuf};
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use auditeur_plugin::auditeur::{
     app::{App, EventReceiver, Registry},
@@ -8,8 +12,13 @@ use auditeur_plugin::auditeur::{
 use log::{debug, trace};
 use tokio::select;
 
-use crate::Error;
+use crate::{source::Binary, Error, PluginName};
 use auditeur_plugin::{loading::Plugin, LibraryHandle};
+
+struct Shared {
+    libraries: HashMap<NamespacedId, LibraryHandle>,
+    bundles: HashMap<PluginName, NamespacedId>,
+}
 
 /// A registry of all of the currently loaded plugins in the [`App`]
 ///
@@ -20,8 +29,8 @@ use auditeur_plugin::{loading::Plugin, LibraryHandle};
 #[resource("plugin_host:registry")]
 #[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
 pub struct PluginRegistry<M: Message> {
-    libraries: HashMap<NamespacedId, LibraryHandle>,
-    receiver: tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>,
+    shared: Arc<Mutex<Shared>>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<Vec<Binary>>,
     message: PhantomData<M>,
 }
 
@@ -33,20 +42,37 @@ impl<M: Message> Create<M> for PluginRegistry<M> {
 }
 
 impl<M: Message> PluginRegistry<M> {
-    pub fn new() -> (Self, PluginSender) {
+    pub fn new() -> (Self, Handle<M>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Shared {
+            libraries: HashMap::new(),
+            bundles: HashMap::new(),
+        };
+        let shared = Arc::new(Mutex::new(shared));
         (
             Self {
-                libraries: HashMap::new(),
+                shared: shared.clone(),
                 receiver,
                 message: PhantomData,
             },
-            PluginSender { sender },
+            Handle {
+                sender,
+                shared,
+                message: PhantomData,
+            },
         )
     }
 
+    fn shared_mut(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared
+            .try_lock()
+            .expect("registry library lock shouldn't be poisoned")
+    }
+
     /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
-    /// handle in the registry
+    /// handle in the registry.
+    ///
+    /// Returns the [`NamespacedId`] of the bundle that is contained in the plugin.
     ///
     /// # Safety
     ///
@@ -60,26 +86,36 @@ impl<M: Message> PluginRegistry<M> {
     /// - If the library's main function fails to load
     pub unsafe fn load_plugin_from_file_unchecked(
         &mut self,
-        path: impl AsRef<OsStr>,
+        library: &Binary,
         app: &mut App<M>,
-    ) -> Result<&mut Self, Error> {
-        let path = path.as_ref();
-        trace!("loading binary at '{}' to app", path.to_string_lossy());
-        let plugin = Plugin::load_from_file_unchecked(path, app)?;
-        self.libraries.insert(plugin.bundle, plugin.library);
-        Ok(self)
+    ) -> Result<NamespacedId, Error> {
+        trace!("loading binary at '{}' to app", library.path.display());
+        let plugin = Plugin::load_from_file_unchecked(&library.path, app)?;
+        {
+            let mut shared = self.shared_mut();
+            shared
+                .libraries
+                .insert(plugin.bundle.clone(), plugin.library);
+            shared
+                .bundles
+                .insert(library.name.clone(), plugin.bundle.clone());
+        }
+        Ok(plugin.bundle)
     }
 }
 
 impl<M: Message> Drop for PluginRegistry<M> {
     fn drop(&mut self) {
-        // the registry should only get dropped when it's empty
-        if self.libraries.is_empty() {
-            return;
-        }
-        // if the registry isn't empty, then leak the library handles just in case
         #[allow(clippy::collection_is_never_read)]
-        let libraries: Vec<_> = self.libraries.drain().map(|(_, library)| library).collect();
+        let libraries: Vec<_> = {
+            let libraries = &mut self.shared_mut().libraries;
+            // the registry should only get dropped when it's empty
+            if libraries.is_empty() {
+                return;
+            }
+            libraries.drain().map(|(_, library)| library).collect()
+        };
+        // if the registry isn't empty, then leak the library handles just in case
         libraries.leak();
     }
 }
@@ -102,10 +138,11 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                 Some(event) = registry_event.recv() => {
                     match event {
                         RegistryEvent::BundleUnloaded(id) => {
-                            self.libraries.remove(&id);
+                            let libraries = &mut self.shared_mut().libraries;
+                            libraries.remove(&id);
                             debug!("unloaded bundle `{id}`'s library");
                             // we only should stop if all of the libraries are unloaded first
-                            if should_exit && self.libraries.is_empty() {
+                            if should_exit && libraries.is_empty() {
                                 break;
                             }
                         }
@@ -124,7 +161,7 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                     for plugin in plugins {
                         // TODO: handle this error
                         // SAFETY: safety must be upheld by the caller of PluginSender::send
-                        let _ = unsafe { self.load_plugin_from_file_unchecked(plugin, &mut app) };
+                        let _ = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
                     }
                     // TODO: handle this error
                     let _ = app.add_to_registry(registry).await;
@@ -136,16 +173,30 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
 }
 
 #[derive(Clone)]
-pub struct PluginSender {
-    sender: tokio::sync::mpsc::UnboundedSender<Vec<PathBuf>>,
+pub struct Handle<M: Message> {
+    shared: Arc<Mutex<Shared>>,
+    sender: tokio::sync::mpsc::UnboundedSender<Vec<Binary>>,
+    message: PhantomData<M>,
 }
 
-impl PluginSender {
+impl<M: Message> Handle<M> {
     /// # Safety
     ///
     /// Each of these plugins must adhere to the safety contract specified in
     /// [`PluginRegistry::load_plugin_from_file_unchecked`]
-    pub unsafe fn send(&self, paths: Vec<PathBuf>) {
-        let _ = self.sender.send(paths);
+    pub unsafe fn send(&self, plugins: Vec<Binary>) {
+        let _ = self.sender.send(plugins);
+    }
+
+    fn shared_mut(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared
+            .try_lock()
+            .expect("registry library lock shouldn't be poisoned")
+    }
+
+    #[must_use]
+    pub fn is_loaded(&self, plugin: &PluginName) -> bool {
+        let shared = self.shared_mut();
+        (shared.bundles.get(plugin)).is_some_and(|id| shared.libraries.contains_key(id))
     }
 }

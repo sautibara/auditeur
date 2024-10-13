@@ -36,7 +36,7 @@ mod prelude {
     pub use crate::{
         config,
         registry::PluginRegistry,
-        source::{self, git, OwnedId as SourceId, Source, Updated},
+        source::{self, git, Binary, OwnedId as SourceId, Source, Updated},
         Error, PluginName,
     };
     pub use auditeur_plugin::prelude::*;
@@ -137,10 +137,13 @@ impl<M: Message> AppExt for App<M> {
         }
         self.add_bundle(
             new_bundle!("auditeur:plugin_host")
-                .with_watcher::<Arena>(arena.map_err(Into::into))
+                .with_watcher::<Arena<M>>(arena.map_err(Into::into))
                 .with_watcher::<PluginRegistry<M>>(registry),
         );
-        self.add_errors(Arena::const_ident(), errors.into_iter().map(Into::into));
+        self.add_errors(
+            Arena::<M>::const_ident(),
+            errors.into_iter().map(Into::into),
+        );
         self
     }
 }
