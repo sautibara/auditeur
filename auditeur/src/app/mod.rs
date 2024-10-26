@@ -862,6 +862,16 @@ pub enum RegistryEvent {
     Error(ErrorEvent),
 }
 
+impl RegistryEvent {
+    /// Returns `true` if the registry event is [`Error`].
+    ///
+    /// [`Error`]: RegistryEvent::Error
+    #[must_use]
+    pub const fn is_error(&self) -> bool {
+        matches!(self, Self::Error(..))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ErrorEvent {
     source: NamespacedId,
