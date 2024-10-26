@@ -76,6 +76,8 @@ pub use auditeur_macros::Create;
 /// ```
 pub use auditeur_macros::GetRef;
 
+pub use auditeur_macros::Input;
+
 /// A macro that automatically provides an implementation of
 /// [`MaybeGetRef`](crate::input::MaybeGetRef)
 ///
@@ -104,6 +106,8 @@ pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn A
 
 #[doc(hidden)]
 pub use anyhow;
+#[doc(hidden)]
+pub use futures::try_join;
 
 pub mod prelude {
     pub use crate::{

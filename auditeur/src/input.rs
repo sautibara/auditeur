@@ -22,14 +22,20 @@ pub trait Input<M: Message>: Sized + Send + Sync + 'static {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Get<T: Resource + GetRef>(T::Ref);
+impl<M: Message, I: Input<M>> Input<M> for Option<I> {
+    async fn create(
+        registry: &Registry<M>,
+        as_resource: NamespacedIdRef<'_>,
+    ) -> Result<Self, Error> {
+        I::create(registry, as_resource).await.map(Some)
+    }
 
-impl<T: Resource + GetRef> Get<T> {
-    pub fn deref_move(this: Self) -> T::Ref {
-        this.0
+    fn constraints() -> Constraints {
+        I::constraints()
     }
 }
+
+pub struct Get<T: Resource + GetRef>(T::Ref);
 
 impl<M: Message, T: Resource + GetRef> Input<M> for Get<T> {
     async fn create(
