@@ -148,6 +148,11 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                         }
                         // NOTE: extra stop signals are ignored
                         RegistryEvent::Exit => {
+                            // WARN: if this is removed and no bundles are unloaded after we
+                            // recieve the exit signal, the registry will never exit.
+                            if self.shared_mut().libraries.is_empty() {
+                                break; // we already get to exit :)
+                            }
                             should_exit = true;
                         }
                         _ => (),
