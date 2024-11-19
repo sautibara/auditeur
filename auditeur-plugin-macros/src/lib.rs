@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::{quote, quote_spanned, ToTokens};
-use syn::{parse_macro_input, spanned::Spanned, Abi, FnArg, ItemFn, LitStr, Signature, Stmt};
+use syn::{parse_macro_input, spanned::Spanned, Abi, FnArg, ItemFn, LitStr, Pat, Signature, Stmt};
 use thiserror::Error;
 
 // Most of this function deals with ensuring that the function actually has the correct
@@ -62,6 +62,15 @@ fn export_inner(mut func: ItemFn) -> Result<proc_macro2::TokenStream, ExportErro
             };
             func.sig.abi = Some(abi);
         }
+    }
+
+    if let Some(FnArg::Typed(context_arg)) = func.sig.inputs.get(0) {
+        // Using the argument's span in case of a weird pattern.
+        let span = context_arg.span();
+        let ident = &context_arg.pat;
+        let stmt =
+            syn::parse2(quote_spanned! { span => #ident.init(); }).expect("statement should parse");
+        func.block.stmts.insert(0, stmt);
     }
 
     Ok(quote! {
