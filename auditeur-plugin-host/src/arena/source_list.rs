@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, hash::Hash, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::prelude::*;
 
@@ -71,29 +71,14 @@ impl SourceList {
         })
     }
 
-    pub fn get_source<S: PartialEq + Eq + Hash>(&self, source: &S) -> Option<&LoadedSource>
-    where
-        SourceId: Borrow<S>,
-    {
-        self.sources.get(source)
-    }
-
     pub fn get_plugin(&self, plugin: &PluginName) -> Option<&LoadedPlugin> {
         self.plugins.get(plugin)
-    }
-
-    pub const fn plugins(&self) -> &HashMap<PluginName, LoadedPlugin> {
-        &self.plugins
     }
 
     pub fn binaries(&self) -> impl Iterator<Item = (&SourceId, &Binary)> + '_ {
         self.sources
             .iter()
             .filter_map(|(id, source)| source.as_binary().map(|binary| (id, binary)))
-    }
-
-    pub fn contains(&self, source: &SourceId) -> bool {
-        self.sources.contains_key(source)
     }
 
     pub async fn remove_source(

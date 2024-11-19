@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
@@ -156,6 +154,9 @@ impl<M: Message> Arena<M> {
             Action::RemoveSource(source) => {
                 let removed = self.source_list.remove_source(&source).await?;
                 debug!("removed source '{removed:?}'");
+                if let Some(LoadedSource::Plugins { names, .. }) = removed {
+                    self.binaries.remove_plugins(names.iter()).await?;
+                }
             }
             Action::AddToWorkspace(plugin_name) => {
                 debug!("adding `{plugin_name}` to the cargo workspace");

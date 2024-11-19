@@ -5,8 +5,6 @@ use std::{
 
 use crate::prelude::*;
 
-use super::source_list::{LoadedSource, SourceList};
-
 pub struct Binaries {
     path: PathBuf,
     binaries: HashMap<PluginName, Binary>,
@@ -49,27 +47,15 @@ impl Binaries {
         self.binaries.get(name)
     }
 
-    pub async fn remove_source(
+    pub async fn remove_plugins(
         &mut self,
-        source: &SourceId,
-        list: &SourceList,
+        plugins: impl Iterator<Item = &PluginName> + Send,
     ) -> Result<(), Error> {
-        if let Some(LoadedSource::Plugins { names, .. }) = list.get_source(source) {
-            for plugin_name in names {
-                self.remove(plugin_name).await?;
-            }
+        for plugin_name in plugins {
+            self.remove(plugin_name).await?;
         }
         self.serialize().await?;
         Ok(())
-    }
-
-    pub fn unbuilt_plugins<'a>(
-        &'a self,
-        list: &'a SourceList,
-    ) -> impl Iterator<Item = &'a PluginName> {
-        list.plugins()
-            .keys()
-            .filter(|&key| !self.binaries.contains_key(key))
     }
 
     pub const fn binaries(&self) -> &HashMap<PluginName, Binary> {
