@@ -1,7 +1,6 @@
 use anyhow::anyhow;
 use futures::pin_mut;
-use log::warn;
-use log::{debug, error};
+use log::{debug, error, warn};
 use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;

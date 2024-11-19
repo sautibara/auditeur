@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::{quote, quote_spanned, ToTokens};
-use syn::{parse_macro_input, spanned::Spanned, Abi, FnArg, ItemFn, LitStr, Pat, Signature, Stmt};
+use syn::{parse_macro_input, spanned::Spanned, Abi, FnArg, ItemFn, LitStr, Signature, Stmt};
 use thiserror::Error;
 
 // Most of this function deals with ensuring that the function actually has the correct

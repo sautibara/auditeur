@@ -139,8 +139,9 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                     match event {
                         RegistryEvent::BundleUnloaded(id) => {
                             let libraries = &mut self.shared_mut().libraries;
-                            libraries.remove(&id);
-                            debug!("unloaded bundle `{id}`'s library");
+                            if libraries.remove(&id).is_some() {
+                                debug!("unloaded bundle `{id}`'s library");
+                            }
                             // we only should stop if all of the libraries are unloaded first
                             if should_exit && libraries.is_empty() {
                                 break;
@@ -149,7 +150,7 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                         // NOTE: extra stop signals are ignored
                         RegistryEvent::Exit => {
                             // WARN: if this is removed and no bundles are unloaded after we
-                            // recieve the exit signal, the registry will never exit.
+                            // receive the exit signal, the registry will never exit.
                             if self.shared_mut().libraries.is_empty() {
                                 break; // we already get to exit :)
                             }
@@ -168,8 +169,21 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                         // SAFETY: safety must be upheld by the caller of PluginSender::send
                         let _ = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
                     }
-                    // TODO: handle this error
-                    let _ = app.add_to_registry(registry).await;
+                    if let Err(registry) = app.add_to_registry(registry).await {
+                        for unloaded_bundle in registry.unloaded_bundles() {
+                            // FIXME: If only part of a bundle is loaded, the registry gets put
+                            // into a terrible situation. It can't just drop the library, since one
+                            // of the library's resources could have still been loaded. But it also
+                            // can't keep the library, since it will never be unloaded: the
+                            // ResourceMap doesn't know that one of the resources was never loaded,
+                            // so it'll forever wait for it to unload before unloading the bundle.
+                            // Instead, we use the hacky solution: just leak the library and keep
+                            // it always loaded.
+                            if let Some(library) = self.shared_mut().libraries.remove(unloaded_bundle) {
+                                std::mem::forget(library);
+                            }
+                        }
+                    }
                 }
             }
         }

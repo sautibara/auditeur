@@ -36,10 +36,12 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_recursion::async_recursion;
 #[cfg(feature = "runtime-loading")]
 use log::error;
+use log::trace;
 use log::warn;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -96,6 +98,7 @@ pub(crate) struct BuiltBundle {
 pub struct App<M: Message> {
     loaders: HashMap<NamespacedId, Option<BundledLoader<M>>>,
     bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
+    loading_loaders: HashMap<NamespacedId, NamespacedId>,
     // TODO: check if adding App events is a good idea
     events: Vec<RegistryEvent>,
 }
@@ -117,6 +120,7 @@ impl<M: Message> App<M> {
         Self {
             loaders: HashMap::new(),
             bundles: HashMap::new(),
+            loading_loaders: HashMap::new(),
             events: Vec::new(),
         }
     }
@@ -165,7 +169,7 @@ impl<M: Message> App<M> {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn run(self, capacity: usize) -> Result<(), Error> {
+    pub async fn run(self, capacity: usize) -> Result<(), Self> {
         let registry = self.build(capacity).await?;
         registry.run().await;
         Ok(())
@@ -180,7 +184,7 @@ impl<M: Message> App<M> {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn build(self, capacity: usize) -> Result<Registry<M>, Error> {
+    pub async fn build(self, capacity: usize) -> Result<Registry<M>, Self> {
         let mut registry = Registry::new(capacity);
         self.add_to_registry(&mut registry).await?;
         Ok(registry)
@@ -192,7 +196,19 @@ impl<M: Message> App<M> {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn add_to_registry(mut self, registry: &mut Registry<M>) -> Result<(), Error> {
+    pub async fn add_to_registry(mut self, registry: &mut Registry<M>) -> Result<(), Self> {
+        self.add_to_registry_fallible(registry)
+            .await
+            .map_err(|err| {
+                registry.event_sender.send_error(
+                    ident!("auditeur:registry").into_owned(),
+                    anyhow::Error::from(err).context("registry failed to build"),
+                );
+                self
+            })
+    }
+
+    async fn add_to_registry_fallible(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
         // add the loaders and bundles that have already been loaded in the registry to our list
         // this is necessary so that constraints can know that their dependencies have already been
         // loaded
@@ -207,7 +223,7 @@ impl<M: Message> App<M> {
             self.resolve_loader(registry, &loader).await?;
         }
         // free events :)
-        registry.event_sender_ref().extend(self.events);
+        registry.event_sender_ref().extend(self.events.drain(..));
         Ok(())
     }
 
@@ -225,6 +241,9 @@ impl<M: Message> App<M> {
         let Some(BundledLoader { loader, bundle }) = loader.take() else {
             return Ok(());
         };
+        // show that this loader is currently being loaded
+        // TODO: use this to prevent dependency loops
+        self.loading_loaders.insert(id.clone(), bundle.clone());
         // bundles always have to be resolved first
         // this doesn't cause a loop because resolve_bundle already [`Option::take`]s the bundle
         // out of the list, so it can't be loaded again
@@ -234,6 +253,7 @@ impl<M: Message> App<M> {
             .await?;
         // then we can finally load the loader
         registry.add_loader(loader, bundle).await?;
+        self.loading_loaders.remove(id);
         Ok(())
     }
 
@@ -295,6 +315,16 @@ impl<M: Message> App<M> {
                 error: Arc::new(error),
             })
         }));
+    }
+
+    // TODO: documentation to clarify name
+    pub fn unloaded_loaders(&self) -> impl Iterator<Item = &NamespacedId> {
+        self.loading_loaders.keys()
+    }
+
+    #[must_use]
+    pub fn unloaded_bundles(&self) -> HashSet<&NamespacedId> {
+        self.loading_loaders.values().collect()
     }
 }
 
