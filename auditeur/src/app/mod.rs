@@ -46,6 +46,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 use tracing::info_span;
 use tracing::instrument;
+use tracing::trace;
 use tracing::warn;
 use tracing::Instrument;
 
@@ -501,7 +502,7 @@ impl RunningRegistry {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let get_request = GetRequest {
             id: id.clone(),
-            sender: std::sync::Mutex::new(Some(sender)),
+            sender: tokio::sync::Mutex::new(Some(sender)),
         };
         // FIXME: by using an EventSender, the requests actually never get dropped
         // - it all stays in the main Vec, awaiting new receivers
@@ -958,7 +959,7 @@ impl Hash for ErrorEvent {
 #[cfg(feature = "runtime-loading")]
 pub struct GetRequest {
     id: NamespacedId,
-    sender: std::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::CloneAny>>>>,
+    sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::CloneAny>>>>,
 }
 
 #[cfg(feature = "runtime-loading")]
@@ -966,8 +967,8 @@ impl GetRequest {
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
     /// [`GetRef`] and send the result back to the original asker.
     #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub fn check<R: Resource>(&self, resource: &R) {
-        self.check_ref(resource);
+    pub async fn check<R: Resource>(&self, resource: &R) {
+        self.check_ref(resource).await;
     }
 
     /// Returns `true` if `R` if the resource that is asked for by this request
@@ -979,16 +980,17 @@ impl GetRequest {
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
     /// [`GetRef`] and send the result back to the original asker.
     #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub fn check_ref(&self, resource: &dyn Resource) {
+    pub async fn check_ref(&self, resource: &dyn Resource) {
         if !self.matches_ref(resource) {
             return;
         }
+        trace!("fulfilling get request");
         #[allow(clippy::option_if_let_else)] // not using the return type...
         if let Some(reference) = resource.maybe_get_ref() {
-            self.send(reference);
+            self.send(reference).await;
         } else {
             warn!("resource matches GetRequest, but MaybeGetRef returned None");
-            self.cancel();
+            self.cancel().await;
         }
     }
 
@@ -1007,23 +1009,16 @@ impl GetRequest {
     ///
     /// This should only be used by the resource that this request is for if they are sure that
     /// they can't fulfil the request.
-    pub fn cancel(&self) {
-        if let Ok(mut sender) = self.sender.lock() {
-            *sender = None;
-        }
+    pub async fn cancel(&self) {
+        drop(self.sender.lock().await.take());
     }
 
     /// Fulfils the request by sending `reference`
     ///
     /// Note: this doesn't actually check if the reference matches the request - use
     /// [`Self::matches`] to check first
-    pub(crate) fn send(&self, reference: Box<dyn crate::input::CloneAny>) {
-        let Some(sender) = self
-            .sender
-            .lock()
-            .expect("GetRequest lock shouldn't be poisoned")
-            .take()
-        else {
+    pub(crate) async fn send(&self, reference: Box<dyn crate::input::CloneAny>) {
+        let Some(sender) = self.sender.lock().await.take() else {
             // this could only happen with a name collision
             warn!("resource matches GetRequest, but the channel was already used");
             return;

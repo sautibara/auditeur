@@ -122,7 +122,7 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
                     RegistryEvent::Exit => true,
                     #[cfg(feature = "runtime-loading")]
                     RegistryEvent::Get(ref get_request) => {
-                        get_request.check(&self.inner);
+                        get_request.check(&self.inner).await;
                         false
                     }
                     _ => false,
@@ -258,34 +258,35 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     }
 
     #[instrument(name = "handle_registry_event", level = "debug", skip_all, fields(?message))]
-    fn handle_meta(
+    async fn handle_meta(
         message: Option<RegistryEvent>,
         #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::CloneAny>,
     ) -> ControlFlow<()> {
-        message.map_or(ControlFlow::Break(()), |message| {
-            let to_exit = match message {
-                RegistryEvent::Stop(ref id) if *id == W::const_ident() => true,
-                RegistryEvent::Exit => true,
-                #[cfg(feature = "runtime-loading")]
-                RegistryEvent::Get(ref get_request) => {
-                    trace!("recieved get request");
+        let Some(message) = message else {
+            return ControlFlow::Break(());
+        };
+        let to_exit = match message {
+            RegistryEvent::Stop(ref id) if *id == W::const_ident() => true,
+            RegistryEvent::Exit => true,
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::Get(ref get_request) => {
+                trace!("recieved get request");
 
-                    if get_request.id() == W::const_ident() {
-                        #[allow(clippy::option_if_let_else)] // doesn't return anything
-                        if let Some(reference) = reference {
-                            get_request.send(reference.clone_any());
-                        } else {
-                            warn!("id matched GetRequest, but MaybeGetRef returned None");
-                            get_request.cancel();
-                        }
+                if get_request.id() == W::const_ident() {
+                    #[allow(clippy::option_if_let_else)] // doesn't return anything
+                    if let Some(reference) = reference {
+                        get_request.send(reference.clone_any()).await;
+                    } else {
+                        warn!("id matched GetRequest, but MaybeGetRef returned None");
+                        get_request.cancel().await;
                     }
-
-                    false
                 }
-                _ => false,
-            };
-            then_continue(!to_exit)
-        })
+
+                false
+            }
+            _ => false,
+        };
+        then_continue(!to_exit)
     }
 }
 
@@ -322,7 +323,7 @@ impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
                         let res = Self::handle_meta(
                             message,
                             #[cfg(feature = "runtime-loading")] reference.as_deref(),
-                        );
+                        ).await;
                         if res.is_break() {
                             break;
                         }

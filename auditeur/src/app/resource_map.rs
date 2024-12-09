@@ -3,7 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock, Weak},
+    sync::{Arc, Weak},
 };
 
 use anyhow::{anyhow, bail};
@@ -12,12 +12,12 @@ use tracing::trace;
 
 use crate::{app::EventSender, prelude::*};
 
-use super::EventReceiver;
+use super::{EventReceiver, GetRequest};
 
 struct LoadedResource {
     id: NamespacedId,
     #[cfg(feature = "runtime-loading")]
-    resource: RwLock<Option<Box<dyn super::LoadedResource>>>,
+    resource: tokio::sync::RwLock<Option<Box<dyn super::LoadedResource>>>,
     // hold a strong reference to the parent bundle to keep it alive
     _bundle: Arc<LoadedBundle>,
     // and strong references to all of its dependencies for the same reason
@@ -33,26 +33,20 @@ impl Drop for LoadedResource {
 
 #[cfg(feature = "runtime-loading")]
 impl LoadedResource {
-    fn supply_owned(&self, resource: Box<dyn super::LoadedResource>) {
+    async fn supply_owned(&self, resource: Box<dyn super::LoadedResource>) {
         trace!(
             "adding {} to the ResourceMap as a NonRunnable",
             resource.ident()
         );
-        let mut resource_option = self
-            .resource
-            .write()
-            .expect("ResourceMap LoadedResource RwLock shouldn't be poisoned");
+        let mut resource_option = self.resource.write().await;
         *resource_option = Some(resource);
     }
 
     /// Runs `func` on the contained owned resource, if it exists
-    fn with_owned(&self, func: impl FnOnce(&dyn super::LoadedResource)) {
-        let resource_option = self
-            .resource
-            .read()
-            .expect("ResourceMap LoadedResource RwLock shouldn't be poisoned");
+    async fn check_get_request(&self, get_request: &GetRequest) {
+        let resource_option = self.resource.read().await;
         if let Some(resource) = resource_option.as_deref() {
-            func(resource);
+            get_request.check_ref(resource.resource()).await;
         }
     }
 }
@@ -156,7 +150,7 @@ impl ResourceMap {
             LoadedResource {
                 id,
                 #[cfg(feature = "runtime-loading")]
-                resource: RwLock::new(None),
+                resource: tokio::sync::RwLock::new(None),
                 _bundle: parent,
                 dependencies: Vec::new(),
                 sender: self.sender.clone(),
@@ -270,14 +264,14 @@ impl<M: Message> Watcher<M> for ResourceMap {
                 RegistryEvent::NonRunnable(supplier) => {
                     if let Some(resource) = self.get_resource(&supplier.id().into_owned()) {
                         if let Some(owned) = supplier.take() {
-                            resource.supply_owned(owned);
+                            resource.supply_owned(owned).await;
                         }
                     }
                 }
                 #[cfg(feature = "runtime-loading")]
                 RegistryEvent::Get(get_request) => {
                     if let Some(resource_info) = self.get_resource(&get_request.id().into_owned()) {
-                        resource_info.with_owned(|owned| get_request.check_ref(owned.resource()));
+                        resource_info.check_get_request(&get_request).await;
                     }
                 }
                 RegistryEvent::Exit => {
