@@ -10,7 +10,7 @@ edition = "2021"
 anyhow = "1.0.82"
 thiserror = "1.0.58"
 # async support
-tokio = { version = "1.37.0", features = ["full"] }
+tokio = { version = "1.41.1", features = ["full"] }
 async-trait = "0.1.80"
 async-recursion = "1.1.1"
 futures = "0.3.30"

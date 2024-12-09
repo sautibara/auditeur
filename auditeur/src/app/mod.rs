@@ -36,6 +36,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_recursion::async_recursion;
 use tokio::sync::broadcast;
@@ -510,7 +511,12 @@ impl RunningRegistry {
         event_sender.send(RegistryEvent::Get(Arc::new(get_request)));
         // if the request if fulfilled, this will return Some
         // if it isn't and all requests get dropped, the channel drops and returns a RecvError
-        let reference = receiver.await.ok()?;
+        let reference = tokio::time::timeout(Duration::from_millis(100), receiver)
+            .await
+            .ok()?
+            .ok()?;
+        // let reference = receiver.await.ok()?;
+        trace!("succeeded getting {id}");
         // and then, the actual reference gets downcasted
         let Ok(reference) = crate::downcast(reference.as_any()) else {
             // downcasting shouldn't ever fail, so this is an important tracing
@@ -565,16 +571,18 @@ impl<M: Message> Registry<M> {
     /// Asynchronously run each [`Runner`] that has been registered, until they all exit
     #[cfg(not(feature = "runtime-loading"))]
     pub async fn run(self) {
+        use tokio::task::JoinSet;
+
         let RegistryState::Building(building_registry) = self.state;
 
-        let futures = building_registry
-            .resources
-            .into_values()
-            .filter_map(|resource| resource.runner().ok())
-            // clone the event sender for each runner
-            .zip(std::iter::repeat(self.event_sender.clone()))
-            .map(|(runner, sender)| Self::run_runner(runner, sender));
-        futures::future::join_all(futures).await;
+        let mut futures = JoinSet::new();
+        for resource in building_registry.resources.into_values() {
+            if let Ok(runner) = resource.runner() {
+                let _ = futures.spawn(Self::run_runner(runner, self.event_sender.clone()));
+            }
+        }
+
+        futures.join_all().await;
     }
 
     /// Asynchronously run each [`Runner`] that has been registered, until they all exit
@@ -584,17 +592,20 @@ impl<M: Message> Registry<M> {
     /// - If using the `runtime-loading` feature and this is called on a registry handle
     #[cfg(feature = "runtime-loading")]
     pub async fn run(self) {
-        use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+        use futures::FutureExt;
+        use tokio::task::JoinSet;
 
         let RegistryState::Building(building_registry) = self.state else {
             panic!("tried to run an already running registry");
         };
 
         let mut receiver = building_registry.resource_receiver;
-        let mut futures = FuturesUnordered::new();
+        let mut futures = JoinSet::new();
         for resource in building_registry.resources.into_values() {
             match resource.runner() {
-                Ok(runner) => futures.push(Self::run_runner(runner, self.event_sender.clone())),
+                Ok(runner) => {
+                    let _ = futures.spawn(Self::run_runner(runner, self.event_sender.clone()));
+                }
                 Err(resource) => self
                     .event_sender
                     .send(RegistryEvent::NonRunnable(ResourceSupplier::new(resource))),
@@ -606,22 +617,22 @@ impl<M: Message> Registry<M> {
 
         // the registry listens for any new futures to add to the queue
         loop {
-            futures::select! {
-                // this is simply to poll the FuturesUnordered stream
-                // thus, we don't care about the result
-                next = futures.next() => {
-                    if next.is_none() {
+            tokio::select! {
+                // this is simply to check if the JoinSet is finished
+                val = futures.join_next() => {
+                    if val.is_none() {
                         break;
                     }
                 },
                 resource = receiver.recv().fuse() => {
                     if let Some(runner) = resource.and_then(|resource| resource.runner().ok()) {
                         let sender = self.event_sender.clone();
-                        futures.push(Self::run_runner(runner, sender));
+                        futures.spawn(Self::run_runner(runner, sender));
+                        // futures.push(Self::run_runner(runner, sender));
                     }
                 },
                 // this automatically gets called if there aren't any more futures or event senders
-                complete => break,
+                else => break,
             };
         }
     }
@@ -959,6 +970,10 @@ impl Hash for ErrorEvent {
 #[cfg(feature = "runtime-loading")]
 pub struct GetRequest {
     id: NamespacedId,
+    // NOTE: This must be a tokio Mutex, not a std one. Why? I'm not really sure!
+    // In fact, this was the culprit of what has been the most dreadful bug I have ever encountered
+    // due to insane amounts of inconsistency... Deadlocks are not my friend - they very well may be
+    // my greatest enemy D:
     sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::CloneAny>>>>,
 }
 
@@ -1222,9 +1237,9 @@ impl EventReceiver {
     #[instrument(name = "recv_registry_event", skip(self))]
     pub async fn recv(&mut self) -> Option<RegistryEvent> {
         loop {
-            if let Some(val) = self.watch.borrow_and_update().get(self.index) {
+            if let Some(val) = self.watch.borrow_and_update().get(self.index).cloned() {
                 self.index += 1;
-                return Some(val.clone());
+                return Some(val);
             }
             self.watch
                 .changed()
@@ -1241,10 +1256,10 @@ impl EventReceiver {
     /// - [`EventTryRecvError::NotReady`] if the stream is not ready
     /// - [`EventTryRecvError::Closed`] if the stream is closed
     pub fn try_recv(&mut self) -> Result<RegistryEvent, EventTryRecvError> {
-        if let Some(val) = self.watch.borrow_and_update().get(self.index) {
+        if let Some(val) = self.watch.borrow_and_update().get(self.index).cloned() {
             self.index += 1;
             // can't use else 'cause the compiler gets angry at the mutable ref above
-            return Ok(val.clone());
+            return Ok(val);
         };
         // the easiest way to check if the channel is closed is through this method
         if self.watch.has_changed().is_err() {
@@ -1451,7 +1466,6 @@ impl EventTryRecvError {
 //
 // ```
 // let app = App::new(32)
-//     .with_bundle(
 //         new_bundle!("bundle:bundle")
 //             .with_listener::<Library>(())
 //             .with_resource::<QueueLimit>(32)
