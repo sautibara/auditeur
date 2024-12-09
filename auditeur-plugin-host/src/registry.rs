@@ -9,7 +9,7 @@ use auditeur_plugin::auditeur::{
     prelude::*,
     Message,
 };
-use log::{debug, trace};
+use tracing::{debug, trace};
 use tokio::select;
 
 use crate::{source::Binary, Error, PluginName};

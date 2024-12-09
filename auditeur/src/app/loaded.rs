@@ -1,9 +1,10 @@
 use anyhow::anyhow;
 use futures::pin_mut;
-use log::{debug, error, warn};
 use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
+use tracing::{debug, error, instrument, trace, warn};
+use tracing::{trace_span, Instrument};
 
 use crate::prelude::*;
 
@@ -91,7 +92,10 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
     ) -> anyhow::Result<ControlFlow<()>> {
         match message {
             Ok(message) => {
-                self.inner.handle(message, &mut self.input).await?;
+                self.inner
+                    .handle(message, &mut self.input)
+                    .instrument(trace_span!("message"))
+                    .await?;
                 Ok(ControlFlow::Continue(()))
             }
             Err(RecvError::Closed) => Ok(ControlFlow::Break(())),
@@ -106,13 +110,14 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         self.handle_res(res)
     }
 
+    #[instrument(name = "handle_registry_event", level = "debug", skip_all, fields(?event))]
     async fn handle_meta_inner(
         &mut self,
-        message: Option<RegistryEvent>,
+        event: Option<RegistryEvent>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        match message {
-            Some(message) => {
-                let to_exit = match message {
+        match event {
+            Some(event) => {
+                let to_exit = match event {
                     RegistryEvent::Stop(ref id) if *id == self.ident() => true,
                     RegistryEvent::Exit => true,
                     #[cfg(feature = "runtime-loading")]
@@ -122,7 +127,7 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
                     }
                     _ => false,
                 };
-                self.inner.registry_event(message, &mut self.input).await?;
+                self.inner.registry_event(event, &mut self.input).await?;
                 Ok(then_continue(!to_exit))
             }
             None => Ok(ControlFlow::Break(())),
@@ -180,8 +185,8 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
         loop {
             tokio::select! {
                 biased;
-                meta = self.event_receiver.recv() => {
-                    if self.handle_meta(meta).await.is_break() {
+                event = self.event_receiver.recv() => {
+                    if self.handle_meta(event).await.is_break() {
                         break;
                     }
                 }
@@ -193,7 +198,7 @@ impl<M: Message, L: ListenerTrait<M>> Runner for Listener<M, L> {
 
         self.on_exit().await;
 
-        debug!("'{}' exited", self.ident());
+        debug!("exit");
     }
 }
 
@@ -252,6 +257,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
         })
     }
 
+    #[instrument(name = "handle_registry_event", level = "debug", skip_all, fields(?message))]
     fn handle_meta(
         message: Option<RegistryEvent>,
         #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::CloneAny>,
@@ -262,6 +268,8 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
                 RegistryEvent::Exit => true,
                 #[cfg(feature = "runtime-loading")]
                 RegistryEvent::Get(ref get_request) => {
+                    trace!("recieved get request");
+
                     if get_request.id() == W::const_ident() {
                         #[allow(clippy::option_if_let_else)] // doesn't return anything
                         if let Some(reference) = reference {
@@ -271,6 +279,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
                             get_request.cancel();
                         }
                     }
+
                     false
                 }
                 _ => false,
@@ -333,7 +342,7 @@ impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
             self.event_sender.send_error(W::const_ident(), err);
         }
 
-        debug!("'{}' exited", W::const_ident());
+        debug!("exit");
     }
 }
 

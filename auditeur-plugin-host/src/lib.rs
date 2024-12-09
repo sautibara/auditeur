@@ -23,7 +23,7 @@ use std::{
 use arena::Arena;
 use auditeur_plugin::auditeur::{app::App, Message};
 use futures::Future;
-use log::error;
+use tracing::error;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

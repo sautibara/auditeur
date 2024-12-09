@@ -7,7 +7,7 @@ use auditeur_plugin::auditeur::{
     app::{App, EventSender},
     Message,
 };
-use log::{debug, trace};
+use tracing::{debug, trace};
 use tokio::try_join;
 
 use crate::{prelude::*, registry};

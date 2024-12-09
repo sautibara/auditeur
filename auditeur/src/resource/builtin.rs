@@ -1,4 +1,4 @@
-use log::{trace, Level};
+use tracing::{debug, error, trace};
 
 use crate::{app, prelude::*};
 
@@ -20,21 +20,21 @@ impl<M: Message + std::fmt::Debug> Listener<M> for Logger {
         event: RegistryEvent,
         receiver: &mut app::EventReceiver,
     ) -> Result<()> {
-        let level = if event.is_error() {
-            Level::Error
+        // NOTE: The event is already logged as a span
+        if event.is_error() {
+            error!("Received an error.");
         } else {
-            Level::Trace
+            debug!("Received an event.");
         };
-        log::log!(level, "RegistryEvent: {:?}", event);
         receiver.mark_seen();
         Ok(())
     }
 
     async fn exit(&mut self, receiver: &mut app::EventReceiver) -> Result<()> {
         while let Ok(event) = receiver.try_recv() {
-            trace!("RegistryEvent: {:?}", event);
+            debug!("RegistryEvent: {:?}", event);
         }
-        trace!("Logger exiting... Messages after this point won't be logged");
+        debug!("Logger exiting... Messages after this point won't be logged");
         Ok(())
     }
 }

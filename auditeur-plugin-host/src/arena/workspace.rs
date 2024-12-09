@@ -10,7 +10,7 @@ use std::{
 
 use cargo_metadata::Message as CargoMessage;
 use cargo_toml::Dependency;
-use log::{trace, warn};
+use tracing::{trace, warn};
 use tokio::io::AsyncWriteExt;
 
 use crate::prelude::*;

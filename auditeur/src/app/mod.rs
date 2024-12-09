@@ -36,17 +36,18 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_recursion::async_recursion;
-#[cfg(feature = "runtime-loading")]
-use log::error;
-use log::trace;
-use log::warn;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 #[cfg(feature = "runtime-loading")]
 use tokio::sync::{mpsc, oneshot};
+#[cfg(feature = "runtime-loading")]
+use tracing::error;
+use tracing::info_span;
+use tracing::instrument;
+use tracing::warn;
+use tracing::Instrument;
 
 use crate::bundle;
 use crate::input::GetRef;
@@ -444,6 +445,7 @@ impl BuildingRegistry {
     }
 
     #[must_use]
+    #[instrument(skip_all, fields(from = %reference_holder, to = %R::const_ident()))]
     fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef,
@@ -489,6 +491,7 @@ impl RunningRegistry {
     }
 
     #[must_use]
+    #[instrument(skip_all, fields(from = %reference_holder, to = %R::const_ident()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: NamespacedIdRef<'_>,
@@ -509,7 +512,7 @@ impl RunningRegistry {
         let reference = receiver.await.ok()?;
         // and then, the actual reference gets downcasted
         let Ok(reference) = crate::downcast(reference.as_any()) else {
-            // downcasting shouldn't ever fail, so this is an important log
+            // downcasting shouldn't ever fail, so this is an important tracing
             error!("attempt to downcast {} failed", id);
             return None;
         };
@@ -625,7 +628,7 @@ impl<M: Message> Registry<M> {
     async fn run_runner(runner: Box<dyn Runner>, sender: EventSender) {
         let id = runner.ident().into_owned();
         sender.send(RegistryEvent::Running(id.clone()));
-        runner.run().await;
+        runner.run().instrument(info_span!("runner", %id)).await;
         sender.send(RegistryEvent::Stopped(id));
     }
 
@@ -1221,13 +1224,18 @@ impl EventReceiver {
     }
 
     /// Receive the oldest unhandled message or return [`None`] if the channel has closed.
+    #[instrument(name = "recv_registry_event", skip(self))]
     pub async fn recv(&mut self) -> Option<RegistryEvent> {
         loop {
             if let Some(val) = self.watch.borrow_and_update().get(self.index) {
                 self.index += 1;
                 return Some(val.clone());
             }
-            self.watch.changed().await.ok()?;
+            self.watch
+                .changed()
+                .instrument(info_span!("waiting_for_new_event"))
+                .await
+                .ok()?;
         }
     }
 

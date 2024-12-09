@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use log::trace;
+use tracing::trace;
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;

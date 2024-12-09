@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use dashmap::DashMap;
-use log::trace;
+use tracing::trace;
 
 use crate::{app::EventSender, prelude::*};
 
