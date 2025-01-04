@@ -152,7 +152,7 @@ macro_rules! bake_message {
     ($message:ty) => {
         pub type App = $crate::app::App<$message>;
         pub type Registry = $crate::app::Registry<$message>;
-        pub type Get<T> = $crate::input::Get<T>;
+        pub type Get<T> = $crate::input::get::Get<T>;
         pub type Bundle = $crate::bundle::Bundle<$message>;
     };
 }

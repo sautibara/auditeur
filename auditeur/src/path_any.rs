@@ -113,7 +113,7 @@ impl dyn PathAny {
     pub unsafe fn downcast_ref_unchecked<T: PathAny>(&self) -> &T {
         debug_assert!(self.is::<T>());
         // SAFETY: caller guarantees that T is the correct type
-        unsafe { &*(self as *const dyn PathAny).cast::<T>() }
+        unsafe { &*std::ptr::from_ref::<dyn PathAny>(self).cast::<T>() }
     }
 }
 

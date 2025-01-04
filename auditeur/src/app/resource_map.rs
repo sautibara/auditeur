@@ -292,7 +292,7 @@ pub struct Handle {
     shared: Arc<Shared>,
 }
 
-impl crate::input::GetRef for ResourceMap {
+impl crate::input::get::GetRef for ResourceMap {
     type Ref = Handle;
     fn get_ref(&self) -> Self::Ref {
         self.handle()

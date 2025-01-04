@@ -260,7 +260,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     #[instrument(name = "handle_registry_event", level = "debug", skip_all, fields(?message))]
     async fn handle_meta(
         message: Option<RegistryEvent>,
-        #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::CloneAny>,
+        #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::get::CloneAny>,
     ) -> ControlFlow<()> {
         let Some(message) = message else {
             return ControlFlow::Break(());

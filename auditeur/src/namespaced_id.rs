@@ -91,7 +91,7 @@ impl Display for NamespacedIdRef<'_> {
 }
 
 impl<'a> From<&'a NamespacedId> for NamespacedIdRef<'a> {
-    fn from(val: &'a NamespacedId) -> NamespacedIdRef<'_> {
+    fn from(val: &'a NamespacedId) -> Self {
         NamespacedIdRef {
             namespace: &val.namespace,
             id: &val.id,

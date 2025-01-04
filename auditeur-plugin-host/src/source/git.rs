@@ -104,7 +104,7 @@ impl Serialize for Shorthand {
 
 struct ShorthandVisitor;
 
-impl<'de> Visitor<'de> for ShorthandVisitor {
+impl Visitor<'_> for ShorthandVisitor {
     type Value = Shorthand;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -286,7 +286,7 @@ pub struct HostedShorthandRef<'a> {
     pub shorthand: &'a Shorthand,
 }
 
-impl<'a> HostedShorthandRef<'a> {
+impl HostedShorthandRef<'_> {
     #[must_use]
     pub fn fetch_url(&self, method: FetchMethod) -> String {
         method.fetch_url(self.host, &self.shorthand.user, &self.shorthand.repo)

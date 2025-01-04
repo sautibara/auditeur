@@ -23,9 +23,9 @@ use std::{
 use arena::Arena;
 use auditeur_plugin::auditeur::{app::App, Message};
 use futures::Future;
-use tracing::error;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::error;
 
 pub mod arena;
 pub mod config;
@@ -196,7 +196,7 @@ pub enum Error {
     #[error("invalid rustc version, found: '{found}', expected: '{expected}'")]
     InvalidRustc { found: String, expected: String },
     #[error("received message from cargo: {}", .0.message.rendered.as_deref().unwrap_or_default())]
-    CargoMessage(cargo_metadata::CompilerMessage),
+    CargoMessage(Box<cargo_metadata::CompilerMessage>),
     #[error(
         "plugin '{plugin}' has no library crate (checked {})",
         manifest_path.display(),
@@ -227,7 +227,7 @@ pub enum Error {
 
 impl From<cargo_metadata::CompilerMessage> for Error {
     fn from(value: cargo_metadata::CompilerMessage) -> Self {
-        Self::CargoMessage(value)
+        Self::CargoMessage(Box::new(value))
     }
 }
 

@@ -9,7 +9,10 @@ use syn::{
     Item, ItemImpl, ItemStruct, ItemTrait, LitStr, Token, TypeParamBound,
 };
 
+use crate::proc_macro_impls::AllCombinations;
+
 mod custom_generics;
+mod field;
 mod namespaced_id;
 
 mod proc_macro_impls {
@@ -21,6 +24,9 @@ mod proc_macro_impls {
 
     mod input;
     pub use input::input;
+
+    mod all_combinations;
+    pub use all_combinations::{all_combinations, AllCombinations};
 
     #[cfg(feature = "path-any")]
     mod maybe_get_ref;
@@ -209,7 +215,7 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
     let input_mod = auditeur.input();
 
     quote! {
-        impl #input_mod::GetRef for #ident {
+        impl #input_mod::get::GetRef for #ident {
             type Ref = Self;
             fn get_ref(&self) -> Self {
                 self.clone()
@@ -390,4 +396,12 @@ impl syn::parse::Parse for CfgSupertrait {
         };
         Ok(Self { cfg, typ, default })
     }
+}
+
+#[proc_macro]
+pub fn all_combinations(params: TokenStream) -> TokenStream {
+    let params = parse_macro_input!(params as AllCombinations);
+    proc_macro_impls::all_combinations(&params)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

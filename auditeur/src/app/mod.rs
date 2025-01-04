@@ -11,21 +11,21 @@
 //!
 //! - Before being added to an [`App`], resources are each wrapped in a [`Loader`]
 //!     - Loaders are trait objects that handle resolving [`Input`]s and building
-//!     a resource into a [`LoadedResource`]
+//!       a resource into a [`LoadedResource`]
 //! - When the app begins being built, a [`Registry`] is created to hold each [`LoadedResource`]
 //! - Each [`Loader`] is loaded into the registry based on its [`Constraints`]
 //!     - [`Constraints`] are essentially a list of resources that must be loaded before loading
-//!     another resource
+//!       another resource
 //!     - These are necessary so that resources can ensure that the other resources they access
-//!     through [`Get<_>`](crate::input::Get) are already loaded
+//!       through [`Get<_>`](crate::input::Get) are already loaded
 //! - Once loaded, resources are each built into a [`LoadedResource`]
 //!     - [`LoadedResource`]s build the [`Input`]s for their resources from the registry
 //!     - [`LoadedResource`]s allow for dynamically accessing the contained resource by the
-//!     registry, enabling [`input::Get<_>`](crate::input::Get) to work
+//!       registry, enabling [`input::Get<_>`](crate::input::Get) to work
 //!     - Then, [`LoadedResource`]s may also provide a [`Runner`] to run in the main loop, which is
-//!     how listeners and watchers are run
+//!       how listeners and watchers are run
 //! - When the registry is [run](Registry::run), each [`Runner`] is asynchronously run at the same
-//! time until they all finish
+//!   time until they all finish
 //!
 //! The basic pipeline: [`impl Resource`](Resource) / [`impl Listener`](Listener) /
 //! [`impl Watcher`](Watcher) -> [`dyn Loader`](Loader) -> [`dyn LoadedResource`](LoadedResource)
@@ -52,7 +52,7 @@ use tracing::warn;
 use tracing::Instrument;
 
 use crate::bundle;
-use crate::input::GetRef;
+use crate::input::get::GetRef;
 use crate::prelude::*;
 
 mod constraints;
@@ -166,7 +166,7 @@ impl<M: Message> App<M> {
     /// [Build](Self::build) the `App` and run all [runners](Runner) to completion
     ///
     /// - `capacity`: the capacity of the message channel - how many messages the channel
-    /// can hold before listeners start to lag
+    ///   can hold before listeners start to lag
     ///
     /// # Errors
     ///
@@ -180,8 +180,8 @@ impl<M: Message> App<M> {
 
     /// Build the `App` into a [`Registry`], without running it
     ///
-    ///  - `capacity`: the capacity of the message channel - how many messages the channel
-    /// can hold before listeners start to lag
+    /// - `capacity`: the capacity of the message channel - how many messages the channel
+    ///   can hold before listeners start to lag
     ///
     /// # Errors
     ///
@@ -488,7 +488,7 @@ struct RunningRegistry {
 
 #[cfg(feature = "runtime-loading")]
 impl RunningRegistry {
-    async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
+    async fn add_boxed_resource(&self, resource: Box<dyn LoadedResource>) {
         let _ = self.resource_sender.send(resource).await;
     }
 
@@ -974,7 +974,7 @@ pub struct GetRequest {
     // In fact, this was the culprit of what has been the most dreadful bug I have ever encountered
     // due to insane amounts of inconsistency... Deadlocks are not my friend - they very well may be
     // my greatest enemy D:
-    sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::CloneAny>>>>,
+    sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::get::CloneAny>>>>,
 }
 
 #[cfg(feature = "runtime-loading")]
@@ -1032,7 +1032,7 @@ impl GetRequest {
     ///
     /// Note: this doesn't actually check if the reference matches the request - use
     /// [`Self::matches`] to check first
-    pub(crate) async fn send(&self, reference: Box<dyn crate::input::CloneAny>) {
+    pub(crate) async fn send(&self, reference: Box<dyn crate::input::get::CloneAny>) {
         let Some(sender) = self.sender.lock().await.take() else {
             // this could only happen with a name collision
             warn!("resource matches GetRequest, but the channel was already used");
@@ -1226,7 +1226,7 @@ pub struct EventReceiver {
 }
 
 impl EventReceiver {
-    fn new(receiver: watch::Receiver<Vec<RegistryEvent>>) -> Self {
+    const fn new(receiver: watch::Receiver<Vec<RegistryEvent>>) -> Self {
         Self {
             watch: receiver,
             index: 0,
@@ -1237,7 +1237,8 @@ impl EventReceiver {
     #[instrument(name = "recv_registry_event", skip(self))]
     pub async fn recv(&mut self) -> Option<RegistryEvent> {
         loop {
-            if let Some(val) = self.watch.borrow_and_update().get(self.index).cloned() {
+            let value = self.watch.borrow_and_update().get(self.index).cloned();
+            if let Some(val) = value {
                 self.index += 1;
                 return Some(val);
             }
@@ -1256,7 +1257,8 @@ impl EventReceiver {
     /// - [`EventTryRecvError::NotReady`] if the stream is not ready
     /// - [`EventTryRecvError::Closed`] if the stream is closed
     pub fn try_recv(&mut self) -> Result<RegistryEvent, EventTryRecvError> {
-        if let Some(val) = self.watch.borrow_and_update().get(self.index).cloned() {
+        let value = self.watch.borrow_and_update().get(self.index).cloned();
+        if let Some(val) = value {
             self.index += 1;
             // can't use else 'cause the compiler gets angry at the mutable ref above
             return Ok(val);

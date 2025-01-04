@@ -6,8 +6,8 @@ use std::{
     sync::Arc,
 };
 
-use tracing::trace;
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::prelude::*;
 
@@ -184,7 +184,7 @@ impl OwnedId {
 
     fn create(discriminant: u8, bytes: impl IntoIterator<Item = u8>) -> Self {
         let mut vec = vec![discriminant];
-        vec.extend(bytes.into_iter());
+        vec.extend(bytes);
         Self::new(vec)
     }
 }
@@ -203,11 +203,11 @@ impl Deref for OwnedId {
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: OwnedId is #[repr(transparent)] as Arc<[u8]>
-        let bytes: &Arc<[u8]> = unsafe { &*(self as *const Self).cast() };
+        let bytes: &Arc<[u8]> = unsafe { &*std::ptr::from_ref::<Self>(self).cast() };
         // coerce the &Arc<[u8]> into a &[u8]
         let byte_slice: &[u8] = bytes;
         // SAFETY: Id is #[repr(transparent)] as [u8]
-        let shared_id: &Id = unsafe { &*(byte_slice as *const [u8] as *const Id) };
+        let shared_id: &Id = unsafe { &*(std::ptr::from_ref::<[u8]>(byte_slice) as *const Id) };
 
         shared_id
     }

@@ -10,8 +10,8 @@ use std::{
 
 use cargo_metadata::Message as CargoMessage;
 use cargo_toml::Dependency;
-use tracing::{trace, warn};
 use tokio::io::AsyncWriteExt;
+use tracing::{trace, warn};
 
 use crate::prelude::*;
 
@@ -200,8 +200,7 @@ debug = {debug}
             });
         };
         let library_name = (library.name)
-            .as_ref()
-            .cloned()
+            .clone()
             .unwrap_or_else(|| package_name.0.replace('-', "_"));
         let library_name = LibraryName(library_name);
 
@@ -246,10 +245,7 @@ debug = {debug}
         Ok((crt.package_name.clone(), dependency))
     }
 
-    pub async fn compile(
-        &mut self,
-        plugins: &HashSet<PluginName>,
-    ) -> Result<BuildArtifacts, Error> {
+    pub async fn compile(&self, plugins: &HashSet<PluginName>) -> Result<BuildArtifacts, Error> {
         if plugins.is_empty() {
             return Ok(BuildArtifacts::default());
         }

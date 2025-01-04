@@ -18,9 +18,9 @@ pub fn maybe_get_ref(
     } = generics;
 
     quote! {
-        impl #impl_generics #input_mod::MaybeGetRef for #ident #type_generics #where_clause {
-            fn maybe_get_ref(&self) -> Option<Box<dyn #input_mod::CloneAny>> {
-                use #input_mod::maybe_get_ref::Specialization as _;
+        impl #impl_generics #input_mod::get::MaybeGetRef for #ident #type_generics #where_clause {
+            fn maybe_get_ref(&self) -> Option<Box<dyn #input_mod::get::CloneAny>> {
+                use #input_mod::get::maybe_get_ref::Specialization as _;
                 (&mut &*self).specialization()
             }
         }

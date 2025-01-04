@@ -23,11 +23,11 @@ pub trait Identifiable: Send + Sync + 'static {
 /// if they implement [`GetRef`], other resources may obtain synchronized references of them.
 ///
 /// To implement this trait, use [`#[resource]`](macro@crate::resource)
-#[cfg_supertrait(feature = "runtime-loading", crate::input::MaybeGetRef)]
+#[cfg_supertrait(feature = "runtime-loading", crate::input::get::MaybeGetRef)]
 pub trait Resource: Identifiable + crate::Any {}
 
 #[cfg(feature = "runtime-loading")]
-impl<T: Identifiable + crate::Any + crate::input::MaybeGetRef> Resource for T {}
+impl<T: Identifiable + crate::Any + crate::input::get::MaybeGetRef> Resource for T {}
 #[cfg(not(feature = "runtime-loading"))]
 impl<T: Identifiable + crate::Any> Resource for T {}
 

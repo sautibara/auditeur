@@ -7,8 +7,8 @@ use auditeur_plugin::auditeur::{
     app::{App, EventSender},
     Message,
 };
-use tracing::{debug, trace};
 use tokio::try_join;
+use tracing::{debug, trace};
 
 use crate::{prelude::*, registry};
 
@@ -178,7 +178,7 @@ impl<M: Message> Arena<M> {
                 let paths = self.binaries.insert_copies(artifacts.into_iter()).await?;
                 self.queue_loads(paths);
                 if !errors.is_empty() {
-                    return Err(errors.into_iter().map(Error::CargoMessage).collect());
+                    return Err(errors.into_iter().map(Into::into).collect());
                 }
             }
             Action::Load(paths) => {
@@ -397,7 +397,7 @@ impl State {
         let mut actions = VecDeque::new();
 
         for source in prev.sources.keys() {
-            if self.sources.get(source).is_none() {
+            if !self.sources.contains_key(source) {
                 actions.push_back(Action::RemoveSource(source.clone()));
             }
         }
@@ -405,7 +405,7 @@ impl State {
         // this makes sure that all dependencies are loaded in the correct order
         let mut tracker = SourceTracker::new(&self.sources, &self.statics);
         for source in self.sources.keys() {
-            tracker.insert(source.clone(), prev.sources.get(source).is_some());
+            tracker.insert(source.clone(), prev.sources.contains_key(source));
         }
         tracker.load(|source| actions.push_back(Action::LoadSource(source.clone())));
 

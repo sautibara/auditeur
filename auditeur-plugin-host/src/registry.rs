@@ -9,8 +9,8 @@ use auditeur_plugin::auditeur::{
     prelude::*,
     Message,
 };
-use tracing::{debug, trace};
 use tokio::select;
+use tracing::{debug, trace};
 
 use crate::{source::Binary, Error, PluginName};
 use auditeur_plugin::{loading::Plugin, LibraryHandle};
@@ -179,7 +179,8 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
                             // so it'll forever wait for it to unload before unloading the bundle.
                             // Instead, we use the hacky solution: just leak the library and keep
                             // it always loaded.
-                            if let Some(library) = self.shared_mut().libraries.remove(unloaded_bundle) {
+                            let library = self.shared_mut().libraries.remove(unloaded_bundle);
+                            if let Some(library) = library {
                                 std::mem::forget(library);
                             }
                         }
