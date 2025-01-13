@@ -29,16 +29,16 @@ pub fn input(strct: ItemStruct) -> proc_macro2::TokenStream {
             let members: Vec<_> = strct.fields.members().collect();
             let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
             quote! {
-                async fn create<'a>(registry: &'a #auditeur::app::Registry<M>, as_resource: NamespacedIdRef<'_>) -> Result<Self, #auditeur::Error> {
+                async fn create<'a>(registry: &'a #auditeur::app::Registry, as_resource: NamespacedIdRef<'_>) -> Result<Self, #auditeur::Error> {
                     let ( #(#members),* ) = #auditeur::try_join!(
-                        #( <#types as #input_mod::Input<M>>::create(registry, as_resource) ),*
+                        #( <#types as #input_mod::Input>::create(registry, as_resource) ),*
                     )?;
                     Ok(Self { #(#members),* })
                 }
 
                 fn constraints() -> #auditeur::app::Constraints {
                     #auditeur::app::Constraints::empty()
-                        #(.extend(<#types as #input_mod::Input<M>>::constraints()))*
+                        #(.extend(<#types as #input_mod::Input>::constraints()))*
                 }
             }
         }
@@ -50,21 +50,21 @@ pub fn input(strct: ItemStruct) -> proc_macro2::TokenStream {
                 .collect();
             let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
             quote! {
-                async fn create(registry: &#auditeur::app::Registry<M>, as_resource: NamespacedIdRef<'_>) -> Result<Self, #auditeur::Error> {
+                async fn create(registry: &#auditeur::app::Registry, as_resource: NamespacedIdRef<'_>) -> Result<Self, #auditeur::Error> {
                     let ( #(#members),* ) = #auditeur::try_join!(
-                        #( <#types as #input_mod::Input<M>>::create(registry, as_resource) ),*
+                        #( <#types as #input_mod::Input>::create(registry, as_resource) ),*
                     )?;
                     Ok(Self( #(#members),* ))
                 }
 
                 fn constraints() -> #auditeur::app::Constraints {
                     #auditeur::app::Constraints::empty()
-                        #(.extend(<#types as #input_mod::Input<M>>::constraints()))*
+                        #(.extend(<#types as #input_mod::Input>::constraints()))*
                 }
             }
         }
         syn::Fields::Unit => quote! {
-            async fn create(_: &#auditeur::app::Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, #auditeur::Error> {
+            async fn create(_: &#auditeur::app::Registry, _: NamespacedIdRef<'_>) -> Result<Self, #auditeur::Error> {
                 Self
             }
 
@@ -75,8 +75,7 @@ pub fn input(strct: ItemStruct) -> proc_macro2::TokenStream {
     };
 
     quote! {
-        type M = Message;
-        impl #impl_generics #input_mod::Input<M> for #ident #type_generics #where_clause {
+        impl #impl_generics #input_mod::Input for #ident #type_generics #where_clause {
             #implementations
         }
     }

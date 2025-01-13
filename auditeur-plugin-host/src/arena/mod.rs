@@ -5,7 +5,6 @@ use std::{
 
 use auditeur_plugin::auditeur::{
     app::{App, EventSender},
-    Message,
 };
 use tokio::try_join;
 use tracing::{debug, trace};
@@ -72,8 +71,8 @@ impl Action {
 }
 
 #[resource("plugin_host:arena")]
-pub struct Arena<M: Message> {
-    plugin_registry: registry::Handle<M>,
+pub struct Arena {
+    plugin_registry: registry::Handle,
     source_list: SourceList,
     workspace: Workspace,
     binaries: Binaries,
@@ -82,13 +81,13 @@ pub struct Arena<M: Message> {
 }
 
 #[create]
-impl<M: Message> Create<M> for Arena<M> {
+impl Create for Arena {
     async fn create(#[external] arena: Result<Self>) -> Result<Self> {
         arena
     }
 }
 
-impl<M: Message> Arena<M> {
+impl Arena {
     /// Open or initialize an [`Arena`] using the specified `config`
     ///
     /// # Errors
@@ -96,12 +95,12 @@ impl<M: Message> Arena<M> {
     /// - If the directory structure cannot be created
     pub async fn open_or_init(
         config: config::Host,
-        plugin_registry: registry::Handle<M>,
+        plugin_registry: registry::Handle,
     ) -> (Result<Self, Error>, Vec<Error>) {
-        async fn open_or_init<M: Message>(
+        async fn open_or_init(
             config: config::Host,
-            plugin_registry: registry::Handle<M>,
-        ) -> Result<Arena<M>, Error> {
+            plugin_registry: registry::Handle,
+        ) -> Result<Arena, Error> {
             debug!("initializing plugin arena");
             let (source_list, workspace, binaries) = try_join!(
                 SourceList::new(config.directories().source_dir()),
@@ -306,8 +305,8 @@ impl<M: Message> Arena<M> {
     /// If a plugin can't be loaded
     pub fn add_to_plugin_registry(
         &self,
-        registry: &mut PluginRegistry<M>,
-        app: &mut App<M>,
+        registry: &mut PluginRegistry,
+        app: &mut App,
     ) -> Result<(), Error> {
         for binary in self.enabled_binaries() {
             trace!("adding '{}' to the registry", binary.path.display());
@@ -320,7 +319,7 @@ impl<M: Message> Arena<M> {
 }
 
 #[async_trait]
-impl<M: Message> Watcher<M> for Arena<M> {
+impl Watcher for Arena {
     type Input = EventSender;
 
     async fn run(&mut self, sender: &mut Self::Input) -> Result<()> {

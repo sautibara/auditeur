@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::prelude::*;
 
 use crate::resource::Listener as ListenerTrait;
@@ -14,39 +16,37 @@ use super::loaded::LoadedResource;
 /// already be loaded through the [`Constraints`] of each input, which is why delayed execution is
 /// necessary.
 #[async_trait]
-pub trait Loader<M: Message>: Send {
+pub trait Loader: Send {
     /// Consume the loader and create a [`LoadedResource`], resolving inputs using `registry`
     ///
     /// # Errors
     ///
     /// - If the inputs return any errors
     ///   - If any resources are not found
-    async fn load(
-        self: Box<Self>,
-        registry: &Registry<M>,
-    ) -> Result<Box<dyn LoadedResource>, Error>;
+    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error>;
     /// Return a list of [`Constraints`] that must be satisfied before loading
     fn constraints(&self) -> Constraints;
     /// Return a reference to the contained [resource](mod@crate::resource)'s [`NamespacedId`]
     fn ident(&self) -> NamespacedIdRef<'_>;
 }
 
-pub struct Listener<M: Message, L: ListenerTrait<M> + Create<M>> {
+pub struct Listener<M: Message, L: ListenerTrait<M> + Create> {
     external_input: L::ExternalInput,
+    phantom_data: PhantomData<M>,
 }
 
-impl<M: Message, L: ListenerTrait<M> + Create<M>> Listener<M, L> {
+impl<M: Message, L: ListenerTrait<M> + Create> Listener<M, L> {
     pub const fn new(external_input: L::ExternalInput) -> Self {
-        Self { external_input }
+        Self {
+            external_input,
+            phantom_data: PhantomData,
+        }
     }
 }
 
 #[async_trait]
-impl<M: Message, L: ListenerTrait<M> + Create<M>> Loader<M> for Listener<M, L> {
-    async fn load(
-        self: Box<Self>,
-        registry: &Registry<M>,
-    ) -> Result<Box<dyn LoadedResource>, Error> {
+impl<M: Message, L: ListenerTrait<M> + Create> Loader for Listener<M, L> {
+    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = L::RegistryInput::create(registry, L::const_ident()).await?;
         let listener = L::create(registry_input, self.external_input)
             .await
@@ -67,22 +67,19 @@ impl<M: Message, L: ListenerTrait<M> + Create<M>> Loader<M> for Listener<M, L> {
     }
 }
 
-pub struct Resource<M: Message, R: ResourceTrait + Create<M>> {
+pub struct Resource<R: ResourceTrait + Create> {
     external_input: R::ExternalInput,
 }
 
-impl<M: Message, R: ResourceTrait + Create<M>> Resource<M, R> {
+impl<R: ResourceTrait + Create> Resource<R> {
     pub const fn new(external_input: R::ExternalInput) -> Self {
         Self { external_input }
     }
 }
 
 #[async_trait]
-impl<M: Message, R: ResourceTrait + Create<M>> Loader<M> for Resource<M, R> {
-    async fn load(
-        self: Box<Self>,
-        registry: &Registry<M>,
-    ) -> Result<Box<dyn LoadedResource>, Error> {
+impl<R: ResourceTrait + Create> Loader for Resource<R> {
+    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = R::RegistryInput::create(registry, R::const_ident()).await?;
         let resource = R::create(registry_input, self.external_input)
             .await
@@ -102,22 +99,19 @@ impl<M: Message, R: ResourceTrait + Create<M>> Loader<M> for Resource<M, R> {
     }
 }
 
-pub struct Watcher<M: Message, W: WatcherTrait<M> + Create<M>> {
+pub struct Watcher<W: WatcherTrait + Create> {
     external_input: W::ExternalInput,
 }
 
-impl<M: Message, W: WatcherTrait<M> + Create<M>> Watcher<M, W> {
+impl<W: WatcherTrait + Create> Watcher<W> {
     pub const fn new(external_input: W::ExternalInput) -> Self {
         Self { external_input }
     }
 }
 
 #[async_trait]
-impl<M: Message, W: WatcherTrait<M> + Create<M>> Loader<M> for Watcher<M, W> {
-    async fn load(
-        self: Box<Self>,
-        registry: &Registry<M>,
-    ) -> Result<Box<dyn LoadedResource>, Error> {
+impl<W: WatcherTrait + Create> Loader for Watcher<W> {
+    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
         let registry_input = W::RegistryInput::create(registry, W::const_ident()).await?;
         let watcher = W::create(registry_input, self.external_input)
             .await

@@ -119,7 +119,7 @@ struct Shared {
 }
 
 #[create]
-impl<M: Message> Create<M> for ResourceMap {
+impl Create for ResourceMap {
     async fn create(sender: EventSender) -> Result<Self> {
         Ok(Self {
             sender,
@@ -226,7 +226,7 @@ impl ResourceMap {
 }
 
 #[async_trait]
-impl<M: Message> Watcher<M> for ResourceMap {
+impl Watcher for ResourceMap {
     type Input = (EventReceiver, Stopper);
 
     // insta-stop trick to control stopping

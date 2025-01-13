@@ -4,11 +4,8 @@ use crate::prelude::*;
 
 pub struct Get<T: Resource + GetRef>(T::Ref);
 
-impl<M: Message, T: Resource + GetRef> Input<M> for Get<T> {
-    async fn create(
-        registry: &Registry<M>,
-        as_resource: NamespacedIdRef<'_>,
-    ) -> Result<Self, Error> {
+impl<T: Resource + GetRef> Input for Get<T> {
+    async fn create(registry: &Registry, as_resource: NamespacedIdRef<'_>) -> Result<Self, Error> {
         let reference =
             registry
                 .get_as::<T>(as_resource)

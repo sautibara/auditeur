@@ -111,9 +111,10 @@ pub use futures::try_join;
 
 pub mod prelude {
     pub use crate::{
-        app::{Constraints, RegistryEvent, Stopper},
+        app::{App, Constraints, Registry, RegistryEvent, Stopper},
         bundle::Bundle,
         create, ident,
+        input::get::Get,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
         resource::{Create, Identifiable, Listener, Resource, Watcher},
@@ -130,11 +131,7 @@ pub mod prelude {
     pub use auditeur_macros::PathAny;
 
     pub(crate) use crate::Error;
-    pub(crate) use crate::{
-        app::{App, Registry},
-        input::Input,
-        Message,
-    };
+    pub(crate) use crate::{input::Input, Message};
 
     pub use anyhow;
     pub use anyhow::Result;

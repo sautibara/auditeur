@@ -35,7 +35,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,8 +75,8 @@ pub use constraints::Constraints;
 
 // TODO: separate NamespacedId into ResourceId and BundleId
 
-struct BundledLoader<M: Message> {
-    loader: Box<dyn Loader<M>>,
+struct BundledLoader {
+    loader: Box<dyn Loader>,
     bundle: NamespacedId,
 }
 
@@ -101,15 +100,15 @@ pub(crate) struct BuiltBundle {
 /// through a bundle. If there are conflicts between resources with the same id, the one that is
 /// added first is kept.
 #[must_use = "An app does nothing unless it is run"]
-pub struct App<M: Message> {
-    loaders: HashMap<NamespacedId, Option<BundledLoader<M>>>,
+pub struct App {
+    loaders: HashMap<NamespacedId, Option<BundledLoader>>,
     bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
     loading_loaders: HashMap<NamespacedId, NamespacedId>,
     // TODO: check if adding App events is a good idea
     events: Vec<RegistryEvent>,
 }
 
-impl<M: Message> App<M> {
+impl App {
     /// Create a new app
     #[cfg_attr(
         not(feature = "resource-map"),
@@ -134,13 +133,13 @@ impl<M: Message> App<M> {
     /// Add a [`Bundle`] to the app, supplied by a [`Supplier`](bundle::Supplier)
     ///
     /// This takes ownership of the [`App`], allowing for usage closer to a builder pattern
-    pub fn with_bundle(mut self, bundle: impl bundle::Supplier<M>) -> Self {
+    pub fn with_bundle(mut self, bundle: impl bundle::Supplier) -> Self {
         self.add_bundle(bundle);
         self
     }
 
     /// Add a [`Bundle`] to the app, supplied by a [`Supplier`](bundle::Supplier)
-    pub fn add_bundle(&mut self, bundle: impl bundle::Supplier<M>) -> &mut Self {
+    pub fn add_bundle(&mut self, bundle: impl bundle::Supplier) -> &mut Self {
         let bundle = bundle.build();
         bundle.apply_to(self, None);
         self
@@ -148,7 +147,7 @@ impl<M: Message> App<M> {
 
     pub(crate) fn add_loader(
         &mut self,
-        loader: Box<dyn Loader<M>>,
+        loader: Box<dyn Loader>,
         bundle: NamespacedIdRef,
     ) -> NamespacedId {
         let id = loader.ident().into_owned();
@@ -190,7 +189,7 @@ impl<M: Message> App<M> {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn build(self, capacity: usize) -> Result<Registry<M>, Self> {
+    pub async fn build(self, capacity: usize) -> Result<Registry, Self> {
         let mut registry = Registry::new(capacity);
         self.add_to_registry(&mut registry).await?;
         Ok(registry)
@@ -202,7 +201,7 @@ impl<M: Message> App<M> {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn add_to_registry(mut self, registry: &mut Registry<M>) -> Result<(), Self> {
+    pub async fn add_to_registry(mut self, registry: &mut Registry) -> Result<(), Self> {
         self.add_to_registry_fallible(registry)
             .await
             .map_err(|err| {
@@ -214,7 +213,7 @@ impl<M: Message> App<M> {
             })
     }
 
-    async fn add_to_registry_fallible(&mut self, registry: &mut Registry<M>) -> Result<(), Error> {
+    async fn add_to_registry_fallible(&mut self, registry: &mut Registry) -> Result<(), Error> {
         // add the loaders and bundles that have already been loaded in the registry to our list
         // this is necessary so that constraints can know that their dependencies have already been
         // loaded
@@ -236,7 +235,7 @@ impl<M: Message> App<M> {
     #[async_recursion]
     async fn resolve_loader(
         &mut self,
-        registry: &mut Registry<M>,
+        registry: &mut Registry,
         id: &NamespacedId,
     ) -> Result<(), Error> {
         let loader = self
@@ -266,7 +265,7 @@ impl<M: Message> App<M> {
     #[async_recursion]
     async fn resolve_bundle(
         &mut self,
-        registry: &mut Registry<M>,
+        registry: &mut Registry,
         id: &NamespacedId,
     ) -> Result<(), Error> {
         let bundle = self
@@ -291,7 +290,7 @@ impl<M: Message> App<M> {
 
     async fn resolve_constraints(
         &mut self,
-        registry: &mut Registry<M>,
+        registry: &mut Registry,
         constraints: &Constraints,
     ) -> Result<(), Error> {
         for constraint in constraints {
@@ -334,7 +333,7 @@ impl<M: Message> App<M> {
     }
 }
 
-impl<M: Message> Default for App<M> {
+impl Default for App {
     fn default() -> Self {
         Self::new()
     }
@@ -591,20 +590,18 @@ impl Channels {
 /// - To tell only one resource or the entire program to stop, use a [`Stopper`] through [`Self::stopper`]
 /// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
 /// - To listen to messages, use [`Self::message_receiver`]
-pub struct Registry<M: Message> {
+pub struct Registry {
     channels: Arc<Channels>,
     event_sender: EventSender,
     state: RegistryState,
-    phantom_data: PhantomData<M>,
 }
 
-impl<M: Message> Registry<M> {
+impl Registry {
     fn new(capacity: usize) -> Self {
         Self {
             channels: Arc::new(Channels::new(capacity)),
             event_sender: EventSender::new(),
             state: RegistryState::Building(BuildingRegistry::new()),
-            phantom_data: PhantomData,
         }
     }
 
@@ -696,7 +693,7 @@ impl<M: Message> Registry<M> {
     /// - If the [`Loader`] returns an error; see [`Loader::load`]
     pub async fn add_loader(
         &mut self,
-        loader: Box<dyn Loader<M>>,
+        loader: Box<dyn Loader>,
         bundle: NamespacedId,
     ) -> Result<&mut Self, Error> {
         self.event_sender.send(RegistryEvent::Loading {
@@ -755,7 +752,7 @@ impl<M: Message> Registry<M> {
 ///
 /// Notice that these are only accessable through the `runtime-loading` feature
 #[cfg(feature = "runtime-loading")]
-impl<M: Message> Registry<M> {
+impl Registry {
     /// Obtain a handle to the [`Registry`], which can be used to manage it externally
     ///
     /// The handle acts the same as a normal, still-building registry, but it uses channels to
@@ -790,7 +787,6 @@ impl<M: Message> Registry<M> {
             channels: self.channels.clone(),
             event_sender: self.event_sender.clone(),
             state: implementation,
-            phantom_data: PhantomData,
         };
         Ok(handle)
     }
@@ -803,20 +799,20 @@ impl<M: Message> Registry<M> {
     }
 
     /// Creates a new [`App`] that can eventually be added to this registry
-    pub fn new_app(&self) -> App<M> {
+    pub fn new_app(&self) -> App {
         App::new_empty()
     }
 }
 
 /// Methods to access the various channels that the registry contains
-impl<M: Message> Registry<M> {
+impl Registry {
     #[must_use]
-    pub fn message_sender(&self) -> broadcast::Sender<M> {
+    pub fn message_sender<M: Message>(&self) -> broadcast::Sender<M> {
         self.channels.sender()
     }
 
     #[must_use]
-    pub fn message_receiver(&self) -> broadcast::Receiver<M> {
+    pub fn message_receiver<M: Message>(&self) -> broadcast::Receiver<M> {
         self.channels.receiver()
     }
 
@@ -844,7 +840,7 @@ impl<M: Message> Registry<M> {
 }
 
 /// Methods to access the current state of the registry
-impl<M: Message> Registry<M> {
+impl Registry {
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] that is currently loaded
     #[must_use]
     pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
@@ -859,7 +855,7 @@ impl<M: Message> Registry<M> {
 }
 
 #[cfg(feature = "runtime-loading")]
-impl<M: Message> Input<M> for Registry<M> {
+impl Input for Registry {
     /// Use a registry [handle](Self::handle) as an input to a running resource
     async fn create(registry: &Self, reference_holder: NamespacedIdRef<'_>) -> Result<Self, Error> {
         registry.handle(reference_holder)
@@ -870,8 +866,8 @@ impl<M: Message> Input<M> for Registry<M> {
     }
 }
 
-impl<M: Message> Input<M> for Sender<M> {
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+impl<M: Message> Input for Sender<M> {
+    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.message_sender())
     }
 }
@@ -1196,8 +1192,8 @@ impl Stopper {
     }
 }
 
-impl<M: Message> Input<M> for Stopper {
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+impl Input for Stopper {
+    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.stopper())
     }
 }
@@ -1248,8 +1244,8 @@ impl EventSender {
     }
 }
 
-impl<M: Message> Input<M> for EventSender {
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+impl Input for EventSender {
+    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.event_sender())
     }
 }
@@ -1322,14 +1318,14 @@ impl EventReceiver {
     }
 
     /// Mark the most recent message as seen, ignoring recv
-    pub(crate) fn mark_seen(&mut self) {
+    pub fn mark_seen(&mut self) {
         let vec = self.watch.borrow_and_update();
         self.index = vec.len();
     }
 }
 
-impl<M: Message> Input<M> for EventReceiver {
-    async fn create(registry: &Registry<M>, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+impl Input for EventReceiver {
+    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.event_receiver())
     }
 }

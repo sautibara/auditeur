@@ -21,7 +21,7 @@ use std::{
 };
 
 use arena::Arena;
-use auditeur_plugin::auditeur::{app::App, Message};
+use auditeur_plugin::auditeur::app::App;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -125,7 +125,7 @@ pub trait AppExt {
     fn with_plugin_system(self, config: config::Host) -> impl Future<Output = Self>;
 }
 
-impl<M: Message> AppExt for App<M> {
+impl AppExt for App {
     async fn with_plugin_system(mut self, config: config::Host) -> Self {
         let (mut registry, plugin_sender) = PluginRegistry::new();
         let (mut arena, mut errors) = Arena::open_or_init(config, plugin_sender).await;
@@ -137,11 +137,11 @@ impl<M: Message> AppExt for App<M> {
         }
         self.add_bundle(
             new_bundle!("auditeur:plugin_host")
-                .with_watcher::<Arena<M>>(arena.map_err(Into::into))
-                .with_watcher::<PluginRegistry<M>>(registry),
+                .with_watcher::<Arena>(arena.map_err(Into::into))
+                .with_watcher::<PluginRegistry>(registry),
         );
         self.add_errors(
-            Arena::<M>::const_ident(),
+            Arena::const_ident(),
             errors.into_iter().map(Into::into),
         );
         self

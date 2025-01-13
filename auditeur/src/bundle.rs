@@ -37,14 +37,14 @@ pub use new_bundle;
 /// Each bundle has a unique [identifier](NamespacedId) in order to differentiate them. As such,
 /// care should be taken to prevent identifier collisions.
 #[must_use = "A bundle does nothing unless it is applied to an App - try App::with_bundle"]
-pub struct Bundle<M: Message> {
+pub struct Bundle {
     id: NamespacedId,
-    loaders: Vec<Box<dyn Loader<M>>>,
+    loaders: Vec<Box<dyn Loader>>,
     bundles: Vec<Self>,
     constraints: Constraints,
 }
 
-impl<M: Message> Bundle<M> {
+impl Bundle {
     /// Create a new bundle with the id `id`
     ///
     /// See [`new_bundle!`] for a simpler way to do this
@@ -58,11 +58,7 @@ impl<M: Message> Bundle<M> {
     }
 
     /// Apply this bundle to the specified [`App`], adding each bundle, loader, the bundle itself
-    pub(super) fn apply_to(
-        self,
-        app: &mut App<M>,
-        parent: Option<NamespacedIdRef>,
-    ) -> NamespacedId {
+    pub(super) fn apply_to(self, app: &mut App, parent: Option<NamespacedIdRef>) -> NamespacedId {
         let this_id = self.id.referenced();
         let bundles: Arc<[NamespacedId]> = self
             .bundles
@@ -101,20 +97,20 @@ impl<M: Message> Bundle<M> {
 /// the main loop: they must be added through [`Self::with_listener`] or [`Self::with_watcher`].
 /// The namespaces for each also aren't exclusive: if a resource with the same [`NamespacedId`] is
 /// added as both a [`Listener`] and [`Watcher`], one will overwrite the other.
-impl<M: Message> Bundle<M> {
+impl Bundle {
     /// Add a [`Resource`] to this bundle
     ///
     /// Resources are never run, they only provide themselves to [listeners](Listener),
     /// [watchers](Watcher), or other resources with [`input::Get<_>`](crate::input::Get)
-    pub fn with_resource<R: Resource + Create<M>>(self, external_input: R::ExternalInput) -> Self {
-        self.with(loader::Resource::<M, R>::new(external_input))
+    pub fn with_resource<R: Resource + Create>(self, external_input: R::ExternalInput) -> Self {
+        self.with(loader::Resource::<R>::new(external_input))
     }
 
     /// Add a [`Listener`] to this bundle
     ///
     /// Listeners run in the main loop, listening to the main message channel. Like watchers, they
     /// can use [inputs](Input) to reference and talk to other [resources](mod@crate::resource).
-    pub fn with_listener<L: Listener<M> + Create<M>>(
+    pub fn with_listener<M: Message, L: Listener<M> + Create>(
         self,
         external_input: L::ExternalInput,
     ) -> Self {
@@ -126,8 +122,8 @@ impl<M: Message> Bundle<M> {
     /// Watchers run in the main loop but never receive from the main message channel (although
     /// they can send to it). Like listeners, they can use [inputs](Input) to reference and talk to
     /// other [resources](mod@crate::resource).
-    pub fn with_watcher<W: Watcher<M> + Create<M>>(self, external_input: W::ExternalInput) -> Self {
-        self.with(loader::Watcher::<M, W>::new(external_input))
+    pub fn with_watcher<W: Watcher + Create>(self, external_input: W::ExternalInput) -> Self {
+        self.with(loader::Watcher::<W>::new(external_input))
     }
 
     /// Add another bundle to this bundle
@@ -135,14 +131,14 @@ impl<M: Message> Bundle<M> {
     /// When this bundle is loaded in an [`App`], the child bundle will also be added - just like a
     /// resource. The child bundle will also respect this bundle's
     /// [constraints](Self::add_constraint)
-    pub fn with_bundle(mut self, bundle: impl Supplier<M>) -> Self {
+    pub fn with_bundle(mut self, bundle: impl Supplier) -> Self {
         let bundle = bundle.build();
         self.bundles.push(bundle);
         self
     }
 
     /// Add a generic [`Loader`] to the bundle's list of loaders
-    pub fn with<L: Loader<M> + 'static>(mut self, loader: L) -> Self {
+    pub fn with<L: Loader + 'static>(mut self, loader: L) -> Self {
         self.loaders.push(Box::new(loader));
         self
     }
@@ -150,7 +146,7 @@ impl<M: Message> Bundle<M> {
 
 /// These methods allow providing [`Constraints`] that must be satisfied before any contained
 /// [resource](mod@crate::resource) or [`Bundle`] is loaded
-impl<M: Message> Bundle<M> {
+impl Bundle {
     /// Only load the items within this bundle once the resource specified by `id` has been loaded
     pub fn after_resource(self, id: impl Into<NamespacedId>) -> Self {
         self.add_constraint(Constraint::AfterResource { id: id.into() })
@@ -201,17 +197,17 @@ impl<M: Message> Bundle<M> {
 /// app.add_bundle(create_bundle);
 /// # }
 /// ```
-pub trait Supplier<M: Message> {
-    fn build(self) -> Bundle<M>;
+pub trait Supplier {
+    fn build(self) -> Bundle;
 }
 
-impl<M: Message, F: FnOnce() -> Bundle<M>> Supplier<M> for F {
-    fn build(self) -> Bundle<M> {
+impl<F: FnOnce() -> Bundle> Supplier for F {
+    fn build(self) -> Bundle {
         self()
     }
 }
 
-impl<M: Message> Supplier<M> for Bundle<M> {
+impl Supplier for Bundle {
     fn build(self) -> Self {
         self
     }

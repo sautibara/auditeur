@@ -1,13 +1,11 @@
 use std::{
     collections::HashMap,
-    marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
 use auditeur_plugin::auditeur::{
     app::{App, EventReceiver, Registry},
     prelude::*,
-    Message,
 };
 use tokio::select;
 use tracing::{debug, trace};
@@ -28,21 +26,20 @@ struct Shared {
 #[must_use = "if the registry isn't added to an app, the libraries that are loaded will be leaked"]
 #[resource("plugin_host:registry")]
 #[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
-pub struct PluginRegistry<M: Message> {
+pub struct PluginRegistry {
     shared: Arc<Mutex<Shared>>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<Vec<Binary>>,
-    message: PhantomData<M>,
 }
 
 #[create]
-impl<M: Message> Create<M> for PluginRegistry<M> {
+impl Create for PluginRegistry {
     async fn create(#[external] registry: Self) -> Result<Self> {
         Ok(registry)
     }
 }
 
-impl<M: Message> PluginRegistry<M> {
-    pub fn new() -> (Self, Handle<M>) {
+impl PluginRegistry {
+    pub fn new() -> (Self, Handle) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let shared = Shared {
             libraries: HashMap::new(),
@@ -53,13 +50,8 @@ impl<M: Message> PluginRegistry<M> {
             Self {
                 shared: shared.clone(),
                 receiver,
-                message: PhantomData,
             },
-            Handle {
-                sender,
-                shared,
-                message: PhantomData,
-            },
+            Handle { shared, sender },
         )
     }
 
@@ -87,7 +79,7 @@ impl<M: Message> PluginRegistry<M> {
     pub unsafe fn load_plugin_from_file_unchecked(
         &mut self,
         library: &Binary,
-        app: &mut App<M>,
+        app: &mut App,
     ) -> Result<NamespacedId, Error> {
         trace!("loading binary at '{}' to app", library.path.display());
         let plugin = Plugin::load_from_file_unchecked(&library.path, app)?;
@@ -104,7 +96,7 @@ impl<M: Message> PluginRegistry<M> {
     }
 }
 
-impl<M: Message> Drop for PluginRegistry<M> {
+impl Drop for PluginRegistry {
     fn drop(&mut self) {
         #[allow(clippy::collection_is_never_read)]
         let libraries: Vec<_> = {
@@ -121,8 +113,8 @@ impl<M: Message> Drop for PluginRegistry<M> {
 }
 
 #[async_trait]
-impl<M: Message> Watcher<M> for PluginRegistry<M> {
-    type Input = (EventReceiver, Registry<M>, Stopper);
+impl Watcher for PluginRegistry {
+    type Input = (EventReceiver, Registry, Stopper);
 
     async fn run(&mut self, (_, _, stopper): &mut Self::Input) -> Result<()> {
         // a strange workaround to avoid getting stopped: do it ourselves first
@@ -193,13 +185,12 @@ impl<M: Message> Watcher<M> for PluginRegistry<M> {
 }
 
 #[derive(Clone)]
-pub struct Handle<M: Message> {
+pub struct Handle {
     shared: Arc<Mutex<Shared>>,
     sender: tokio::sync::mpsc::UnboundedSender<Vec<Binary>>,
-    message: PhantomData<M>,
 }
 
-impl<M: Message> Handle<M> {
+impl Handle {
     /// # Safety
     ///
     /// Each of these plugins must adhere to the safety contract specified in

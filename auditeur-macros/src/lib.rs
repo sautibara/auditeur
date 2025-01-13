@@ -173,13 +173,12 @@ pub fn create_derive(item: TokenStream) -> TokenStream {
     };
 
     let auditeur = Auditeur::new();
-    let crate_name = auditeur.crate_name();
     let resource_mod = auditeur.resource();
     let anyhow = auditeur.anyhow();
 
     quote! {
         // we can be generic over message because there are no inputs to depend on it
-        impl<M: #crate_name::Message> #resource_mod::Create<M> for #ident {
+        impl #resource_mod::Create for #ident {
             type RegistryInput = ();
             type ExternalInput = ();
             async fn create((): (), (): ()) -> #anyhow::Result<Self> {

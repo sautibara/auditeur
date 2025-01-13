@@ -154,7 +154,7 @@ fn export_check_return_value(span: Span) -> impl Iterator<Item = Stmt> {
             // this is allowed since it is in an if false block, so it never gets run but still
             // gets compiled and outputs errors
             // since it never gets run, we can just use unimplemented! for the argument
-            let _: ::auditeur_plugin::auditeur::bundle::Bundle<_> = init(unimplemented!());
+            let _: ::auditeur_plugin::auditeur::bundle::Bundle = init(unimplemented!());
         }
     };
     let return_type_assert = syn::parse2(return_type_assert).expect("statement should parse");

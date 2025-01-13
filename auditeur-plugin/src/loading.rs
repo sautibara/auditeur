@@ -1,12 +1,12 @@
 use std::ffi::OsStr;
 
-use auditeur::{app::App, bundle::Bundle, namespaced_id::NamespacedId, Message};
+use auditeur::{app::App, bundle::Bundle, namespaced_id::NamespacedId};
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
 
 use crate::{LibraryHandle, PluginContext};
 
-type PluginFn<M> = fn(PluginContext) -> Bundle<M>;
+type PluginFn = fn(PluginContext) -> Bundle;
 
 /// A plugin and its associated [`Bundle`] that has already been loaded into an [`App`]
 pub struct Plugin {
@@ -27,20 +27,21 @@ impl Plugin {
     ///
     /// - If the library fails to load
     /// - If the library's main function fails to load
-    pub unsafe fn load_from_file_unchecked<M: Message>(
+    pub unsafe fn load_from_file_unchecked(
         path: impl AsRef<OsStr>,
-        app: &mut App<M>,
+        app: &mut App,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
         let library = libloading::Library::new(path)?;
         let handle = LibraryHandle::from_library(library);
-        let main: libloading::Symbol<PluginFn<M>> = handle
-            .library()
-            .get_canaried(b"init")
-            .map_err(|err| Error::CantLoadInitFunction {
-                path: path.to_string_lossy().to_string(),
-                additional_info: err.to_string(),
-            })?;
+        let main: libloading::Symbol<PluginFn> =
+            handle
+                .library()
+                .get_canaried(b"init")
+                .map_err(|err| Error::CantLoadInitFunction {
+                    path: path.to_string_lossy().to_string(),
+                    additional_info: err.to_string(),
+                })?;
         let context = PluginContext::new(handle.clone());
         let bundle = main(context);
         let bundle_id = bundle.id().into_owned();

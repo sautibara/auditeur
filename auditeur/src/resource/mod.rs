@@ -7,6 +7,7 @@ use auditeur_macros::cfg_supertrait;
 use futures::Future;
 
 pub mod builtin;
+// pub mod listener;
 
 /// A type that has an associated [`NamespacedId`] that uniquely represents it
 pub trait Identifiable: Send + Sync + 'static {
@@ -36,7 +37,7 @@ impl<T: Identifiable + crate::Any> Resource for T {}
 /// [`Input`]s are the way that [`Listener`]s are able to communicate with the rest of the [`App`]
 #[async_trait]
 pub trait Listener<M: Message>: Resource + Send {
-    type Input: Input<M>;
+    type Input: Input;
 
     async fn handle(&mut self, message: M, input: &mut Self::Input) -> Result<()>;
 
@@ -64,8 +65,8 @@ pub trait Listener<M: Message>: Resource + Send {
 ///
 /// The main use of `Watcher`s is that they can ask for [`Input`]s from the rest of the [`App`]
 #[async_trait]
-pub trait Watcher<M: Message>: Resource + Send {
-    type Input: Input<M>;
+pub trait Watcher: Resource + Send {
+    type Input: Input;
 
     async fn run(&mut self, input: &mut Self::Input) -> anyhow::Result<()>;
 
@@ -79,8 +80,8 @@ pub trait Watcher<M: Message>: Resource + Send {
     }
 }
 
-pub trait Create<M: Message>: Sized {
-    type RegistryInput: Input<M>;
+pub trait Create: Sized {
+    type RegistryInput: Input;
     type ExternalInput: Send;
 
     // TODO: accept a Result
@@ -90,3 +91,26 @@ pub trait Create<M: Message>: Sized {
         external: Self::ExternalInput,
     ) -> impl Future<Output = Result<Self, anyhow::Error>> + Send;
 }
+
+// #[resource("rpc:client")]
+// #[listener(on(AudioMessage))]
+// struct Client {
+//     ...
+// }
+//
+// impl Runnable for Client {
+//     #[resource_method]
+//     async fn init(&mut self) -> Result<()> {}
+//
+//     #[resource_method]
+//     async fn exit(&mut self) -> Result<()> {}
+// }
+//
+// impl Listener for Client {
+//     type Components = (ListenComponent<Client, AudioMessage>);
+// }
+//
+// impl Listen<AudioMessage> for Client {
+//     #[resource_method]
+//     async fn on(&mut self, message: AudioMessage, library: &mut Get<Library>) {}
+// }

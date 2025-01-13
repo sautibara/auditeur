@@ -20,6 +20,7 @@ auditeur-macros = { version = "0.1.0", path = "../auditeur-macros" }
 bevy_utils_proc_macros = "0.13.2"
 dashmap = { version = "6.0.1", optional = true }
 tracing = "0.1.40"
+send-future = "0.1.0"
 
 [lints.clippy]
 enum_glob_use = "warn"

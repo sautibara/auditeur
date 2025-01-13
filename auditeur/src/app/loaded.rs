@@ -60,8 +60,8 @@ pub struct Listener<M: Message, L: ListenerTrait<M>> {
 }
 
 impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
-    pub async fn build(listener: L, registry: &Registry<M>) -> Result<Self, Error> {
-        let input = <L::Input as Input<M>>::create(registry, listener.ident()).await?;
+    pub async fn build(listener: L, registry: &Registry) -> Result<Self, Error> {
+        let input = <L::Input as Input>::create(registry, listener.ident()).await?;
         Ok(Self {
             inner: listener,
             input,
@@ -239,16 +239,16 @@ impl<R: ResourceTrait> Identifiable for Resource<R> {
     }
 }
 
-pub struct Watcher<M: Message, W: WatcherTrait<M>> {
+pub struct Watcher<W: WatcherTrait> {
     inner: W,
     input: W::Input,
     event_receiver: EventReceiver,
     event_sender: EventSender,
 }
 
-impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
-    pub async fn build(watcher: W, registry: &Registry<M>) -> Result<Self, Error> {
-        let input = <W::Input as Input<M>>::create(registry, watcher.ident()).await?;
+impl<W: WatcherTrait> Watcher<W> {
+    pub async fn build(watcher: W, registry: &Registry) -> Result<Self, Error> {
+        let input = <W::Input as Input>::create(registry, watcher.ident()).await?;
         Ok(Self {
             inner: watcher,
             input,
@@ -290,7 +290,7 @@ impl<M: Message, W: WatcherTrait<M>> Watcher<M, W> {
     }
 }
 
-impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
+impl<W: WatcherTrait> LoadedResource for Watcher<W> {
     fn resource(&self) -> &dyn ResourceTrait {
         &self.inner
     }
@@ -305,7 +305,7 @@ impl<M: Message, W: WatcherTrait<M>> LoadedResource for Watcher<M, W> {
 }
 
 #[async_trait]
-impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
+impl<W: WatcherTrait> Runner for Watcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
@@ -347,7 +347,7 @@ impl<M: Message, W: WatcherTrait<M>> Runner for Watcher<M, W> {
     }
 }
 
-impl<M: Message, W: WatcherTrait<M>> Identifiable for Watcher<M, W> {
+impl<W: WatcherTrait> Identifiable for Watcher<W> {
     fn ident(&self) -> NamespacedIdRef<'static> {
         self.inner.ident()
     }
