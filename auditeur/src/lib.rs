@@ -145,7 +145,7 @@ pub mod prelude {
 }
 
 #[cfg_supertrait(feature = "path-any", path_any::PathAnyConst)]
-pub trait Message: Clone + Send + Sync + 'static {}
+pub trait Message: Identifiable + Clone + Send + Sync + 'static {}
 
 #[macro_export]
 macro_rules! bake_message {

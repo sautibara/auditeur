@@ -35,10 +35,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_recursion::async_recursion;
+use dashmap::mapref::one::MappedRef;
+use dashmap::DashMap;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 #[cfg(feature = "runtime-loading")]
@@ -540,6 +543,41 @@ impl RunningRegistry {
     }
 }
 
+struct Channels {
+    capacity: usize,
+    map: DashMap<NamespacedId, Box<dyn crate::Any + Send + Sync>>,
+}
+
+impl Channels {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            map: DashMap::new(),
+        }
+    }
+
+    fn sender_ref<M: Message>(
+        &self,
+    ) -> MappedRef<'_, NamespacedId, Box<dyn crate::Any + Send + Sync>, broadcast::Sender<M>> {
+        self.map
+            .entry(M::const_ident().into_owned())
+            .or_insert_with(|| Box::new(broadcast::Sender::<M>::new(self.capacity)))
+            .downgrade()
+            .map(|val| {
+                val.downcast_ref()
+                    .expect("this should always be a valid Sender")
+            })
+    }
+
+    fn sender<M: Message>(&self) -> broadcast::Sender<M> {
+        self.sender_ref().clone()
+    }
+
+    fn receiver<M: Message>(&self) -> broadcast::Receiver<M> {
+        self.sender_ref().subscribe()
+    }
+}
+
 /// A list of registered and loaded [resources](LoadedResource), built from an [`App`], that can be run as a main loop
 ///
 /// A registry is built from an [`App`] declaration, which handles loading things in the correct
@@ -554,17 +592,19 @@ impl RunningRegistry {
 /// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
 /// - To listen to messages, use [`Self::message_receiver`]
 pub struct Registry<M: Message> {
-    message_sender: broadcast::Sender<M>,
+    channels: Arc<Channels>,
     event_sender: EventSender,
     state: RegistryState,
+    phantom_data: PhantomData<M>,
 }
 
 impl<M: Message> Registry<M> {
     fn new(capacity: usize) -> Self {
         Self {
-            message_sender: Sender::new(capacity),
+            channels: Arc::new(Channels::new(capacity)),
             event_sender: EventSender::new(),
             state: RegistryState::Building(BuildingRegistry::new()),
+            phantom_data: PhantomData,
         }
     }
 
@@ -747,9 +787,10 @@ impl<M: Message> Registry<M> {
             map,
         });
         let handle = Self {
-            message_sender: self.message_sender.clone(),
+            channels: self.channels.clone(),
             event_sender: self.event_sender.clone(),
             state: implementation,
+            phantom_data: PhantomData,
         };
         Ok(handle)
     }
@@ -770,13 +811,13 @@ impl<M: Message> Registry<M> {
 /// Methods to access the various channels that the registry contains
 impl<M: Message> Registry<M> {
     #[must_use]
-    pub fn message_sender(&self) -> Sender<M> {
-        self.message_sender.clone()
+    pub fn message_sender(&self) -> broadcast::Sender<M> {
+        self.channels.sender()
     }
 
     #[must_use]
     pub fn message_receiver(&self) -> broadcast::Receiver<M> {
-        self.message_sender.subscribe()
+        self.channels.receiver()
     }
 
     #[must_use]
