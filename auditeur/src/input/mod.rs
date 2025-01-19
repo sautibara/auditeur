@@ -16,7 +16,7 @@ pub trait Input: Sized + Send + Sync + 'static {
     /// - If the input failed to gather the resources necessary
     fn create(
         registry: &Registry,
-        as_resource: NamespacedIdRef,
+        as_resource: &NamespacedIdRef,
     ) -> impl Future<Output = Result<Self, Error>> + Send;
 
     #[must_use]
@@ -26,7 +26,7 @@ pub trait Input: Sized + Send + Sync + 'static {
 }
 
 impl<I: Input> Input for Option<I> {
-    async fn create(registry: &Registry, as_resource: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
         I::create(registry, as_resource).await.map(Some)
     }
 
@@ -36,7 +36,7 @@ impl<I: Input> Input for Option<I> {
 }
 
 impl<T: Send + Sync + 'static> Input for PhantomData<T> {
-    async fn create(_: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(_: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(Self)
     }
 
@@ -49,7 +49,7 @@ macro_rules! impl_input {
     ($($T:ident),*) => {
         impl<$($T: Input),*> Input for ($($T,)*) {
             #[allow(unused_variables)]
-            async fn create(registry: &Registry, as_resource: NamespacedIdRef<'_>) -> Result<Self, Error> {
+            async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
                 futures::try_join!($($T::create(registry, as_resource),)*)
             }
 

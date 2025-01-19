@@ -118,7 +118,7 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
         match event {
             Some(event) => {
                 let to_exit = match event {
-                    RegistryEvent::Stop(ref id) if *id == self.ident() => true,
+                    RegistryEvent::Stop(ref id) if &**id == self.ident() => true,
                     RegistryEvent::Exit => true,
                     #[cfg(feature = "runtime-loading")]
                     RegistryEvent::Get(ref get_request) => {
@@ -150,11 +150,11 @@ impl<M: Message, L: ListenerTrait<M>> Listener<M, L> {
 }
 
 impl<M: Message, L: ListenerTrait<M>> Identifiable for Listener<M, L> {
-    fn ident(&self) -> NamespacedIdRef<'static> {
+    fn ident(&self) -> &'static NamespacedIdRef {
         self.inner.ident()
     }
 
-    fn const_ident() -> NamespacedIdRef<'static>
+    fn const_ident() -> &'static NamespacedIdRef
     where
         Self: Sized,
     {
@@ -227,11 +227,11 @@ impl<R: ResourceTrait> LoadedResource for Resource<R> {
 }
 
 impl<R: ResourceTrait> Identifiable for Resource<R> {
-    fn ident(&self) -> NamespacedIdRef<'static> {
+    fn ident(&self) -> &'static NamespacedIdRef {
         self.resource.ident()
     }
 
-    fn const_ident() -> NamespacedIdRef<'static>
+    fn const_ident() -> &'static NamespacedIdRef
     where
         Self: Sized,
     {
@@ -266,7 +266,7 @@ impl<W: WatcherTrait> Watcher<W> {
             return ControlFlow::Break(());
         };
         let to_exit = match message {
-            RegistryEvent::Stop(ref id) if *id == W::const_ident() => true,
+            RegistryEvent::Stop(ref id) if id == W::const_ident() => true,
             RegistryEvent::Exit => true,
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(ref get_request) => {
@@ -348,11 +348,11 @@ impl<W: WatcherTrait> Runner for Watcher<W> {
 }
 
 impl<W: WatcherTrait> Identifiable for Watcher<W> {
-    fn ident(&self) -> NamespacedIdRef<'static> {
+    fn ident(&self) -> &'static NamespacedIdRef {
         self.inner.ident()
     }
 
-    fn const_ident() -> NamespacedIdRef<'static>
+    fn const_ident() -> &'static NamespacedIdRef
     where
         Self: Sized,
     {

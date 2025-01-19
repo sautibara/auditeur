@@ -27,7 +27,7 @@ pub trait Loader: Send {
     /// Return a list of [`Constraints`] that must be satisfied before loading
     fn constraints(&self) -> Constraints;
     /// Return a reference to the contained [resource](mod@crate::resource)'s [`NamespacedId`]
-    fn ident(&self) -> NamespacedIdRef<'_>;
+    fn ident(&self) -> &NamespacedIdRef;
 }
 
 pub struct Listener<M: Message, L: ListenerTrait<M> + Create> {
@@ -62,7 +62,7 @@ impl<M: Message, L: ListenerTrait<M> + Create> Loader for Listener<M, L> {
         L::RegistryInput::constraints().extend(L::Input::constraints())
     }
 
-    fn ident(&self) -> NamespacedIdRef<'_> {
+    fn ident(&self) -> &NamespacedIdRef {
         L::const_ident()
     }
 }
@@ -94,7 +94,7 @@ impl<R: ResourceTrait + Create> Loader for Resource<R> {
         R::RegistryInput::constraints()
     }
 
-    fn ident(&self) -> NamespacedIdRef<'_> {
+    fn ident(&self) -> &NamespacedIdRef {
         R::const_ident()
     }
 }
@@ -127,7 +127,7 @@ impl<W: WatcherTrait + Create> Loader for Watcher<W> {
         W::RegistryInput::constraints().extend(W::Input::constraints())
     }
 
-    fn ident(&self) -> NamespacedIdRef<'_> {
+    fn ident(&self) -> &NamespacedIdRef {
         W::const_ident()
     }
 }

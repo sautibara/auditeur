@@ -9,7 +9,7 @@ pub mod namespaced_id;
 pub mod path_any;
 pub mod resource;
 
-/// A macro that returns a parsed [`NamespacedId`]
+/// A macro that returns a parsed static reference to a [`NamespacedIdRef`]
 ///
 /// # Examples
 ///
@@ -21,10 +21,7 @@ pub mod resource;
 ///
 /// assert_eq!(
 ///     ident!("namespace:id"),
-///     NamespacedIdRef {
-///         namespace: "namespace",
-///         id: "id",
-///     },
+///     &NamespacedId::new("namespace", "id"),
 /// );
 /// # }
 /// ```
@@ -38,7 +35,7 @@ pub use auditeur_macros::ident;
 ///
 /// ```
 /// # // see the doctest for bundle::Supplier for why this is necessary
-/// # use auditeur::{namespaced_id, resource, path_any};
+/// # use auditeur::{namespaced_id, resource, path_any, input};
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 ///
@@ -49,6 +46,9 @@ pub use auditeur_macros::ident;
 /// # }
 /// ```
 pub use auditeur_macros::resource;
+
+pub use auditeur_macros::identifiable;
+pub use auditeur_macros::message;
 
 pub use auditeur_macros::create;
 pub use auditeur_macros::Create;
@@ -62,7 +62,7 @@ pub use auditeur_macros::Create;
 /// # use auditeur::{input, path_any};
 /// # pub fn main() {
 /// use auditeur::prelude::*;
-/// use auditeur::input::GetRef;
+/// use auditeur::input::get::GetRef;
 /// use std::sync::Arc;
 ///
 /// #[derive(Clone, GetRef, PathAny)]
@@ -113,8 +113,9 @@ pub mod prelude {
     pub use crate::{
         app::{App, Constraints, Registry, RegistryEvent, Stopper},
         bundle::Bundle,
-        create, ident,
+        create, ident, identifiable,
         input::get::Get,
+        message,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
         resource::{Create, Identifiable, Listener, Resource, Watcher},

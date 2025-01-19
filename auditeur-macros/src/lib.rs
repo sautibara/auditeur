@@ -6,7 +6,7 @@ use proc_macro_crate::crate_name;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
     parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, GenericParam, Ident,
-    Item, ItemImpl, ItemStruct, ItemTrait, LitStr, Token, TypeParamBound,
+    Item, ItemImpl, ItemStruct, ItemTrait, Token, TypeParamBound,
 };
 
 use crate::proc_macro_impls::AllCombinations;
@@ -27,6 +27,12 @@ mod proc_macro_impls {
 
     mod all_combinations;
     pub use all_combinations::{all_combinations, AllCombinations};
+
+    mod identifiable;
+    pub use identifiable::{identifiable, identifiable_with_generics};
+
+    mod ident;
+    pub use ident::ident;
 
     #[cfg(feature = "path-any")]
     mod maybe_get_ref;
@@ -109,46 +115,60 @@ fn extract_attr(vec: &mut Vec<Attribute>, ident: &str) -> impl Iterator<Item = A
 
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(item as ItemStruct);
+    let item = parse_macro_input!(item as Item);
+    let id = parse_macro_input!(attr as NamespacedId);
 
-    let string = parse_macro_input!(attr as LitStr);
-    let id = match string.value().parse() {
-        Ok(id) => id,
-        Err(err) => {
-            let err: namespaced_id::ParseError = err;
-            let err = err.to_string();
-            return quote_spanned!(string.span() =>
-                compile_error!(concat!("failed to parse ident: ", #err));
-            )
-            .into();
-        }
+    proc_macro_impls::resource(item, &id)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_attribute]
+pub fn identifiable(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as Item);
+    let id = parse_macro_input!(attr as NamespacedId);
+
+    let identifiable_impl = match proc_macro_impls::identifiable(&id, &mut item) {
+        Ok(identifiable_impl) => identifiable_impl,
+        Err(err) => return err.into_compile_error().into(),
     };
 
-    proc_macro_impls::resource(item, id).into()
+    quote! {
+        #identifiable_impl
+        #item
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as Item);
+    let id = parse_macro_input!(attr as NamespacedId);
+
+    let (ident, generics) = match CustomGenerics::from_item(&mut item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
+    };
+
+    let identifiable_impl = proc_macro_impls::identifiable_with_generics(&id, ident, &generics);
+
+    let auditeur = Auditeur::new();
+    let crate_name = auditeur.crate_name();
+
+    quote! {
+        impl #crate_name::Message for #ident {}
+        #item
+        #identifiable_impl
+    }
+    .into()
 }
 
 #[proc_macro]
 pub fn ident(string: TokenStream) -> TokenStream {
-    let string = parse_macro_input!(string as LitStr);
-    let id = string.value().parse();
+    let id = parse_macro_input!(string as NamespacedId);
 
     let auditeur = Auditeur::new();
-    let id_mod = auditeur.id();
-
-    match id {
-        Ok(NamespacedId { namespace, id }) => quote!(
-            #id_mod::NamespacedIdRef {
-                namespace: #namespace,
-                id: #id,
-            }
-        ),
-        Err(err) => {
-            let err = err.to_string();
-            quote_spanned!(string.span() =>
-                compile_error!(concat!("failed to parse ident: ", #err));)
-        }
-    }
-    .into()
+    crate::proc_macro_impls::ident(&id, &auditeur).into()
 }
 
 #[proc_macro_attribute]

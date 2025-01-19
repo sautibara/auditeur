@@ -44,7 +44,7 @@ impl Plugin {
                 })?;
         let context = PluginContext::new(handle.clone());
         let bundle = main(context);
-        let bundle_id = bundle.id().into_owned();
+        let bundle_id = bundle.id().to_owned();
         app.add_bundle(bundle);
         Ok(Self {
             library: handle,

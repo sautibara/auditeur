@@ -7,43 +7,256 @@
 //! (`auditeur:resource_map` is a lot more recognizeable than `2dd42d85-d83d-4663-8fd1-e4e8e88faef5`).
 
 use std::{
+    alloc::Layout,
+    borrow::Borrow,
     fmt::{Debug, Display},
     str::FromStr,
 };
 
 use thiserror::Error;
 
-/// A simple id that is prefixed with a namespace
-///
-/// There are two different versions of this type: [`NamespacedId`], which represents an owned id,
-/// and [`NamespacedIdRef`] which represents a reference to an id. As such, many things return
-/// [`NamespacedIdRef`], which you can then convert to this type through [`From`] or
-/// [`NamespacedIdRef::into_owned`].
+/// A reference to a [`NamespacedId`]
 ///
 /// To create a [`NamespacedIdRef`] from a static string, use [`ident!`](crate::ident).
-#[derive(PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
-pub struct NamespacedId {
-    pub namespace: String,
-    pub id: String,
+///
+/// # Examples
+///
+/// ```
+/// # use auditeur::namespaced_id;
+/// # fn main() {
+/// use auditeur::prelude::*;
+///
+/// let ident: &'static NamespacedIdRef = ident!("namespace:id");
+/// assert_eq!("namespace", ident.namespace());
+/// assert_eq!("id", ident.id());
+/// # }
+/// ```
+#[repr(C)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(clippy::module_name_repetitions)] // Ref is way too general
+pub struct NamespacedIdRef {
+    namespace_len: usize,
+    // `data` holds the entire string form of the id, that is, "{namespace}:{id}"
+    // this is so the data can be borrowed as a string without making a new one
+    data: str,
 }
 
-impl NamespacedId {
+impl NamespacedIdRef {
+    /// Get a reference to the namespace portion of this `NamespacedId`
     #[must_use]
-    pub fn referenced(&self) -> NamespacedIdRef<'_> {
-        self.into()
+    pub fn namespace(&self) -> &str {
+        &self.data[..self.namespace_len]
+    }
+
+    /// Get a reference to the id portion of this `NamespacedId`
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.data[(self.namespace_len + 1)..]
+    }
+
+    /// Get a reference to the display form of this `NamespacedId`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use auditeur::namespaced_id;
+    /// # fn main() {
+    /// use auditeur::prelude::*;
+    ///
+    /// let ident: &'static NamespacedIdRef = ident!("namespace:id");
+    /// assert_eq!("namespace:id", ident.as_str());
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
+        &self.data
+    }
+
+    fn layout(data_len: usize) -> Layout {
+        // We have to calculate the layout ourselves because it's Unsized :(
+        let array_layout = Layout::array::<u8>(data_len).expect(
+            "the lengths of the namespace and id shouldn't overflow a isize when combined.",
+        );
+        let (layout, _) = Layout::new::<usize>()
+            .extend(array_layout)
+            .expect("the layout of a NamespacedId shouldn't overflow an isize");
+        layout.pad_to_align()
     }
 }
 
-impl Debug for NamespacedId {
+impl Borrow<str> for &NamespacedIdRef {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Display for &NamespacedIdRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, r#"NamespacedId "{self}""#)
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Debug for &NamespacedIdRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NamespacedIdRef({})", self.as_str())
+    }
+}
+
+/// An owned simple id that is prefixed with a namespace
+///
+/// To create a [`NamespacedIdRef`] from a static string, use [`ident!`](crate::ident).
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NamespacedId {
+    id: Box<NamespacedIdRef>,
+}
+
+impl NamespacedId {
+    /// Create a new [`NamespacedId`] using a `namespace` and `id`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use auditeur::prelude::*;
+    ///
+    /// let id = NamespacedId::new("namespace", "id");
+    /// assert_eq!("namespace", id.namespace());
+    /// assert_eq!("id", id.id());
+    /// ```
+    #[must_use]
+    pub fn new(namespace: &str, id: &str) -> Self {
+        let namespace_len = namespace.len();
+        let id_len = id.len();
+        let len = namespace_len + id_len + 1;
+
+        // SAFETY: we completely initialize the NamespacedIdRef by copying the namespace_len,
+        // and providing the data by copying the namespace and id
+        unsafe {
+            Self::init(len, |wide_ptr| {
+                (&raw mut (*wide_ptr).namespace_len).write(namespace_len);
+
+                let data_ptr = (&raw mut (*wide_ptr).data).cast::<u8>();
+                std::ptr::copy(namespace.as_ptr(), data_ptr, namespace_len);
+                data_ptr.add(namespace_len).write(b':');
+                std::ptr::copy(id.as_ptr(), data_ptr.add(namespace_len + 1), id_len);
+            })
+        }
+    }
+
+    /// Allocate a new [`NamespacedId`] with enough space for data of length `data_len` and initialize
+    /// it using the given `initializer`. The initializer is given a non-null pointer to an
+    /// uninitialized [`NamespacedIdRef`] and must fully initialize it.
+    ///
+    /// # Safety
+    ///
+    /// - `initializer` must completely initialize the [`NamespacedIdRef`].
+    unsafe fn init(data_len: usize, initializer: impl FnOnce(*mut NamespacedIdRef)) -> Self {
+        // Allocate the correct amount of space for the NamespacedIdRef.
+        // SAFETY: the size is at least the size of usize, which is greater than 1.
+        let layout = NamespacedIdRef::layout(data_len);
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        assert!(!ptr.is_null(), "the allocated pointer shouldn't be null");
+
+        // Pointers to NamespacedIdRefs are wide pointers to hold the length of the str.
+        // We give the length here :).
+        let wide_ptr = std::ptr::slice_from_raw_parts_mut(ptr, data_len);
+        // the pointer is guaranteed to have the correct alignment since it was allocated with that
+        // alignment.
+        #[allow(clippy::cast_ptr_alignment)]
+        let wide_ptr = wide_ptr as *mut NamespacedIdRef;
+
+        // According to rust rules, we cannot have a normal reference to data that isn't
+        // initialized yet, otherwise undefined behavior happens.
+        // Thus, we have to initialize the id through raw pointers before making the box.
+        // SAFETY: we own all of this memory, so we can mutate it how we wish.
+        initializer(wide_ptr);
+
+        // Now since everything is initialized, we can create the box!
+        // SAFETY: everything is initialized, the pointer is aligned and isn't null, and this is
+        // only called once.
+        let id = unsafe { Box::from_raw(wide_ptr) };
+        Self { id }
+    }
+}
+
+impl ToOwned for NamespacedIdRef {
+    type Owned = NamespacedId;
+
+    fn to_owned(&self) -> Self::Owned {
+        // SAFETY: we completely initialize the NamespacedIdRef by copying our fields
+        unsafe {
+            NamespacedId::init(self.data.len(), |wide_ptr| {
+                (&raw mut (*wide_ptr).namespace_len).write(self.namespace_len);
+
+                let data_ptr = (&raw mut (*wide_ptr).data).cast::<u8>();
+                std::ptr::copy(self.data.as_ptr(), data_ptr, self.data.len());
+            })
+        }
+    }
+}
+
+impl From<&NamespacedIdRef> for NamespacedId {
+    fn from(reference: &NamespacedIdRef) -> Self {
+        reference.to_owned()
+    }
+}
+
+impl Clone for NamespacedId {
+    fn clone(&self) -> Self {
+        NamespacedIdRef::to_owned(self)
+    }
+}
+
+impl std::ops::Deref for NamespacedId {
+    type Target = NamespacedIdRef;
+
+    fn deref(&self) -> &NamespacedIdRef {
+        &self.id
+    }
+}
+
+impl Borrow<NamespacedIdRef> for NamespacedId {
+    fn borrow(&self) -> &NamespacedIdRef {
+        self
+    }
+}
+
+impl Borrow<str> for NamespacedId {
+    fn borrow(&self) -> &str {
+        self.as_str()
     }
 }
 
 impl Display for NamespacedId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.namespace, self.id)
+        write!(f, "{}", self.as_str())
     }
+}
+
+impl Debug for NamespacedId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NamespacedId({})", self.as_str())
+    }
+}
+
+impl PartialEq<NamespacedIdRef> for NamespacedId {
+    fn eq(&self, other: &NamespacedIdRef) -> bool {
+        &**self == other
+    }
+}
+
+impl PartialEq<NamespacedId> for NamespacedIdRef {
+    fn eq(&self, other: &NamespacedId) -> bool {
+        self == &**other
+    }
+}
+
+/// A struct used in [`ident!`](macro@crate::ident) to coerce a byte array to a static
+/// [`NamespacedIdRef`].
+#[repr(C)]
+#[doc(hidden)]
+pub struct Coerce<T: ?Sized> {
+    pub namespace_size: usize,
+    pub data: T,
 }
 
 impl FromStr for NamespacedId {
@@ -53,70 +266,11 @@ impl FromStr for NamespacedId {
         let [namespace, id] = &components[..] else {
             return match components.len() {
                 0..=1 => Err(ParseError::NotEnoughComponents),
-                2.. => Err(ParseError::TooManyComponents),
+                2 => unreachable!(),
+                3.. => Err(ParseError::TooManyComponents),
             };
         };
-        Ok(Self {
-            namespace: (*namespace).to_string(),
-            id: (*id).to_string(),
-        })
-    }
-}
-
-/// A reference to a [`NamespacedId`]
-#[allow(clippy::module_name_repetitions)] // Ref is way too general
-#[derive(PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
-pub struct NamespacedIdRef<'a> {
-    pub namespace: &'a str,
-    pub id: &'a str,
-}
-
-impl NamespacedIdRef<'_> {
-    #[must_use]
-    pub fn into_owned(self) -> NamespacedId {
-        self.into()
-    }
-}
-
-impl Debug for NamespacedIdRef<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, r#"NamespacedIdRef "{self}""#)
-    }
-}
-
-impl Display for NamespacedIdRef<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.namespace, self.id)
-    }
-}
-
-impl<'a> From<&'a NamespacedId> for NamespacedIdRef<'a> {
-    fn from(val: &'a NamespacedId) -> Self {
-        NamespacedIdRef {
-            namespace: &val.namespace,
-            id: &val.id,
-        }
-    }
-}
-
-impl<'a> From<NamespacedIdRef<'a>> for NamespacedId {
-    fn from(value: NamespacedIdRef<'a>) -> Self {
-        Self {
-            namespace: value.namespace.to_owned(),
-            id: value.id.to_owned(),
-        }
-    }
-}
-
-impl PartialEq<NamespacedIdRef<'_>> for NamespacedId {
-    fn eq(&self, other: &NamespacedIdRef<'_>) -> bool {
-        self.namespace == other.namespace && self.id == other.id
-    }
-}
-
-impl PartialEq<NamespacedId> for NamespacedIdRef<'_> {
-    fn eq(&self, other: &NamespacedId) -> bool {
-        self.namespace == other.namespace && self.id == other.id
+        Ok(Self::new(namespace, id))
     }
 }
 
@@ -127,4 +281,35 @@ pub enum ParseError {
     TooManyComponents,
     #[error("the id should have a colon in the middle")]
     NotEnoughComponents,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NamespacedId;
+
+    #[test]
+    fn deref_to_owned() {
+        let id = NamespacedId::new("namespace", "id");
+
+        let deref = &*id;
+        assert_eq!("namespace", deref.namespace());
+        assert_eq!("id", deref.id());
+
+        let to_owned = deref.to_owned();
+        assert_eq!("namespace", to_owned.namespace());
+        assert_eq!("id", to_owned.id());
+    }
+
+    #[test]
+    fn clone() {
+        let id = NamespacedId::new("namespace", "id");
+        #[allow(clippy::redundant_clone)] // testing the clone method itself
+        let clone = id.clone();
+
+        assert_eq!(id.namespace(), clone.namespace());
+        assert_eq!(clone.id(), clone.id());
+
+        assert!(!std::ptr::eq(id.namespace(), clone.namespace()));
+        assert!(!std::ptr::eq(id.id(), clone.id()));
+    }
 }

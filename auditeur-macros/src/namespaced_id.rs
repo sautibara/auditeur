@@ -1,10 +1,20 @@
-use std::str::FromStr;
+use std::{
+    fmt::{self, Display},
+    str::FromStr,
+};
 
+use syn::{parse::Parse, LitStr};
 use thiserror::Error;
 
 pub struct NamespacedId {
     pub namespace: String,
     pub id: String,
+}
+
+impl Display for NamespacedId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.namespace, self.id)
+    }
 }
 
 impl FromStr for NamespacedId {
@@ -30,4 +40,14 @@ pub enum ParseError {
     TooManyComponents,
     #[error("the id should have a colon in the middle")]
     NotEnoughComponents,
+}
+
+impl Parse for NamespacedId {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let string: LitStr = input.parse()?;
+        string
+            .value()
+            .parse()
+            .map_err(|err| syn::Error::new_spanned(&string, format!("{err:?}")))
+    }
 }

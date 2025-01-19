@@ -1,7 +1,7 @@
 use quote::ToTokens;
 use syn::{
-    parenthesized, spanned::Spanned, Attribute, Expr, ExprLit, GenericParam, Lit, Token,
-    WhereClause,
+    parenthesized, spanned::Spanned, Attribute, Expr, ExprLit, GenericParam, Ident, Item, Lit,
+    Token, WhereClause,
 };
 
 use crate::GenericArgList;
@@ -16,6 +16,19 @@ pub struct CustomGenerics {
 }
 
 impl CustomGenerics {
+    pub fn from_item(item: &mut Item) -> syn::Result<(&Ident, Self)> {
+        let (ident, attrs, generics) = match item {
+            Item::Struct(strct) => (&strct.ident, &mut strct.attrs, &strct.generics),
+            Item::Enum(strct) => (&strct.ident, &mut strct.attrs, &strct.generics),
+            _ => return Err(syn::Error::new_spanned(&item, "expected a struct or enum")),
+        };
+
+        let generics = Self::from_attr_or_generics(attrs, generics)?;
+        attrs.retain(|attr| !Self::attr_matches(attr));
+
+        Ok((ident, generics))
+    }
+
     pub fn from_generics(generics: &syn::Generics) -> Self {
         let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
         Self {

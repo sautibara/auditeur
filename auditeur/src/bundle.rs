@@ -58,8 +58,8 @@ impl Bundle {
     }
 
     /// Apply this bundle to the specified [`App`], adding each bundle, loader, the bundle itself
-    pub(super) fn apply_to(self, app: &mut App, parent: Option<NamespacedIdRef>) -> NamespacedId {
-        let this_id = self.id.referenced();
+    pub(super) fn apply_to(self, app: &mut App, parent: Option<&NamespacedIdRef>) -> NamespacedId {
+        let this_id = &self.id;
         let bundles: Arc<[NamespacedId]> = self
             .bundles
             .into_iter()
@@ -76,7 +76,7 @@ impl Bundle {
                 constraints: self.constraints,
                 bundles,
                 resources,
-                parent: parent.map(NamespacedIdRef::into_owned),
+                parent: parent.map(NamespacedIdRef::to_owned),
             },
         );
         self.id
@@ -84,8 +84,8 @@ impl Bundle {
 
     /// Get a reference to the id that represents this bundle
     #[must_use]
-    pub fn id(&self) -> NamespacedIdRef {
-        self.id.referenced()
+    pub fn id(&self) -> &NamespacedIdRef {
+        &self.id
     }
 }
 
@@ -171,11 +171,6 @@ impl Bundle {
 /// ```
 /// use auditeur::prelude::*;
 /// #
-/// # #[derive(Clone, PathAny)]
-/// # struct Message;
-/// # impl auditeur::Message for Message {}
-/// # auditeur::bake_message!(Message);
-/// #
 /// # // In the ident! calls in new_bundle!, proc_macro_crate messes up and thinks that auditeur
 /// # // should be referred to as `crate` even though we're in a separate crate for testing. To
 /// # // avoid this, we can just import auditeur::resource here so that crate::resource resolves to
@@ -189,7 +184,7 @@ impl Bundle {
 ///     new_bundle!("from:function")
 /// }
 ///
-/// let mut app = App::new(32);
+/// let mut app = App::new();
 ///
 /// // bundles can either be given directly as an expression
 /// app.add_bundle(new_bundle!("from:expression"));

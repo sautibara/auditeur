@@ -146,9 +146,9 @@ impl Host {
     /// # Examples
     ///
     /// ```
-    /// use auditeur_plugin_host::config::GitHost;
-    /// assert_eq!(GitHost::Github.url(), "github.com");
-    /// assert_eq!(GitHost::Bitbucket.url(), "bitbucket.org");
+    /// use auditeur_plugin_host::source::git::Host;
+    /// assert_eq!(Host::Github.url(), "github.com");
+    /// assert_eq!(Host::Bitbucket.url(), "bitbucket.org");
     /// ```
     #[must_use]
     pub const fn url(&self) -> &str {
@@ -164,9 +164,9 @@ impl Host {
     /// # Examples
     ///
     /// ```
-    /// use auditeur_plugin_host::config::GitHost;
-    /// assert_eq!(GitHost::Github.name(), "github");
-    /// assert_eq!(GitHost::Gitlab.name(), "gitlab");
+    /// use auditeur_plugin_host::source::git::Host;
+    /// assert_eq!(Host::Github.name(), "github");
+    /// assert_eq!(Host::Gitlab.name(), "gitlab");
     /// ```
     #[must_use]
     pub const fn name(&self) -> &str {

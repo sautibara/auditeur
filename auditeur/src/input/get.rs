@@ -5,7 +5,7 @@ use crate::prelude::*;
 pub struct Get<T: Resource + GetRef>(T::Ref);
 
 impl<T: Resource + GetRef> Input for Get<T> {
-    async fn create(registry: &Registry, as_resource: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
         let reference =
             registry
                 .get_as::<T>(as_resource)
@@ -46,7 +46,7 @@ impl<T: Resource + GetRef> DerefMut for Get<T> {
 /// # use auditeur::{input, path_any};
 /// # pub fn main() {
 /// use auditeur::prelude::*;
-/// use auditeur::input::GetRef;
+/// use auditeur::input::get::GetRef;
 /// use std::sync::Arc;
 ///
 /// #[derive(Clone, GetRef, PathAny)]

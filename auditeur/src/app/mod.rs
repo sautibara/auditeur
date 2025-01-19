@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -148,15 +149,15 @@ impl App {
     pub(crate) fn add_loader(
         &mut self,
         loader: Box<dyn Loader>,
-        bundle: NamespacedIdRef,
+        bundle: &NamespacedIdRef,
     ) -> NamespacedId {
-        let id = loader.ident().into_owned();
+        let id = loader.ident().to_owned();
         // prefer the eldest loader
         self.loaders
             .entry(id.clone())
             .or_insert(Some(BundledLoader {
                 loader,
-                bundle: bundle.into_owned(),
+                bundle: bundle.to_owned(),
             }));
         id
     }
@@ -206,7 +207,7 @@ impl App {
             .await
             .map_err(|err| {
                 registry.event_sender.send_error(
-                    ident!("auditeur:registry").into_owned(),
+                    ident!("auditeur:registry").to_owned(),
                     anyhow::Error::from(err).context("registry failed to build"),
                 );
                 self
@@ -236,19 +237,19 @@ impl App {
     async fn resolve_loader(
         &mut self,
         registry: &mut Registry,
-        id: &NamespacedId,
+        id: &NamespacedIdRef,
     ) -> Result<(), Error> {
         let loader = self
             .loaders
             .get_mut(id)
-            .ok_or_else(|| Error::LoaderNotFound { id: id.clone() })?;
+            .ok_or_else(|| Error::LoaderNotFound { id: id.to_owned() })?;
         // if it's already finished, then early return
         let Some(BundledLoader { loader, bundle }) = loader.take() else {
             return Ok(());
         };
         // show that this loader is currently being loaded
         // TODO: use this to prevent dependency loops
-        self.loading_loaders.insert(id.clone(), bundle.clone());
+        self.loading_loaders.insert(id.to_owned(), bundle.clone());
         // bundles always have to be resolved first
         // this doesn't cause a loop because resolve_bundle already [`Option::take`]s the bundle
         // out of the list, so it can't be loaded again
@@ -266,12 +267,12 @@ impl App {
     async fn resolve_bundle(
         &mut self,
         registry: &mut Registry,
-        id: &NamespacedId,
+        id: &NamespacedIdRef,
     ) -> Result<(), Error> {
         let bundle = self
             .bundles
             .get_mut(id)
-            .ok_or_else(|| Error::BundleNotFound { id: id.clone() })?;
+            .ok_or_else(|| Error::BundleNotFound { id: id.to_owned() })?;
         // if it's already finished, then early return
         let Some(bundle) = bundle.take() else {
             return Ok(());
@@ -284,7 +285,7 @@ impl App {
         self.resolve_constraints(registry, &bundle.constraints)
             .await?;
         // then the bundle can finally be added to the registry
-        registry.add_bundle(id.clone(), bundle);
+        registry.add_bundle(id.to_owned(), bundle);
         Ok(())
     }
 
@@ -311,25 +312,25 @@ impl App {
 
     pub fn add_errors<I: IntoIterator<Item = anyhow::Error>>(
         &mut self,
-        source: NamespacedIdRef<'_>,
+        source: &NamespacedIdRef,
         errors: I,
     ) {
         self.events.extend(errors.into_iter().map(|error| {
             RegistryEvent::Error(ErrorEvent {
-                source: source.into_owned(),
+                source: source.to_owned(),
                 error: Arc::new(error),
             })
         }));
     }
 
     // TODO: documentation to clarify name
-    pub fn unloaded_loaders(&self) -> impl Iterator<Item = &NamespacedId> {
-        self.loading_loaders.keys()
+    pub fn unloaded_loaders(&self) -> impl Iterator<Item = &NamespacedIdRef> {
+        self.loading_loaders.keys().map(Deref::deref)
     }
 
     #[must_use]
-    pub fn unloaded_bundles(&self) -> HashSet<&NamespacedId> {
-        self.loading_loaders.values().collect()
+    pub fn unloaded_bundles(&self) -> HashSet<&NamespacedIdRef> {
+        self.loading_loaders.values().map(Deref::deref).collect()
     }
 }
 
@@ -387,7 +388,7 @@ impl RegistryState {
     #[inline]
     async fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: NamespacedIdRef<'_>,
+        reference_holder: &NamespacedIdRef,
         event_sender: &EventSender,
     ) -> Option<R::Ref> {
         match self {
@@ -452,7 +453,7 @@ impl BuildingRegistry {
     #[instrument(skip_all, fields(from = %reference_holder, to = %R::const_ident()))]
     fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: NamespacedIdRef,
+        reference_holder: &NamespacedIdRef,
         event_sender: &EventSender,
     ) -> Option<R::Ref> {
         let id = R::const_ident().into();
@@ -498,10 +499,10 @@ impl RunningRegistry {
     #[instrument(skip_all, fields(from = %reference_holder, to = %R::const_ident()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: NamespacedIdRef<'_>,
+        reference_holder: &NamespacedIdRef,
         event_sender: &EventSender,
     ) -> Option<R::Ref> {
-        let id = R::const_ident().into_owned();
+        let id = R::const_ident().to_owned();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let get_request = GetRequest {
             id: id.clone(),
@@ -559,7 +560,7 @@ impl Channels {
         &self,
     ) -> MappedRef<'_, NamespacedId, Box<dyn crate::Any + Send + Sync>, broadcast::Sender<M>> {
         self.map
-            .entry(M::const_ident().into_owned())
+            .entry(M::const_ident().to_owned())
             .or_insert_with(|| Box::new(broadcast::Sender::<M>::new(self.capacity)))
             .downgrade()
             .map(|val| {
@@ -675,7 +676,7 @@ impl Registry {
     }
 
     async fn run_runner(runner: Box<dyn Runner>, sender: EventSender) {
-        let id = runner.ident().into_owned();
+        let id = runner.ident().to_owned();
         sender.send(RegistryEvent::Running(id.clone()));
         runner.run().instrument(info_span!("runner", %id)).await;
         sender.send(RegistryEvent::Stopped(id));
@@ -740,7 +741,7 @@ impl Registry {
     #[must_use]
     pub async fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: NamespacedIdRef<'_>,
+        reference_holder: &NamespacedIdRef,
     ) -> Option<R::Ref> {
         self.state
             .get_as::<R>(reference_holder, &self.event_sender)
@@ -765,7 +766,7 @@ impl Registry {
     /// # Errors
     ///
     /// - If [`ResourceMap`] hasn't been loaded yet
-    pub fn handle(&self, reference_holder: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    pub fn handle(&self, reference_holder: &NamespacedIdRef) -> Result<Self, Error> {
         let (resource_sender, map) = match &self.state {
             RegistryState::Running(running) => {
                 (running.resource_sender.clone(), running.map.clone())
@@ -775,7 +776,7 @@ impl Registry {
                 building
                     .get_as::<ResourceMap>(reference_holder, &self.event_sender)
                     .ok_or_else(|| Error::LoaderNotFound {
-                        id: ResourceMap::const_ident().into_owned(),
+                        id: ResourceMap::const_ident().to_owned(),
                     })?,
             ),
         };
@@ -857,7 +858,7 @@ impl Registry {
 #[cfg(feature = "runtime-loading")]
 impl Input for Registry {
     /// Use a registry [handle](Self::handle) as an input to a running resource
-    async fn create(registry: &Self, reference_holder: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Self, reference_holder: &NamespacedIdRef) -> Result<Self, Error> {
         registry.handle(reference_holder)
     }
 
@@ -867,7 +868,7 @@ impl Input for Registry {
 }
 
 impl<M: Message> Input for Sender<M> {
-    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(registry.message_sender())
     }
 }
@@ -969,8 +970,8 @@ impl ErrorEvent {
     }
 
     #[must_use]
-    pub fn source(&self) -> NamespacedIdRef {
-        self.source.referenced()
+    pub fn source(&self) -> &NamespacedIdRef {
+        &self.source
     }
 
     #[must_use]
@@ -1026,7 +1027,7 @@ impl GetRequest {
     /// Returns `true` if `R` if the resource that is asked for by this request
     #[inline]
     pub fn matches<R: Resource>(&self) -> bool {
-        R::const_ident() == self.id
+        R::const_ident() == &self.id
     }
 
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
@@ -1049,12 +1050,12 @@ impl GetRequest {
     /// Returns `true` if `resource` if the resource that is asked for by this request
     #[inline]
     pub fn matches_ref(&self, resource: &dyn Resource) -> bool {
-        resource.ident() == self.id
+        resource.ident() == &self.id
     }
 
     /// Returns the [id](NamespacedId) of the resource that the request is asking for
-    pub fn id(&self) -> NamespacedIdRef {
-        self.id.referenced()
+    pub fn id(&self) -> &NamespacedIdRef {
+        &self.id
     }
 
     /// Cancels the get request, instantly returning nothing
@@ -1119,13 +1120,13 @@ struct ResourceSupplierInner {
 impl ResourceSupplier {
     /// Get the [`NamespacedId`] of the inner resource
     #[must_use]
-    pub fn id(&self) -> NamespacedIdRef {
-        self.arc.id.referenced()
+    pub fn id(&self) -> &NamespacedIdRef {
+        &self.arc.id
     }
 
     fn new(resource: Box<dyn LoadedResource>) -> Self {
         let arc = ResourceSupplierInner {
-            id: resource.ident().into_owned(),
+            id: resource.ident().to_owned(),
             resource: std::sync::Mutex::new(Some(resource)),
         };
         Self { arc: Arc::new(arc) }
@@ -1186,14 +1187,14 @@ impl Stopper {
     }
 
     /// Stop the resource with id `id`, if it exists
-    pub fn stop_id(&self, id: NamespacedIdRef<'_>) {
-        let id = id.into_owned();
+    pub fn stop_id(&self, id: &NamespacedIdRef) {
+        let id = id.to_owned();
         self.sender.send(RegistryEvent::Stop(id));
     }
 }
 
 impl Input for Stopper {
-    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(registry.stopper())
     }
 }
@@ -1245,7 +1246,7 @@ impl EventSender {
 }
 
 impl Input for EventSender {
-    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(registry.event_sender())
     }
 }
@@ -1325,7 +1326,7 @@ impl EventReceiver {
 }
 
 impl Input for EventReceiver {
-    async fn create(registry: &Registry, _: NamespacedIdRef<'_>) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(registry.event_receiver())
     }
 }

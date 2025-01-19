@@ -143,7 +143,7 @@ impl ResourceMap {
         }
     }
 
-    fn add_resource(&mut self, id: NamespacedId, parent: &NamespacedId) -> Result<()> {
+    fn add_resource(&mut self, id: NamespacedId, parent: &NamespacedIdRef) -> Result<()> {
         let parent = self.clone_bundle(parent)?;
         self.resource_queue.insert(
             id.clone(),
@@ -159,7 +159,7 @@ impl ResourceMap {
         Ok(())
     }
 
-    fn add_bundle(&mut self, id: NamespacedId, parent: Option<&NamespacedId>) -> Result<()> {
+    fn add_bundle(&mut self, id: NamespacedId, parent: Option<&NamespacedIdRef>) -> Result<()> {
         let parent = parent.map(|parent| self.clone_bundle(parent)).transpose()?;
         self.bundle_queue.insert(
             id.clone(),
@@ -172,12 +172,10 @@ impl ResourceMap {
         Ok(())
     }
 
-    fn clone_resource(&mut self, id: &NamespacedId) -> Result<Arc<LoadedResource>> {
-        if let Some(resource) = self.resource_queue.remove(id) {
+    fn clone_resource(&mut self, id: &NamespacedIdRef) -> Result<Arc<LoadedResource>> {
+        if let Some((id, resource)) = self.resource_queue.remove_entry(id) {
             let resource = Arc::new(resource);
-            self.shared
-                .resources
-                .insert(id.clone(), Arc::downgrade(&resource));
+            self.shared.resources.insert(id, Arc::downgrade(&resource));
             Ok(resource)
         } else if let Some(resource) = self.get_resource(id) {
             Ok(resource)
@@ -186,12 +184,10 @@ impl ResourceMap {
         }
     }
 
-    fn clone_bundle(&mut self, id: &NamespacedId) -> Result<Arc<LoadedBundle>> {
-        if let Some(bundle) = self.bundle_queue.remove(id) {
+    fn clone_bundle(&mut self, id: &NamespacedIdRef) -> Result<Arc<LoadedBundle>> {
+        if let Some((id, bundle)) = self.bundle_queue.remove_entry(id) {
             let bundle = Arc::new(bundle);
-            self.shared
-                .bundles
-                .insert(id.clone(), Arc::downgrade(&bundle));
+            self.shared.bundles.insert(id, Arc::downgrade(&bundle));
             Ok(bundle)
         } else if let Some(bundle) = self.get_bundle(id) {
             Ok(bundle)
@@ -200,7 +196,7 @@ impl ResourceMap {
         }
     }
 
-    fn add_reference(&mut self, by: &NamespacedId, to: &NamespacedId) -> Result<()> {
+    fn add_reference(&mut self, by: &NamespacedIdRef, to: &NamespacedIdRef) -> Result<()> {
         let to = self.clone_resource(to)?;
         let by = self
             .resource_queue
@@ -210,14 +206,14 @@ impl ResourceMap {
         Ok(())
     }
 
-    fn get_resource(&self, id: &NamespacedId) -> Option<Arc<LoadedResource>> {
+    fn get_resource(&self, id: &NamespacedIdRef) -> Option<Arc<LoadedResource>> {
         self.shared
             .resources
             .get(id)
             .and_then(|resource| resource.upgrade())
     }
 
-    fn get_bundle(&self, id: &NamespacedId) -> Option<Arc<LoadedBundle>> {
+    fn get_bundle(&self, id: &NamespacedIdRef) -> Option<Arc<LoadedBundle>> {
         self.shared
             .bundles
             .get(id)
@@ -241,7 +237,7 @@ impl Watcher for ResourceMap {
         while let Some(event) = receiver.recv().await {
             match event {
                 RegistryEvent::BundleLoading { id, parent, .. } => {
-                    self.add_bundle(id, parent.as_ref())?;
+                    self.add_bundle(id, parent.as_deref())?;
                 }
                 RegistryEvent::Loading { id, bundle } => {
                     self.add_resource(id, &bundle)?;
@@ -262,7 +258,7 @@ impl Watcher for ResourceMap {
                 }
                 #[cfg(feature = "runtime-loading")]
                 RegistryEvent::NonRunnable(supplier) => {
-                    if let Some(resource) = self.get_resource(&supplier.id().into_owned()) {
+                    if let Some(resource) = self.get_resource(supplier.id()) {
                         if let Some(owned) = supplier.take() {
                             resource.supply_owned(owned).await;
                         }
@@ -270,7 +266,7 @@ impl Watcher for ResourceMap {
                 }
                 #[cfg(feature = "runtime-loading")]
                 RegistryEvent::Get(get_request) => {
-                    if let Some(resource_info) = self.get_resource(&get_request.id().into_owned()) {
+                    if let Some(resource_info) = self.get_resource(get_request.id()) {
                         resource_info.check_get_request(&get_request).await;
                     }
                 }
