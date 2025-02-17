@@ -1,4 +1,5 @@
-#![allow(dead_code)]
+#![doc = include_str!("listener_docs.md")]
+
 use std::marker::PhantomData;
 
 use crate::{
@@ -14,25 +15,24 @@ use tokio::select;
 // TODO: remove this once #100013 is stabilized
 use send_future::SendFuture;
 
-/// A [`Resource`] that is made up of many concurrently-run [`Component`]s - primarily [`Message`] channels.
-///
-/// Each component is run concurrently, waiting for new events (see [`Component::wait`]). Once the
-/// component receives an event, it obtains mutable access to the listener and its respective
-/// inputs. Note that [`Input`]s are shared between all components, so mutating one input may
-/// affect the other components.
-///
-/// To implement this trait, see the [`listener`] proc-macro. It combines the [`Input`]s of each of
-/// the components and implements the required supertraits.
+#[doc = include_str!("listener_docs.md")]
 pub trait Listener: Resource + Runnable + Sized + Send + Sync
 where
     Self::Input: for<'s> Subset<Self::InitCombination, SubsetMut<'s> = <Self as Runnable>::InitInput<'s>>
         + for<'s> Subset<Self::ExitCombination, SubsetMut<'s> = <Self as Runnable>::ExitInput<'s>>,
 {
+    /// A shared list of inputs between [`Self::Components`] and [`Runnable`], starting with a unit
+    /// tuple. In essence, each separate input of the components and runnable methods must be a
+    /// [`Subset`] of this type.
     type Input: Input;
+    /// The list of [`Component`]s, starting with a unit tuple.
     type Components: ComponentList<Self>;
 
+    /// The [combinations](Subset) for each component in order, stored in a tuple.
     type ComponentCombinations;
+    /// The [combination](Subset) for [`Runnable::init`]
     type InitCombination;
+    /// The [combination](Subset) for [`Runnable::exit`]
     type ExitCombination;
 }
 
@@ -318,31 +318,53 @@ impl<L: Listener + Create> Loader for ListenerLoader<L> {
 
 #[cfg(test)]
 mod tests {
-    // #[tokio::test]
-    // async fn listener_test() {
-    //     use crate::prelude::*;
-    //     // TODO: add to prelude
-    //     use crate::resource::listener::*;
-    //     use crate::Runnable;
-    //
-    //     #[derive(Clone)]
-    //     #[message("test:exit")]
-    //     struct Exit;
-    //
-    //     #[listener(id = "test:exit_listener", listen(Exit))]
-    //     #[derive(Runnable, Default, Create)]
-    //     struct ExitListener;
-    //
-    //     #[has_input]
-    //     impl Listen<Exit> for ExitListener {
-    //         fn on(&mut self, _: Exit, stopper: &mut Stopper) -> Result<()> {
-    //             stopper.stop::<Self>();
-    //             Ok(())
-    //         }
-    //     }
-    //
-    //     let app = App::new(1024)
-    //         .with_bundle(new_bundle!("test:exit").with_listener_new::<ExitListener>(()));
-    //     let run = tokio::task::spawn(app.run());
-    // }
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn listener_test() {
+        use crate::prelude::*;
+        // TODO: add to prelude
+        use crate::resource::listener::*;
+        use crate::Runnable;
+
+        /// A message that tells [`ExitListener`] to exit the program
+        #[derive(Clone, Debug)]
+        #[message("test:exit")]
+        struct Exit;
+
+        /// A [`Listener`] that exits the program once it receives an [`Exit`] message
+        #[listener(id = "test:exit_listener", listen(Exit(input = Stopper)))]
+        #[derive(Runnable, Default, Create)]
+        struct ExitListener;
+
+        #[has_input]
+        impl Listen<Exit> for ExitListener {
+            async fn on(&mut self, _: Exit, stopper: &mut Stopper) -> Result<()> {
+                // [`Stopper`] can be used to stop individual resources or the entire program
+                stopper.exit();
+                Ok(())
+            }
+        }
+
+        // Create a new App with only an ExitListener
+        let app =
+            App::new().with_bundle(new_bundle!("test:exit").with_listener_new::<ExitListener>(()));
+        // Build it into a Registry so that we can get the message sender before running it
+        // Usually, it's simpler just to call app.run(_)
+        let registry = app.build(1024).await.expect("failed to build app");
+
+        let sender = registry.message_sender::<Exit>();
+        // Start the registry running in the background now that we got the message sender
+        let running_registry = tokio::task::spawn(registry.run());
+
+        // Send the exit message in the registry, telling the ExitListener to exit the program
+        // Usually, resources send messages to other resources, but the main function can too
+        sender.send(Exit).expect("failed to send message");
+
+        // Make sure the app exits within an acceptable time frame
+        tokio::time::timeout(Duration::from_secs(1), running_registry)
+            .await
+            .expect("ExitListener should exit immediately after the Exit message is sent")
+            .expect("App should run to completion");
+    }
 }

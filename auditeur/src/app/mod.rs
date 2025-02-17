@@ -340,6 +340,17 @@ impl Default for App {
     }
 }
 
+impl Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("bundles", &self.bundles.keys())
+            .field("loaders", &self.loaders.keys())
+            .field("events", &self.events)
+            .field("loading_loaders", &self.loading_loaders)
+            .finish()
+    }
+}
+
 /// The underlying state of a [`Registry`]. This separates the main underlying functionality of the
 /// registry into two states: building and running. If the `runtime-loading` feature isn't enabled,
 /// only the building state is compiled, as we can never access a registry after it starts running.
