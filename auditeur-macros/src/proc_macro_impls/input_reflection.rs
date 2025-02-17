@@ -1,8 +1,14 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse::Parse, punctuated::Punctuated, spanned::Spanned, Ident, Path, Token, Type};
+use syn::{
+    parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned, FnArg, Ident, ImplItem,
+    ImplItemFn, ItemImpl, LitBool, Path, Token, Type,
+};
 
-use crate::{field::Parenthesized, input_list::InputList};
+use crate::{
+    field::{NameValue, Parenthesized},
+    input_list::{InputList, InputReferenceList},
+};
 
 use super::listener::Specifier;
 
@@ -46,8 +52,209 @@ pub fn input_macro_of_method(
     Ok(Ident::new(&full_ident, implementer.span()))
 }
 
-pub fn export(macro_ident: &Ident, inputs: &InputList) -> TokenStream {
-    quote! {
+#[derive(Default)]
+pub struct HasInputArgs {
+    args: Punctuated<HasInputArg, Token![,]>,
+}
+
+impl HasInputArgs {
+    const CRATE_ROOT_DEFAULT: bool = false;
+    pub fn top_level(&self) -> bool {
+        self.args
+            .iter()
+            .filter_map(HasInputArg::as_crate_root)
+            .last()
+            .unwrap_or(Self::CRATE_ROOT_DEFAULT)
+    }
+
+    const OWNED_DEFAULT: bool = false;
+    pub fn owned(&self) -> bool {
+        self.args
+            .iter()
+            .filter_map(HasInputArg::as_owned)
+            .last()
+            .unwrap_or(Self::OWNED_DEFAULT)
+    }
+}
+
+impl Parse for HasInputArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse_terminated(HasInputArg::parse, Token![,])
+            .map(|args| Self { args })
+    }
+}
+
+impl ToTokens for HasInputArgs {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.args.to_tokens(tokens);
+    }
+}
+
+enum HasInputArg {
+    CrateRoot(Ident),
+    CrateRootExplicit(NameValue<LitBool>),
+    Owned(Ident),
+    OwnedExplicit(NameValue<LitBool>),
+}
+
+impl HasInputArg {
+    const fn as_crate_root(&self) -> Option<bool> {
+        match self {
+            Self::CrateRoot(_) => Some(!HasInputArgs::CRATE_ROOT_DEFAULT),
+            Self::CrateRootExplicit(name_value) => Some(name_value.value.value),
+            _ => None,
+        }
+    }
+
+    const fn as_owned(&self) -> Option<bool> {
+        match self {
+            Self::Owned(_) => Some(!HasInputArgs::OWNED_DEFAULT),
+            Self::OwnedExplicit(name_value) => Some(name_value.value.value),
+            _ => None,
+        }
+    }
+}
+
+impl ToTokens for HasInputArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::CrateRoot(value) | Self::Owned(value) => value.to_tokens(tokens),
+            Self::CrateRootExplicit(value) | Self::OwnedExplicit(value) => value.to_tokens(tokens),
+        }
+    }
+}
+
+impl Parse for HasInputArg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        let explicit = input
+            .peek(Token![=])
+            .then(|| NameValue::parse_after(ident.clone(), input))
+            .transpose()?;
+
+        match (&*ident.to_string(), explicit) {
+            ("crate_root", Some(name_value)) => Ok(Self::CrateRootExplicit(name_value)),
+            ("crate_root", None) => Ok(Self::CrateRoot(ident)),
+            ("owned", Some(name_value)) => Ok(Self::OwnedExplicit(name_value)),
+            ("owned", None) => Ok(Self::Owned(ident)),
+            _ => Err(syn::Error::new_spanned(
+                ident,
+                "expected one of 'crate_root' or 'owned'",
+            )),
+        }
+    }
+}
+
+pub struct HasInput {
+    implementation: ItemImpl,
+    args: HasInputArgs,
+}
+
+fn uppercase_first_letter(string: &str) -> String {
+    let mut chars = string.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+impl HasInput {
+    pub fn parse_entire(
+        item: proc_macro::TokenStream,
+        attr: proc_macro::TokenStream,
+    ) -> syn::Result<Self> {
+        Ok(Self {
+            implementation: syn::parse(item)?,
+            args: (!attr.is_empty())
+                .then(|| syn::parse(attr))
+                .transpose()?
+                .unwrap_or_default(),
+        })
+    }
+
+    fn funcs_mut(items: &mut [ImplItem]) -> impl Iterator<Item = &mut ImplItemFn> {
+        // TODO: no_input attribute
+        items.iter_mut().filter_map(|item| {
+            if let ImplItem::Fn(item) = item {
+                Some(item)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn type_ident_of(method_ident: &Ident) -> Ident {
+        let const_ident = method_ident.to_string();
+        let const_ident = uppercase_first_letter(&const_ident);
+        let const_ident = const_ident + "Input";
+        syn::Ident::new(&const_ident, method_ident.span())
+    }
+
+    pub fn expand(mut self) -> syn::Result<proc_macro2::TokenStream> {
+        if self.args.owned() {
+            return Err(syn::Error::new_spanned(
+                self.args,
+                "'owned' is not implemented yet",
+            ));
+        }
+
+        let Some((None, trait_, _)) = &self.implementation.trait_ else {
+            return Err(syn::Error::new_spanned(
+                self.implementation,
+                "expected this to be a trait implementation",
+            ));
+        };
+        let (_, trait_generics, _) = self.implementation.generics.split_for_impl();
+        let trait_: Type = parse_quote!( #trait_ #trait_generics );
+
+        let implementer = &self.implementation.self_ty;
+
+        let mut types = Vec::new();
+        let mut macros = proc_macro2::TokenStream::new();
+        let func_count = Self::funcs_mut(&mut self.implementation.items).count();
+        for func in Self::funcs_mut(&mut self.implementation.items) {
+            let last_arg_span = func.sig.inputs.last().span();
+            let last_arg = func.sig.inputs.last_mut();
+            let last_arg = last_arg
+                .and_then(|input| {
+                    if let FnArg::Typed(input) = input {
+                        Some(input)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    syn::Error::new(last_arg_span, "expected at least one typed argument")
+                })?;
+
+            let const_ident = Self::type_ident_of(&func.sig.ident);
+            let referenced_inputs: InputReferenceList = syn::parse2(last_arg.ty.to_token_stream())?;
+            let referenced_inputs = referenced_inputs.with_lifetime("'a");
+            types.push(parse_quote!( type #const_ident<'a> = #referenced_inputs; ));
+
+            let owned_inputs = referenced_inputs.into_owned_list();
+            let macro_ident = if func_count > 1 {
+                input_macro_of_method(&trait_, implementer, &func.sig.ident.to_string())?
+            } else {
+                input_macro_of(&trait_, implementer)?
+            };
+            macros.extend(super::export_input(&macro_ident, &owned_inputs, &self.args));
+
+            last_arg.ty = parse_quote!( <Self as #trait_>::#const_ident<'_> );
+        }
+
+        self.implementation.items.extend(types);
+        let implementation = self.implementation;
+        Ok(quote! {
+            #macros
+            #implementation
+        })
+    }
+}
+
+pub fn export(macro_ident: &Ident, inputs: &InputList, args: &HasInputArgs) -> TokenStream {
+    let mut stream = quote! {
+        #[allow(non_local_definitions)]
         #[macro_export]
         #[doc(hidden)]
         macro_rules! #macro_ident {
@@ -55,9 +262,15 @@ pub fn export(macro_ident: &Ident, inputs: &InputList) -> TokenStream {
                 $callback!(($($($callbacks)*)?) ($($params)*) $($rest)* #inputs);
             };
         }
-        #[doc(hidden)]
-        pub(crate) use #macro_ident;
+    };
+    if !args.top_level() {
+        stream.extend(quote! {
+            #[allow(unused_imports)]
+            #[doc(hidden)]
+            pub(crate) use #macro_ident;
+        });
     }
+    stream
 }
 
 #[derive(Default, Debug)]

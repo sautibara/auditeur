@@ -27,7 +27,6 @@ mod proc_macro_impls {
 
     mod input;
     pub use input::derive as derive_input;
-    pub use input::HasInput;
 
     mod all_combinations;
     pub use all_combinations::{all_combinations, AllCombinations};
@@ -35,9 +34,10 @@ mod proc_macro_impls {
     mod identifiable;
     pub use identifiable::{identifiable, identifiable_with_generics};
 
-    mod input_reflection;
+    pub mod input_reflection;
     pub use input_reflection::export as export_input;
     pub use input_reflection::ExpandInputSpecifier;
+    pub use input_reflection::HasInput;
 
     mod listener;
     pub use listener::Intermediate as IntermediateListener;
@@ -569,10 +569,9 @@ pub fn expand_listener(value: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn has_input(_: TokenStream, item: TokenStream) -> TokenStream {
-    let has_input = parse_macro_input!(item as HasInput);
-    has_input
-        .expand()
+pub fn has_input(attr: TokenStream, item: TokenStream) -> TokenStream {
+    HasInput::parse_entire(item, attr)
+        .and_then(HasInput::expand)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -601,12 +600,12 @@ pub fn listener_component(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-#[proc_macro_derive(Runnable)]
+#[proc_macro_derive(Runnable, attributes(auditeur_runnable))]
 pub fn runnable_derive(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
-    let ident = match item {
-        Item::Struct(strct) => strct.ident,
-        Item::Enum(enm) => enm.ident,
+    let (ident, attrs) = match item {
+        Item::Struct(strct) => (strct.ident, strct.attrs),
+        Item::Enum(enm) => (enm.ident, enm.attrs),
         _ => {
             return quote_spanned! {
                 item.span() => compile_error!("item must be a struct or enum"),
@@ -615,7 +614,23 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
         }
     };
 
-    proc_macro_impls::runnable_derive(&crate::type_from_ident(ident))
+    let args = attrs
+        .into_iter()
+        .map(|attr| attr.meta)
+        .filter(|meta| meta.path().is_ident("auditeur_runnable"))
+        .last()
+        .map_or_else(
+            || Ok(proc_macro_impls::input_reflection::HasInputArgs::default()),
+            |meta| {
+                if let syn::Meta::List(list) = meta {
+                    syn::parse2(list.tokens)
+                } else {
+                    Err(syn::Error::new_spanned(meta, "expected parens"))
+                }
+            },
+        );
+
+    args.and_then(|args| proc_macro_impls::runnable_derive(&crate::type_from_ident(ident), &args))
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

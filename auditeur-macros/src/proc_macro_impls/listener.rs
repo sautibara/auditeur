@@ -28,7 +28,7 @@ use crate::{
     Auditeur,
 };
 
-use super::input_reflection::CallbackList;
+use super::input_reflection::{CallbackList, HasInputArgs};
 
 fn split_results<Ok, Err, I, OkAcc, ErrAcc>(iter: I) -> (OkAcc, ErrAcc)
 where
@@ -48,7 +48,11 @@ where
     )
 }
 
-pub fn runnable_derive(implementer: &Type) -> syn::Result<TokenStream> {
+pub fn runnable_derive(implementer: &Type, args: &HasInputArgs) -> syn::Result<TokenStream> {
+    if args.owned() {
+        return Err(syn::Error::new_spanned(args, "'owned' is not allowed here"));
+    }
+
     let no_input = InputList::default();
 
     let runnable_trait = crate::type_from_ident(Ident::new("Runnable", Span::call_site()));
@@ -57,8 +61,8 @@ pub fn runnable_derive(implementer: &Type) -> syn::Result<TokenStream> {
     let exit_input_macro_ident =
         super::input_reflection::input_macro_of_method(&runnable_trait, implementer, "exit")?;
 
-    let init_input_macro = super::export_input(&init_input_macro_ident, &no_input);
-    let exit_input_macro = super::export_input(&exit_input_macro_ident, &no_input);
+    let init_input_macro = super::export_input(&init_input_macro_ident, &no_input, args);
+    let exit_input_macro = super::export_input(&exit_input_macro_ident, &no_input, args);
 
     let resource = crate::AUDITEUR.resource();
     let anyhow = crate::AUDITEUR.anyhow();
