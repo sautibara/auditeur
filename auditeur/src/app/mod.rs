@@ -1228,6 +1228,10 @@ impl EventSender {
         self.send(RegistryEvent::Error(ErrorEvent::new(ident.into(), error)));
     }
 
+    pub fn handle_error<T>(&self, res: anyhow::Result<T>, id: &NamespacedIdRef) -> Option<T> {
+        res.map_err(|err| self.send_error(id, err)).ok()
+    }
+
     pub fn send_errors<E: Into<anyhow::Error>>(
         &self,
         ident: impl Into<NamespacedId>,

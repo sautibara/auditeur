@@ -9,7 +9,7 @@ use syn::{
     Token,
 };
 
-use crate::field::{ArrayField, Field};
+use crate::field::{NameValue, NameValueArray};
 
 pub fn all_combinations(config: &AllCombinations) -> syn::Result<proc_macro2::TokenStream> {
     let mut lists = config
@@ -107,10 +107,10 @@ pub fn all_combinations(config: &AllCombinations) -> syn::Result<proc_macro2::To
 }
 
 pub struct AllCombinations {
-    macro_ident: Field<Ident>,
+    macro_ident: NameValue<Ident>,
     _comma1: Token![,],
-    rules: ArrayField<Rule>,
-    passthru: Option<(Token![,], Field<TokenTree>)>,
+    rules: NameValueArray<Rule>,
+    passthru: Option<(Token![,], NameValue<TokenTree>)>,
 }
 
 impl AllCombinations {
@@ -121,16 +121,16 @@ impl AllCombinations {
 
 impl Parse for AllCombinations {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let macro_ident = Field::<Ident>::parse(input, "macro_ident")?;
+        let macro_ident = NameValue::<Ident>::parse(input, "macro_ident")?;
         let comma1 = input.parse()?;
-        let rules = ArrayField::<Rule>::parse(input, "rules")?;
+        let rules = NameValueArray::<Rule>::parse(input, "rules")?;
 
         let passthru = input
             .peek(Token![,])
             .then(|| {
                 Ok::<_, syn::Error>((
                     input.parse()?,
-                    Field::<TokenTree>::parse(input, "passthru")?,
+                    NameValue::<TokenTree>::parse(input, "passthru")?,
                 ))
             })
             .transpose()?;
@@ -146,9 +146,9 @@ impl Parse for AllCombinations {
 
 struct Rule {
     _parens: Paren,
-    in_set: Field<OutputType>,
+    in_set: NameValue<OutputType>,
     _comma1: Token![,],
-    out_of_set: Field<OutputType>,
+    out_of_set: NameValue<OutputType>,
     _comma2: Option<Token![,]>,
 }
 
@@ -157,9 +157,9 @@ impl Parse for Rule {
         let content;
         Ok(Self {
             _parens: parenthesized!(content in input),
-            in_set: Field::<OutputType>::parse(&content, "in_set")?,
+            in_set: NameValue::<OutputType>::parse(&content, "in_set")?,
             _comma1: content.parse()?,
-            out_of_set: Field::<OutputType>::parse(&content, "out_of_set")?,
+            out_of_set: NameValue::<OutputType>::parse(&content, "out_of_set")?,
             _comma2: content
                 .peek(Token![,])
                 .then(|| content.parse())

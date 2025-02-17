@@ -23,7 +23,6 @@ pub fn identifiable_with_generics(
         where_clause,
     } = generics;
 
-    let namespaced_id = super::ident(id, &auditeur);
     quote!(
         impl #impl_generics #resource_mod::Identifiable for #ident #type_generics #where_clause {
             fn ident(&self) -> &'static #id_mod::NamespacedIdRef {
@@ -34,7 +33,7 @@ pub fn identifiable_with_generics(
             where
                 Self: Sized
             {
-                #namespaced_id
+                #id
             }
         }
     )

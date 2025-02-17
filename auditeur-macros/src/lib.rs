@@ -1,8 +1,10 @@
+use std::sync::LazyLock;
+
 use custom_generics::CustomGenerics;
 use namespaced_id::NamespacedId;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use proc_macro_crate::crate_name;
+use proc_macro_impls::{ComponentCallback, ExpandInputSpecifier, HasInput, IntermediateListener};
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
     parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, GenericParam, Ident,
@@ -13,17 +15,19 @@ use crate::proc_macro_impls::AllCombinations;
 
 mod custom_generics;
 mod field;
+mod input_list;
 mod namespaced_id;
 
 mod proc_macro_impls {
     mod resource;
-    pub use resource::resource;
+    pub use resource::{resource, resource_impls_with_generics};
 
     mod create;
     pub use create::create;
 
     mod input;
-    pub use input::input;
+    pub use input::derive as derive_input;
+    pub use input::HasInput;
 
     mod all_combinations;
     pub use all_combinations::{all_combinations, AllCombinations};
@@ -31,8 +35,13 @@ mod proc_macro_impls {
     mod identifiable;
     pub use identifiable::{identifiable, identifiable_with_generics};
 
-    mod ident;
-    pub use ident::ident;
+    mod input_reflection;
+    pub use input_reflection::export as export_input;
+    pub use input_reflection::ExpandInputSpecifier;
+
+    mod listener;
+    pub use listener::Intermediate as IntermediateListener;
+    pub use listener::{runnable_derive, ComponentCallback, Listener};
 
     #[cfg(feature = "path-any")]
     mod maybe_get_ref;
@@ -45,8 +54,91 @@ mod proc_macro_impls {
     pub use path_any::path_any;
 }
 
+fn type_from_ident(ident: syn::Ident) -> syn::Type {
+    syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: syn::Path::from(ident),
+    })
+}
+
+static AUDITEUR: LazyLock<Root> = LazyLock::new(Root::new);
+
+struct Root {
+    crate_name: proc_macro_crate::FoundCrate,
+    crate_: Crate,
+}
+
+enum Crate {
+    Auditeur,
+    AuditeurPlugin,
+    AuditeurPluginHost,
+}
+
+#[expect(dead_code)]
+impl Root {
+    fn new() -> Self {
+        (proc_macro_crate::crate_name("auditeur").map(|crate_name| Self {
+            crate_name,
+            crate_: Crate::Auditeur,
+        }))
+        .or_else(|_| {
+            proc_macro_crate::crate_name("auditeur-plugin").map(|crate_name| Self {
+                crate_name,
+                crate_: Crate::AuditeurPlugin,
+            })
+        })
+        .or_else(|_| {
+            proc_macro_crate::crate_name("auditeur-plugin-host").map(|crate_name| Self {
+                crate_name,
+                crate_: Crate::AuditeurPluginHost,
+            })
+        })
+        .expect("expected auditeur, auditeur-plugin, or auditeur-plugin-host to be in Cargo.toml")
+    }
+
+    pub fn id(&self) -> proc_macro2::TokenStream {
+        quote! { #self::namespaced_id }
+    }
+
+    pub fn resource(&self) -> proc_macro2::TokenStream {
+        quote! { #self::resource }
+    }
+
+    pub fn input(&self) -> proc_macro2::TokenStream {
+        quote! { #self::input }
+    }
+
+    pub fn anyhow(&self) -> proc_macro2::TokenStream {
+        quote! { #self::anyhow }
+    }
+
+    #[cfg(feature = "path-any")]
+    pub fn path_any(&self) -> proc_macro2::TokenStream {
+        quote! { #self::path_any }
+    }
+}
+
+impl ToTokens for Root {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match &self.crate_name {
+            proc_macro_crate::FoundCrate::Itself => quote!(crate).to_tokens(tokens),
+            proc_macro_crate::FoundCrate::Name(ref name) => {
+                Ident::new(name, Span::call_site()).to_tokens(tokens);
+            }
+        };
+
+        match self.crate_ {
+            Crate::Auditeur => (),
+            Crate::AuditeurPlugin => quote! { ::auditeur }.to_tokens(tokens),
+            Crate::AuditeurPluginHost => {
+                quote! { ::auditeur_plugin::auditeur_plugin_host }.to_tokens(tokens);
+            }
+        }
+    }
+}
+
 fn get_crate(name: &str) -> Option<proc_macro2::TokenStream> {
-    let core = crate_name(name).ok()?;
+    let core = proc_macro_crate::crate_name(name).ok()?;
 
     let stream = match core {
         proc_macro_crate::FoundCrate::Itself => quote!(crate),
@@ -59,6 +151,7 @@ fn get_crate(name: &str) -> Option<proc_macro2::TokenStream> {
     Some(stream)
 }
 
+// TODO: replace with Root
 struct Auditeur {
     root: proc_macro2::TokenStream,
 }
@@ -150,15 +243,22 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(err) => return err.into_compile_error().into(),
     };
 
+    let auditeur = Auditeur::new();
+
     let identifiable_impl = proc_macro_impls::identifiable_with_generics(&id, ident, &generics);
 
-    let auditeur = Auditeur::new();
+    #[cfg(feature = "path-any")]
+    let path_any_impl = proc_macro_impls::path_any(ident, &generics, &auditeur);
+    #[cfg(not(feature = "path-any"))]
+    let path_any_impl = quote!();
+
     let crate_name = auditeur.crate_name();
 
     quote! {
         impl #crate_name::Message for #ident {}
         #item
         #identifiable_impl
+        #path_any_impl
     }
     .into()
 }
@@ -167,8 +267,7 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn ident(string: TokenStream) -> TokenStream {
     let id = parse_macro_input!(string as NamespacedId);
 
-    let auditeur = Auditeur::new();
-    crate::proc_macro_impls::ident(&id, &auditeur).into()
+    id.to_token_stream().into()
 }
 
 #[proc_macro_attribute]
@@ -212,7 +311,7 @@ pub fn create_derive(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Input, attributes(custom_generics))]
 pub fn derive_input(item: TokenStream) -> TokenStream {
     let strct = parse_macro_input!(item as ItemStruct);
-    proc_macro_impls::input(strct).into()
+    proc_macro_impls::derive_input(strct).into()
 }
 
 #[proc_macro_derive(GetRef)]
@@ -421,6 +520,102 @@ impl syn::parse::Parse for CfgSupertrait {
 pub fn all_combinations(params: TokenStream) -> TokenStream {
     let params = parse_macro_input!(params as AllCombinations);
     proc_macro_impls::all_combinations(&params)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro]
+pub fn expand_input_specifier(tokens: TokenStream) -> TokenStream {
+    let config = parse_macro_input!(tokens as ExpandInputSpecifier);
+    config
+        .expand()
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_attribute]
+pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let listener = parse_macro_input!(attr as proc_macro_impls::Listener);
+    let item = parse_macro_input!(item as Item);
+
+    let ident = match &item {
+        Item::Struct(strct) => &strct.ident,
+        Item::Enum(enm) => &enm.ident,
+        _ => {
+            return syn::Error::new_spanned(item, "expected a struct or enum")
+                .into_compile_error()
+                .into()
+        }
+    };
+
+    let impls = listener
+        .expand(ident.clone())
+        .unwrap_or_else(syn::Error::into_compile_error);
+
+    quote! {
+        #item
+        #impls
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn expand_listener(value: TokenStream) -> TokenStream {
+    let intermediate = parse_macro_input!(value as IntermediateListener);
+    intermediate
+        .expand()
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_attribute]
+pub fn has_input(_: TokenStream, item: TokenStream) -> TokenStream {
+    let has_input = parse_macro_input!(item as HasInput);
+    has_input
+        .expand()
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_attribute]
+pub fn listener_component(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let component_map = parse_macro_input!(attr as ComponentCallback);
+    let item = parse_macro_input!(item as Item);
+
+    let ident = match &item {
+        Item::Struct(strct) => &strct.ident,
+        Item::Enum(enm) => &enm.ident,
+        _ => {
+            return syn::Error::new_spanned(item, "expected a struct or enum")
+                .into_compile_error()
+                .into()
+        }
+    };
+
+    let macro_impl = component_map.expand(ident);
+
+    quote! {
+        #item
+        #macro_impl
+    }
+    .into()
+}
+
+#[proc_macro_derive(Runnable)]
+pub fn runnable_derive(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as Item);
+    let ident = match item {
+        Item::Struct(strct) => strct.ident,
+        Item::Enum(enm) => enm.ident,
+        _ => {
+            return quote_spanned! {
+                item.span() => compile_error!("item must be a struct or enum"),
+            }
+            .into();
+        }
+    };
+
+    proc_macro_impls::runnable_derive(&crate::type_from_ident(ident))
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

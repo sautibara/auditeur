@@ -117,6 +117,15 @@ impl Bundle {
         self.with(loader::Listener::<M, L>::new(external_input))
     }
 
+    pub fn with_listener_new<L: crate::resource::listener::Listener + Create>(
+        self,
+        external_input: L::ExternalInput,
+    ) -> Self {
+        self.with(crate::resource::listener::ListenerLoader::<L>::new(
+            external_input,
+        ))
+    }
+
     /// Add a [`Watcher`] to this bundle
     ///
     /// Watchers run in the main loop but never receive from the main message channel (although

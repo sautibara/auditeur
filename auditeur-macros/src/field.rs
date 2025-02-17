@@ -1,63 +1,279 @@
+use quote::ToTokens;
 use syn::{
-    bracketed,
-    parse::{Parse, ParseStream},
+    bracketed, parenthesized,
+    parse::{Parse, ParseStream, Peek},
     punctuated::Punctuated,
-    token::Bracket,
+    token::{Bracket, Paren},
     Ident, Token,
 };
 
-pub struct Field<T: Parse> {
-    pub _ident: Ident,
-    pub _colon: Token![:],
+fn parse_ident(input: ParseStream, expected_ident: &str) -> syn::Result<Ident> {
+    let ident: Ident = input.parse()?;
+    if ident == expected_ident {
+        Ok(ident)
+    } else {
+        Err(syn::Error::new_spanned(
+            ident,
+            format!("expected '{expected_ident}'"),
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct NameValue<T> {
+    pub ident: Ident,
+    pub eq: syn::token::Eq,
     pub value: T,
 }
 
-impl<T: Parse> Field<T> {
+impl<T> NameValue<T> {
+    pub fn new(ident: Ident, value: T) -> Self {
+        Self {
+            eq: Token![=](ident.span()),
+            ident,
+            value,
+        }
+    }
+
+    pub fn to_tokens_with(
+        &self,
+        tokens: &mut proc_macro2::TokenStream,
+        func: impl FnOnce(&mut proc_macro2::TokenStream),
+    ) {
+        self.ident.to_tokens(tokens);
+        self.eq.to_tokens(tokens);
+        func(tokens);
+    }
+}
+
+impl<T: Parse> NameValue<T> {
     pub fn parse(input: ParseStream, expected_ident: &str) -> syn::Result<Self> {
+        let ident = parse_ident(input, expected_ident)?;
+        Self::parse_after(ident, input)
+    }
+
+    pub fn parse_after(ident: Ident, input: ParseStream) -> syn::Result<Self> {
         Ok(Self {
-            _ident: {
-                let ident: Ident = input.parse()?;
-                if ident == expected_ident {
-                    Ok(ident)
-                } else {
-                    Err(syn::Error::new_spanned(
-                        ident,
-                        format!("expected '{expected_ident}'"),
-                    ))
-                }
-            }?,
-            _colon: input.parse()?,
+            ident,
+            eq: input.parse()?,
             value: input.parse()?,
         })
     }
 }
 
-#[allow(clippy::module_name_repetitions)] // dnc
-pub struct ArrayField<T: Parse> {
-    pub _ident: Ident,
-    pub _colon: Token![:],
+impl<T: Parse + ToTokens> ToTokens for NameValue<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.to_tokens_with(tokens, |tokens| self.value.to_tokens(tokens));
+    }
+}
+
+pub struct NameValueArray<T: Parse> {
+    pub ident: Ident,
+    pub eq: Token![=],
     pub bracket: Bracket,
     pub values: Punctuated<T, Token![,]>,
 }
 
-impl<T: Parse> ArrayField<T> {
+impl<T: Parse> NameValueArray<T> {
     pub fn parse(input: ParseStream, expected_ident: &str) -> syn::Result<Self> {
         let content;
         Ok(Self {
-            _ident: {
-                let ident: Ident = input.parse()?;
-                if ident == expected_ident {
-                    Ok(ident)
-                } else {
-                    Err(syn::Error::new_spanned(
-                        ident,
-                        format!("expected '{expected_ident}'"),
-                    ))
-                }
-            }?,
-            _colon: input.parse()?,
+            ident: parse_ident(input, expected_ident)?,
+            eq: input.parse()?,
             bracket: bracketed!(content in input),
             values: content.parse_terminated(T::parse, Token![,])?,
         })
+    }
+}
+
+impl<T: Parse + ToTokens> ToTokens for NameValueArray<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.ident.to_tokens(tokens);
+        self.eq.to_tokens(tokens);
+        self.bracket
+            .surround(tokens, |tokens| self.values.to_tokens(tokens));
+    }
+}
+
+#[derive(Debug)]
+pub struct List<T> {
+    pub ident: Ident,
+    pub parens: Paren,
+    pub values: Punctuated<T, syn::token::Comma>,
+}
+
+impl<T: Parse> List<T> {
+    pub fn parse(input: ParseStream, expected_ident: &str) -> syn::Result<Self> {
+        let ident = parse_ident(input, expected_ident)?;
+        Self::parse_after(ident, input)
+    }
+
+    pub fn parse_after(ident: Ident, input: ParseStream) -> syn::Result<Self> {
+        Self::parse_after_with(ident, input, T::parse)
+    }
+}
+
+impl<T> List<T> {
+    pub fn parse_after_with(
+        ident: Ident,
+        input: ParseStream,
+        parser: fn(_: ParseStream<'_>) -> syn::Result<T>,
+    ) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            ident,
+            parens: parenthesized!(content in input),
+            values: content.parse_terminated(parser, Token![,])?,
+        })
+    }
+}
+
+impl<T: ToTokens> ToTokens for List<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.ident.to_tokens(tokens);
+        self.parens
+            .surround(tokens, |tokens| self.values.to_tokens(tokens));
+    }
+}
+
+impl<'a, T> IntoIterator for &'a List<T> {
+    type IntoIter = <&'a Punctuated<T, Token![,]> as IntoIterator>::IntoIter;
+    type Item = &'a T;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut List<T> {
+    type IntoIter = <&'a mut Punctuated<T, Token![,]> as IntoIterator>::IntoIter;
+    type Item = &'a mut T;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter_mut()
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct Comma<T> {
+    pub value: T,
+    pub comma: Option<syn::token::Comma>,
+}
+
+impl<T> Comma<T> {
+    pub const fn new(value: T) -> Self {
+        Self { value, comma: None }
+    }
+
+    pub fn parse_with(
+        input: ParseStream<'_>,
+        parser: fn(_: ParseStream<'_>) -> syn::Result<T>,
+    ) -> syn::Result<Self> {
+        Ok(Self {
+            value: parser(input)?,
+            comma: input.peek(Token![,]).then(|| input.parse()).transpose()?,
+        })
+    }
+
+    pub fn to_tokens_with(
+        &self,
+        tokens: &mut proc_macro2::TokenStream,
+        func: impl FnOnce(&mut proc_macro2::TokenStream),
+    ) {
+        func(tokens);
+        self.comma.to_tokens(tokens);
+    }
+
+    pub const fn has_comma(&self) -> bool {
+        self.comma.is_some()
+    }
+
+    pub fn continue_with<T2>(
+        &self,
+        input: ParseStream<'_>,
+        parser: fn(_: ParseStream<'_>) -> syn::Result<T2>,
+    ) -> syn::Result<Option<T2>> {
+        self.has_comma().then(|| parser(input)).transpose()
+    }
+}
+
+impl<T: Parse> Parse for Comma<T> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Self::parse_with(input, T::parse)
+    }
+}
+
+impl<T: ToTokens> ToTokens for Comma<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.to_tokens_with(tokens, |tokens| self.value.to_tokens(tokens));
+    }
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct Parenthesized<T> {
+    pub paren: Paren,
+    pub value: T,
+}
+
+impl<T> Parenthesized<T> {
+    pub fn default_with(value: T) -> Self {
+        Self {
+            paren: Paren::default(),
+            value,
+        }
+    }
+
+    pub fn parse_empty(input: ParseStream) -> syn::Result<Self>
+    where
+        T: Default,
+    {
+        let content;
+        let paren = parenthesized!(content in input);
+        if content.is_empty() {
+            Ok(Self {
+                paren,
+                value: T::default(),
+            })
+        } else {
+            Err(content.error(format!("expected parens to be empty, got {content}")))
+        }
+    }
+
+    pub fn to_tokens_with(
+        &self,
+        tokens: &mut proc_macro2::TokenStream,
+        func: impl FnOnce(&mut proc_macro2::TokenStream),
+    ) {
+        self.paren.surround(tokens, func);
+    }
+}
+
+impl<T: Parse> Parse for Parenthesized<T> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            paren: parenthesized!(content in input),
+            value: content.parse()?,
+        })
+    }
+}
+
+impl<T: Parse, P: Parse> Parenthesized<Punctuated<T, P>> {
+    pub fn parse_punctuated<PT: Peek<Token = P>>(
+        input: ParseStream,
+        punctuation: PT,
+    ) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            paren: parenthesized!(content in input),
+            value: content.parse_terminated(T::parse, punctuation)?,
+        })
+    }
+}
+
+impl<T: ToTokens> ToTokens for Parenthesized<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.paren
+            .surround(tokens, |tokens| self.value.to_tokens(tokens));
     }
 }

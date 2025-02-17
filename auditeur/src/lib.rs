@@ -78,6 +78,16 @@ pub use auditeur_macros::GetRef;
 
 pub use auditeur_macros::Input;
 
+#[doc(hidden)]
+pub use auditeur_macros::expand_input_specifier;
+#[doc(hidden)]
+pub use auditeur_macros::expand_listener;
+
+pub use auditeur_macros::has_input;
+pub use auditeur_macros::listener;
+pub use auditeur_macros::listener_component;
+pub use auditeur_macros::Runnable;
+
 /// A macro that automatically provides an implementation of
 /// [`MaybeGetRef`](crate::input::MaybeGetRef)
 ///
@@ -113,9 +123,9 @@ pub mod prelude {
     pub use crate::{
         app::{App, Constraints, Registry, RegistryEvent, Stopper},
         bundle::Bundle,
-        create, ident, identifiable,
+        create, has_input, ident, identifiable,
         input::get::Get,
-        message,
+        listener, listener_component, message,
         namespaced_id::{NamespacedId, NamespacedIdRef},
         new_bundle, resource,
         resource::{Create, Identifiable, Listener, Resource, Watcher},

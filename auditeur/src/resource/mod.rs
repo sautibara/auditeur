@@ -7,12 +7,12 @@ use auditeur_macros::cfg_supertrait;
 use futures::Future;
 
 pub mod builtin;
-// pub mod listener;
+pub mod listener;
 
 /// A type that has an associated [`NamespacedId`] that uniquely represents it
 pub trait Identifiable: Send + Sync + 'static {
-    fn ident(&self) -> NamespacedIdRef<'static>;
-    fn const_ident() -> NamespacedIdRef<'static>
+    fn ident(&self) -> &'static NamespacedIdRef;
+    fn const_ident() -> &'static NamespacedIdRef
     where
         Self: Sized;
 }
