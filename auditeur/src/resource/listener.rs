@@ -16,7 +16,7 @@ use tokio::select;
 use send_future::SendFuture;
 
 #[doc = include_str!("listener_docs.md")]
-pub trait Listener: Resource + Runnable + Sized + Send + Sync
+pub trait Listener: Resource + Runnable + Sized
 where
     Self::Input: for<'s> Subset<Self::InitCombination, SubsetMut<'s> = <Self as Runnable>::InitInput<'s>>
         + for<'s> Subset<Self::ExitCombination, SubsetMut<'s> = <Self as Runnable>::ExitInput<'s>>,
@@ -51,7 +51,7 @@ pub trait Runnable {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-pub trait Component<L: Listener>: Input + Send + Sync + 'static {
+pub trait Component<L: Listener>: Input {
     type UserInput<'s>: Send;
     type Value: Send;
 
@@ -68,7 +68,7 @@ pub trait Component<L: Listener>: Input + Send + Sync + 'static {
     ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send;
 }
 
-pub trait Listen<M: Message>: Listener + Send + Sync + 'static {
+pub trait Listen<M: Message>: Listener {
     type OnInput<'s>: Send;
 
     fn on(

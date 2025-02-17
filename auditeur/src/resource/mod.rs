@@ -10,7 +10,7 @@ pub mod builtin;
 pub mod listener;
 
 /// A type that has an associated [`NamespacedId`] that uniquely represents it
-pub trait Identifiable: Send + Sync + 'static {
+pub trait Identifiable {
     fn ident(&self) -> &'static NamespacedIdRef;
     fn const_ident() -> &'static NamespacedIdRef
     where
@@ -25,12 +25,15 @@ pub trait Identifiable: Send + Sync + 'static {
 ///
 /// To implement this trait, use [`#[resource]`](macro@crate::resource)
 #[cfg_supertrait(feature = "runtime-loading", crate::input::get::MaybeGetRef)]
-pub trait Resource: Identifiable + crate::Any {}
+pub trait Resource: Identifiable + crate::Any + Send + Sync + 'static {}
 
 #[cfg(feature = "runtime-loading")]
-impl<T: Identifiable + crate::Any + crate::input::get::MaybeGetRef> Resource for T {}
+impl<T: Identifiable + crate::Any + crate::input::get::MaybeGetRef + Send + Sync + 'static> Resource
+    for T
+{
+}
 #[cfg(not(feature = "runtime-loading"))]
-impl<T: Identifiable + crate::Any> Resource for T {}
+impl<T: Identifiable + crate::Any + Send + Sync + 'static> Resource for T {}
 
 /// A [`Resource`] that listens to the main [`Message`] channel
 ///
