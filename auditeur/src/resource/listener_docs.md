@@ -2,7 +2,7 @@ A [`Resource`] that is made up of many concurrently-run [event streams](Componen
 
 # Components
 
-[`Listener`]s are broken up into [`Component`]s, which are each expected to handle a stream of 
+[`Listener`]s are broken up into [`Component`]s, which are each expected to handle a stream of
 events. Each component is run concurrently, all waiting for new events (see [`Component::wait`]).
 Once a component receives an event, it obtains mutable access to the listener and its respective
 inputs and handles the event (see [`Component::handle`]). After handling the event, it yields
@@ -17,11 +17,17 @@ to a message stream shared between all other resources (a broadcast). In effect,
 Each component can use their own separate [`Input`], which is the main way that resources can talk
 to each other. Please refer to that trait's documentation for more information.
 
-Much of the underlying implementation complexity of the [`Listener`] trait (which is handled 
-through [macros](#macros)) comes from the fact that [`Input`]s can be shared between all of the 
-components. Generally, user inputs (such as those specified in [`Listen::OnInput`]) are shared, 
-while inputs specific to the components themselves (like the message channel backing 
+Much of the underlying implementation complexity of the [`Listener`] trait (which is handled
+through [macros](#macros)) comes from the fact that [`Input`]s can be shared between all of the
+components. Generally, user inputs (such as those specified in [`Listen::OnInput`]) are shared,
+while inputs specific to the components themselves (like the message channel backing
 [`ListenComponent`]) are not shared.
+
+Since the amount of trait definitions for [`Subset`] grows at an exponential rate as the amount of
+accepted inputs increases, only 8 unique [`Input`]s for a [`Listener`] are accepted at this time.
+To work around this, try using a nested tuple or struct with a
+[`derive(Input)`](macro@crate::Input) annotation, which will only be shared if the entire tuple or
+struct is the same between different components.
 
 # Runnable
 
@@ -62,6 +68,10 @@ struct ExitListener;
 
 #[has_input(crate_root = true)]
 impl Listen<Exit> for ExitListener {
+    // Note that this method only has one [`Input`], so the last parameter is simple.
+    // If the method had none, the last parameter would have to be `(): ()` to signify no inputs.
+    // If the method had more than one, the last parameter would have to be a tuple of mutable
+    //   references (such as `(stopper, sender): (&mut Stopper, &mut Sender<Exit>)`).
     async fn on(&mut self, _: Exit, stopper: &mut Stopper) -> Result<()> {
         // [`Stopper`] can be used to stop individual resources or the entire program
         stopper.exit();

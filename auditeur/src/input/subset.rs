@@ -1,14 +1,26 @@
+#![doc = include_str!("subset_docs.md")]
+
 use auditeur_macros::all_combinations;
 use bevy_utils_proc_macros::all_tuples;
 
+#[doc = include_str!("subset_docs.md")]
 pub trait Subset<T> {
+    /// A tuple of mutable references to each item in this subset.
     type SubsetMut<'s>
     where
         Self: 's;
+
+    /// Obtain a tuple of mutable references to each item in this subset.
+    ///
+    /// # Examples
+    ///
+    /// See the type docs example.
     fn subset_mut(&mut self) -> Self::SubsetMut<'_>;
 }
 
+/// A unit struct that instructs [`Subset`] to include the type in this position in the subset.
 pub struct InSet;
+/// A unit struct that instructs [`Subset`] to not include the type in this position in the subset.
 pub struct OutOfSet;
 
 impl<T: 'static> Subset<()> for T {
