@@ -32,36 +32,35 @@ pub use anyhow;
 pub use futures::try_join;
 
 pub mod prelude {
+    pub use crate::resource::Identifiable as _;
     pub use crate::{
         app::{App, Constraints, Registry, RegistryEvent, Stopper},
         bundle::Bundle,
-        create, has_input, ident, identifiable,
         input::get::Get,
-        listener, listener_component, message,
+        macros::{
+            create, has_input, ident, identifiable, listener, listener_component, message,
+            resource, Create, GetRef, PathAny,
+        },
         namespaced_id::{NamespacedId, NamespacedIdRef},
-        new_bundle, resource,
-        resource::{Create, Identifiable, Listener, Resource, Watcher},
-        Error as AuditeurError, GetRef,
+        // this is a #[macro_export] macro so it can't be in macros
+        new_bundle,
+        // TODO: remove Listener from the prelude
+        resource::{Create, Listener, Watcher},
     };
 
-    pub use auditeur_macros::Create;
-
     #[cfg(feature = "path-any")]
-    pub use crate::path_any::PathAny;
-    #[allow(unused_imports)] // false positive?
-    pub(crate) use crate::Any;
-    #[cfg(feature = "path-any")]
-    pub use auditeur_macros::PathAny;
-
-    pub(crate) use crate::Error;
-    pub(crate) use crate::{input::Input, Message};
+    pub(crate) use crate::path_any::PathAny;
+    pub(crate) use crate::{
+        input::Input, resource::Identifiable, resource::Resource, Any, Error, Message,
+    };
+    pub(crate) use tokio::sync::broadcast::Sender;
 
     pub use anyhow;
     pub use anyhow::Result;
-    pub use async_trait::async_trait;
     pub use std::ops::ControlFlow;
 
-    pub(crate) use tokio::sync::broadcast::Sender;
+    // TODO: remove from prelude once listener and watcher are refactored
+    pub use async_trait::async_trait;
 }
 
 #[cfg_supertrait(feature = "path-any", path_any::PathAnyConst)]

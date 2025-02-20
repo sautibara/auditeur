@@ -256,6 +256,7 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         impl #crate_name::Message for #ident {}
+
         #item
         #identifiable_impl
         #path_any_impl

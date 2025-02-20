@@ -36,7 +36,7 @@ pub use auditeur_macros::ident;
 /// #[resource("test:useful_resource")]
 /// struct UsefulResource;
 ///
-/// fn assert_is_resource<R: Resource>(_: R) {}
+/// fn assert_is_resource<R: auditeur::resource::Resource>(_: R) {}
 ///
 /// assert_eq!(UsefulResource.ident(), ident!("test:useful_resource"));
 /// assert_is_resource(UsefulResource);
