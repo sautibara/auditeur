@@ -36,7 +36,8 @@ the listener [initializes](Runnable::init) or [exits](Runnable::exit). These met
 in the shared inputs like components.
 
 Unfortunately, since Rust doesn't support associated `const` defaults, these methods cannot have
-default implementations. As a workaround, use the [`Runnable`](macro@Runnable) derive macro instead.
+default implementations. As a workaround, use the [`Runnable`](macro@crate::Runnable) derive macro
+instead.
 
 # Macros
 

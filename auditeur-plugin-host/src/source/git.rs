@@ -179,7 +179,7 @@ impl Host {
 
     /// Returns `true` if the git host is [`Github`].
     ///
-    /// [`Github`]: GitHost::Github
+    /// [`Github`]: Host::Github
     #[must_use]
     pub const fn is_github(&self) -> bool {
         matches!(self, Self::Github)
@@ -187,7 +187,7 @@ impl Host {
 
     /// Returns `true` if the git host is [`Gitlab`].
     ///
-    /// [`Gitlab`]: GitHost::Gitlab
+    /// [`Gitlab`]: Host::Gitlab
     #[must_use]
     pub const fn is_gitlab(&self) -> bool {
         matches!(self, Self::Gitlab)
@@ -195,7 +195,7 @@ impl Host {
 
     /// Returns `true` if the git host is [`Bitbucket`].
     ///
-    /// [`Bitbucket`]: GitHost::Bitbucket
+    /// [`Bitbucket`]: Host::Bitbucket
     #[must_use]
     pub const fn is_bitbucket(&self) -> bool {
         matches!(self, Self::Bitbucket)
@@ -230,7 +230,7 @@ impl Display for Host {
     }
 }
 
-/// A git host was not recognized so it couldn't be [parsed](GitHost::from_str)
+/// A git host was not recognized so it couldn't be [parsed](Host::from_str)
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Error)]
 #[error("unknown git host: {0}")]
 pub struct UnknownHost(String);
@@ -257,7 +257,7 @@ pub enum FetchMethod {
 impl FetchMethod {
     /// Returns `true` if the git fetch method is [`Https`].
     ///
-    /// [`Https`]: GitFetchMethod::Https
+    /// [`Https`]: FetchMethod::Https
     #[must_use]
     pub const fn is_https(&self) -> bool {
         matches!(self, Self::Https)
@@ -265,7 +265,7 @@ impl FetchMethod {
 
     /// Returns `true` if the git fetch method is [`Ssh`].
     ///
-    /// [`Ssh`]: GitFetchMethod::Ssh
+    /// [`Ssh`]: FetchMethod::Ssh
     #[must_use]
     pub const fn is_ssh(&self) -> bool {
         matches!(self, Self::Ssh)

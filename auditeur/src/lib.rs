@@ -53,7 +53,7 @@ pub use auditeur_macros::message;
 pub use auditeur_macros::create;
 pub use auditeur_macros::Create;
 
-/// A macro to automate implementing [`GetRef`](crate::input::GetRef) using [`Clone`]
+/// A macro to automate implementing [`GetRef`](crate::input::get::GetRef) using [`Clone`]
 ///
 /// # Examples
 ///
@@ -89,9 +89,9 @@ pub use auditeur_macros::listener_component;
 pub use auditeur_macros::Runnable;
 
 /// A macro that automatically provides an implementation of
-/// [`MaybeGetRef`](crate::input::MaybeGetRef)
+/// [`MaybeGetRef`](crate::input::get::MaybeGetRef)
 ///
-/// See [`MaybeGetRef`](crate::input::MaybeGetRef) for more information on why this is necessary
+/// See [`MaybeGetRef`](crate::input::get::MaybeGetRef) for more information on why this is necessary
 #[cfg(feature = "runtime-loading")]
 pub use auditeur_macros::MaybeGetRef;
 

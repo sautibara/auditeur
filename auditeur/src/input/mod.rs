@@ -9,7 +9,7 @@ pub mod get;
 pub mod subset;
 
 pub trait Input: Sized + Send + Sync + 'static {
-    /// Create [`Self::Output`] using the given [`Registry`] and id `as_resource`
+    /// Create `Self` using the given [`Registry`] and id `as_resource`
     ///
     /// # Errors
     ///

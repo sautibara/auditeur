@@ -92,7 +92,7 @@ impl Bundle {
 /// These methods allow adding different [resources](mod@crate::resource) to the [`Bundle`]
 ///
 /// Once added, these resources will be allowed to run in the main loop and be referenced by others
-/// using [`input::Get<_>`](crate::input::Get). Notice that even though [`Listener`]s and
+/// using [`input::Get<_>`](crate::input::get::Get). Notice that even though [`Listener`]s and
 /// [`Watcher`]s can be added through [`Self::with_resource`], if they are, they won't be run in
 /// the main loop: they must be added through [`Self::with_listener`] or [`Self::with_watcher`].
 /// The namespaces for each also aren't exclusive: if a resource with the same [`NamespacedId`] is
@@ -101,7 +101,7 @@ impl Bundle {
     /// Add a [`Resource`] to this bundle
     ///
     /// Resources are never run, they only provide themselves to [listeners](Listener),
-    /// [watchers](Watcher), or other resources with [`input::Get<_>`](crate::input::Get)
+    /// [watchers](Watcher), or other resources with [`input::Get<_>`](crate::input::get::Get)
     pub fn with_resource<R: Resource + Create>(self, external_input: R::ExternalInput) -> Self {
         self.with(loader::Resource::<R>::new(external_input))
     }

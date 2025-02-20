@@ -17,11 +17,11 @@
 //!     - [`Constraints`] are essentially a list of resources that must be loaded before loading
 //!       another resource
 //!     - These are necessary so that resources can ensure that the other resources they access
-//!       through [`Get<_>`](crate::input::Get) are already loaded
+//!       through [`Get<_>`](crate::input::get::Get) are already loaded
 //! - Once loaded, resources are each built into a [`LoadedResource`]
 //!     - [`LoadedResource`]s build the [`Input`]s for their resources from the registry
 //!     - [`LoadedResource`]s allow for dynamically accessing the contained resource by the
-//!       registry, enabling [`input::Get<_>`](crate::input::Get) to work
+//!       registry, enabling [`input::Get<_>`](crate::input::get::Get) to work
 //!     - Then, [`LoadedResource`]s may also provide a [`Runner`] to run in the main loop, which is
 //!       how listeners and watchers are run
 //! - When the registry is [run](Registry::run), each [`Runner`] is asynchronously run at the same
@@ -92,7 +92,7 @@ pub(crate) struct BuiltBundle {
 ///
 /// The app handles loading [resources](crate::resource::Resource),
 /// [listeners](crate::resource::Listener), and [watchers](crate::resource::Watcher), giving them
-/// the correct [inputs](crate::input::Input) (including [each other](crate::input::Get)), and
+/// the correct [inputs](crate::input::Input) (including [each other](crate::input::get::Get)), and
 /// [running them](Self::run) asynchronously. It also makes sure they are loaded in the correct
 /// order, through [constraints](Constraints), allowing them to have other dependencies.
 ///
@@ -593,7 +593,7 @@ impl Channels {
 ///
 /// A registry is built from an [`App`] declaration, which handles loading things in the correct
 /// order. This allows resources to access other resources through [`Self::get_as`], or, much more
-/// commonly, [`Get<_>`](crate::input::Get). It is the main thing that [inputs](crate::input)
+/// commonly, [`Get<_>`](crate::input::get::Get). It is the main thing that [inputs](crate::input)
 /// interact with, allowing resources to automatically get a large amount of information about the
 /// app. As such, most channels shown below are also able to be used as inputs (they implement
 /// [`Input`]).
@@ -923,8 +923,8 @@ pub enum RegistryEvent {
     /// [`Self::Unloaded`] instead, if that information is needed.
     Stopped(NamespacedId),
     /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
-    /// [references](crate::input::Get) of it from other [resources](mod@crate::resource) have been
-    /// dropped
+    /// [references](crate::input::get::Get) of it from other [resources](mod@crate::resource) have
+    /// been dropped
     ///
     /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
@@ -941,10 +941,10 @@ pub enum RegistryEvent {
     /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
     BundleUnloaded(NamespacedId),
-    /// The resource `from` referenced the resource `to` through a [`Get<_>`](crate::input::Get)
-    /// [input](crate::input::Input)
+    /// The resource `from` referenced the resource `to` through a
+    /// [`Get<_>`](crate::input::get::Get) [input](crate::input::Input)
     Reference { by: NamespacedId, to: NamespacedId },
-    /// There is a [`Get<_>`](crate::input::Get) request that must be fulfilled
+    /// There is a [`Get<_>`](crate::input::get::Get) request that must be fulfilled
     ///
     /// Note: this will only ever be sent if the `runtime-loading` feature is enabled
     #[cfg(feature = "runtime-loading")]
@@ -1006,12 +1006,13 @@ impl Hash for ErrorEvent {
     }
 }
 
-/// A request to all [resources](mod@crate::resource) to fulfil a [`Get<_>`](crate::input::Get) input
+/// A request to all [resources](mod@crate::resource) to fulfil a
+/// [`Get<_>`](crate::input::get::Get) input
 ///
 /// Under the hood, this is sent to all running resources as a [`RegistryEvent`]. Each resource
 /// checks if the request's id matches their own, and if so, uses
-/// [`MaybeGetRef`](crate::input::MaybeGetRef) to try to create the reference to send back. If the
-/// trait succeeds, they send the result back to the asker.
+/// [`MaybeGetRef`](crate::input::get::MaybeGetRef) to try to create the reference to send back. If
+/// the trait succeeds, they send the result back to the asker.
 ///
 /// `MaybeGetRef` is used because there must be a trait that works for all resources. The
 /// underlying runner won't be able to know if the type it represents implements [`GetRef`], so
