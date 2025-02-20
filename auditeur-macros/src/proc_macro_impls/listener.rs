@@ -630,8 +630,13 @@ impl Parse for Component {
             .transpose()?
             .flatten()
             .unwrap_or_default();
+
         if Specifier::peek(&content) {
-            return Err(content.error("only one specifier allowed - prioritize input"));
+            return if component.has_comma() {
+                Err(content.error("only one specifier allowed - prioritize input"))
+            } else {
+                Err(content.error("expected comma"))
+            };
         }
 
         Ok(Self {
