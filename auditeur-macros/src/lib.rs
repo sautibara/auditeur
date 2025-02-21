@@ -578,7 +578,7 @@ pub fn has_input(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn listener_component(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let component_map = parse_macro_input!(attr as ComponentCallback);
     let item = parse_macro_input!(item as Item);
 

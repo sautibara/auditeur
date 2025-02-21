@@ -222,7 +222,7 @@ pub use auditeur_macros::expand_listener;
 /// To use other [`Component`]s, use a `components` list. Each component is surrounded in
 /// parenthesees and at least specifies `component = <component_type>` - the type of the component
 /// including its generics. After, it optionally follows with a [specifier](#specifier). If a
-/// specifier isn't given, it queries the component for the specifier (see [`listener_component`]).
+/// specifier isn't given, it queries the component for the specifier (see [`#[component]`]).
 ///
 /// ### Specifier
 ///
@@ -364,8 +364,8 @@ pub use auditeur_macros::expand_listener;
 /// </details>
 pub use auditeur_macros::listener;
 
+pub use auditeur_macros::component;
 pub use auditeur_macros::has_input;
-pub use auditeur_macros::listener_component;
 pub use auditeur_macros::Runnable;
 
 pub use auditeur_macros::create;

@@ -78,7 +78,7 @@ pub trait Listen<M: Message>: Listener {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-#[listener_component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
+#[component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
 pub struct ListenComponent<L: Listen<M>, M: Message> {
     receiver: tokio::sync::broadcast::Receiver<M>,
     listener: PhantomData<L>,
@@ -116,7 +116,7 @@ impl<L: Listen<M>, M: Message> Component<L> for ListenComponent<L, M> {
     }
 }
 
-#[listener_component(() => ())]
+#[component(() => ())]
 pub struct RegistryComponent {
     receiver: EventReceiver,
 }

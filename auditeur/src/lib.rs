@@ -38,8 +38,8 @@ pub mod prelude {
         bundle::Bundle,
         input::get::Get,
         macros::{
-            create, has_input, ident, identifiable, listener, listener_component, message,
-            resource, Create, GetRef, PathAny,
+            component, create, has_input, ident, identifiable, listener, message, resource, Create,
+            GetRef, PathAny,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros

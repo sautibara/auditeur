@@ -13,6 +13,8 @@
 //     )),
 // )]
 
+// TODO: allow specifying inputs for Runnable
+
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
