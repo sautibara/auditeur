@@ -333,6 +333,28 @@ pub use auditeur_macros::expand_listener;
 /// # }
 /// ```
 ///
+/// # Errors
+///
+/// Most errors are caught directly by the macro and have dedicated error messages, but some
+/// errors can arise from missing macro callbacks. That is, when the macro gets inputs defined in
+/// [`#[has_input]`](has_input) blocks or [`#[component]`](component) specifiers.
+///
+/// - "cannot find macro `auditeur_input_of_impl_<trait>_for_<type>` in this scope"
+///     - This macro was trying to get the input from a [`#[has_input]`](has_input) block, but it
+///       couldn't find it. This could be caused by the necessary trait not being implemented, a
+///       missing [`#[has_input]`](has_input) annotation, or the trait being implemented in another
+///       crate. To fix this, make sure that the trait is implemented with a
+///       [`#[has_input]`](has_input) annotation or specify the input with `input = <input>`. Note
+///       that, in the string representation of the type, all instances of `<` are replaced with
+///       `_lt_`, `>` with `_gt_`, `::` with `_sep_`, and `_` with `__`.
+/// - "cannot find macro `auditeur_input_of_<method>_in_impl_Runnable_for_<type>` in this scope"
+///     - The macro couldn't find the input for the listener's [`Runnable`] implementation. See
+///       above for possible fixes.
+/// - "cannot find macro `<component_type>` in this scope"
+///     - The macro was trying to get a specifier from a [`#[component]`](component) attribute, but
+///       it couldn't find it. To fix this, try specifying the input directly, or if you defined the
+///       component, make sure the attribute is attached.
+///
 /// # Syntax
 ///
 /// <details>
