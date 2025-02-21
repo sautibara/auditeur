@@ -125,10 +125,15 @@ pub use auditeur_macros::expand_listener;
 /// # }
 /// use shared::{Message1, Message2};
 ///
+/// // This implements [`Listener`] by listening to both [`Message1`] and [`Message2`].
+/// // The inputs for these blocks are collected by the attribute and combined into a single tuple,
+/// //     so that the two components can share them :).
 /// #[derive(Runnable)]
 /// #[listener(id = "test:double_listener", listen(Message1, Message2))]
 /// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
+/// #
+/// # fn main() {}
 /// ```
 ///
 /// <details>
@@ -192,16 +197,21 @@ pub use auditeur_macros::expand_listener;
 /// # }
 /// use shared::{Message1, Message2};
 ///
+///
 /// #[listener(id = "test:double_listener", listen(
-///     // pull the inputs from an impl block
+///     // You can pull the inputs from a `#[has_input]` block,
 ///     Message1,
-///     // specify the inputs directly
+///     // or specify the inputs directly (which just happen to be empty).
 ///     Message2(input = ()),
 /// ))]
 /// #[derive(Runnable)]
 /// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 ///
+///
+/// # fn main() {
+/// assert_components_for(DoubleListener);
+/// # }
 /// fn assert_components_for<L>(_: L)
 /// where
 ///     L: Listener<Components = (
@@ -211,10 +221,6 @@ pub use auditeur_macros::expand_listener;
 ///            ListenComponent<L, Message2>
 ///        )> + Listen<Message1> + Listen<Message2>
 /// {}
-///
-/// # fn main() {
-/// assert_components_for(DoubleListener);
-/// # }
 /// ```
 ///
 /// ## Components
@@ -238,6 +244,7 @@ pub use auditeur_macros::expand_listener;
 /// use auditeur::prelude::*;
 /// use auditeur::resource::listener::{ListenComponent, RegistryComponent};
 ///
+///
 /// # mod shared {
 /// # use auditeur::prelude::*;
 /// # use auditeur::resource::listener::Listen;
@@ -250,15 +257,21 @@ pub use auditeur_macros::expand_listener;
 /// use shared::{Message1, Message2};
 ///
 /// #[listener(id = "test:double_listener", components(
-///     // NOTE: (component = ListenComponent<Self, Message1>) would also work here
+///     // (
+///     //      // You can pull a default specifier from the component itself.
+///     //      component = ListenComponent<Self, Message1>
+///     // ),
+///     // // (This is only commented off since we can't specify this component twice)
 ///     (
 ///         component = ListenComponent<Self, Message1>,
-///         // pull the inputs from an impl block
+///         // You can pull the inputs from a `#[has_input]` block implementing the
+///         //   `implementation` trait.
+///         // For example, this is the default specifier for ListenComponent.
 ///         implementation = Listen<Message1>,
 ///     ),
 ///     (
 ///         component = ListenComponent<Self, Message2>,
-///         // specify the inputs directly
+///         // Or you can also specify the inputs directly.
 ///         input = (),
 ///     ),
 /// ))]
@@ -266,6 +279,10 @@ pub use auditeur_macros::expand_listener;
 /// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 ///
+///
+/// # fn main() {
+/// assert_components_for(DoubleListener);
+/// # }
 /// fn assert_components_for<L>(_: L)
 /// where
 ///     L: Listener<Components = (
@@ -275,10 +292,6 @@ pub use auditeur_macros::expand_listener;
 ///            ListenComponent<L, Message2>
 ///        )> + Listen<Message1> + Listen<Message2>
 /// {}
-///
-/// # fn main() {
-/// assert_components_for(DoubleListener);
-/// # }
 /// ```
 ///
 /// ## Registry Component
@@ -297,6 +310,7 @@ pub use auditeur_macros::expand_listener;
 /// # use auditeur::resource::listener::{Listener, Listen};
 /// use auditeur::prelude::*;
 /// use auditeur::resource::listener::{ListenComponent, RegistryComponent};
+///
 ///
 /// # mod shared {
 /// # use auditeur::prelude::*;
@@ -318,6 +332,10 @@ pub use auditeur_macros::expand_listener;
 /// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 ///
+///
+/// # fn main() {
+/// assert_components_for(DoubleListener);
+/// # }
 /// fn assert_components_for<L>(_: L)
 /// where
 ///     L: Listener<Components = (
@@ -327,10 +345,6 @@ pub use auditeur_macros::expand_listener;
 ///            ListenComponent<L, Message2>
 ///        )> + Listen<Message1> + Listen<Message2>
 /// {}
-///
-/// # fn main() {
-/// assert_components_for(DoubleListener);
-/// # }
 /// ```
 ///
 /// # Errors
@@ -345,8 +359,8 @@ pub use auditeur_macros::expand_listener;
 ///       missing [`#[has_input]`](has_input) annotation, or the trait being implemented in another
 ///       crate. To fix this, make sure that the trait is implemented with a
 ///       [`#[has_input]`](has_input) annotation or specify the input with `input = <input>`. Note
-///       that, in the string representation of the type, all instances of `<` are replaced with
-///       `_lt_`, `>` with `_gt_`, `::` with `_sep_`, and `_` with `__`.
+///       that, in the string representation of the trait and type, all instances of `<` are
+///       replaced with `_lt_`, `>` with `_gt_`, `::` with `_sep_`, and `_` with `__`.
 /// - "cannot find macro `auditeur_input_of_<method>_in_impl_Runnable_for_<type>` in this scope"
 ///     - The macro couldn't find the input for the listener's [`Runnable`] implementation. See
 ///       above for possible fixes.
@@ -386,6 +400,8 @@ pub use auditeur_macros::expand_listener;
 /// </details>
 pub use auditeur_macros::listener;
 
+/// Allows specifying a default [specifier](listener#specifier) for a
+/// [`listener::Component`](crate::resource::listener::Component).
 pub use auditeur_macros::component;
 pub use auditeur_macros::has_input;
 pub use auditeur_macros::Runnable;
