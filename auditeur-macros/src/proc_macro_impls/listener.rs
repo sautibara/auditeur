@@ -765,10 +765,12 @@ impl ComponentCallback {
         let Self { in_, out, .. } = self;
         let in_ = in_.value;
         let ident_mapped = Ident::new(&format!("auditeur_{ident}_macro"), ident.span());
+        // NOTE: $component is taken in as a parameter (and ignored) because of `use _ as _` bindings - we
+        // don't know for sure that it'll begin with #ident.
         quote! {
             #[macro_export] #[doc(hidden)]
             macro_rules! #ident_mapped {
-                (($callback:path $(, $($callbacks:tt)*)?) (#ident #in_ $($params:tt)*) $($rest:tt)*) => {
+                (($callback:path $(, $($callbacks:tt)*)?) ($component:tt #in_ $($params:tt)*) $($rest:tt)*) => {
                     $callback!(($($($callbacks)*)?) (#out $($params)*) $($rest)*);
                 };
             }
