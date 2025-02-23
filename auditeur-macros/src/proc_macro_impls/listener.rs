@@ -238,7 +238,7 @@ impl Intermediate {
 
             let resource_impl = super::resource_impls_with_generics(
                 &self.implementer,
-                &self.listener.value.id.value.value,
+                &self.listener.value.id.value,
                 &CustomGenerics::default(),
                 &auditeur,
             );
@@ -349,7 +349,7 @@ impl ToTokens for Intermediate {
 
 #[derive(Debug)]
 pub struct Listener {
-    id: Comma<NameValue<NamespacedId>>,
+    id: Comma<NamespacedId>,
     parameters: Punctuated<Parameter, Token![,]>,
 }
 
@@ -408,7 +408,7 @@ impl Listener {
 
 impl Parse for Listener {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let id = Comma::parse_with(input, |input| NameValue::parse(input, "id"))?;
+        let id: Comma<NamespacedId> = input.parse()?;
         let parameters = id
             .continue_with(input, |input| {
                 input.parse_terminated(Parameter::parse, Token![,])
@@ -421,9 +421,7 @@ impl Parse for Listener {
 impl ToTokens for Listener {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         self.id.to_tokens_with(tokens, |tokens| {
-            self.id.value.to_tokens_with(tokens, |tokens| {
-                self.id.value.value.to_lit_str().to_tokens(tokens);
-            });
+            self.id.value.to_lit_str().to_tokens(tokens);
         });
         self.parameters.to_tokens(tokens);
     }

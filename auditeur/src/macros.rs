@@ -102,9 +102,12 @@ pub use auditeur_macros::expand_listener;
 
 /// Implements [`Listener`] for any type.
 ///
-/// This also automatically implements everything that [`resource`] does. To give the listener a
-/// [`NamespacedId`], the first item in the macro's argument list must be in the form of `id =
-/// "<namespace>:<id>"`. All other arguments can be inserted in any order.
+/// Like [`#[resource]`](resource), the first argument in the attribute must be a [`NamespacedId`]
+/// string literal (see [`ident!`]). Using this, the macro implements everything that
+/// [`#[resource]`](resource) does, making the item a valid [`Resource`]. After, arguments can be
+/// inserted in any order to give the [`Listener`] implementation
+/// [`Component`](crate::resource::listener::Component)s. Each component added automatically pulls
+/// inputs from [`has_input`] - unless the inputs are manually specified.
 ///
 /// # Examples
 ///
@@ -129,7 +132,7 @@ pub use auditeur_macros::expand_listener;
 /// // The inputs for these blocks are collected by the attribute and combined into a single tuple,
 /// //     so that the two components can share them :).
 /// #[derive(Runnable)]
-/// #[listener(id = "test:double_listener", listen(Message1, Message2))]
+/// #[listener("test:double_listener", listen(Message1, Message2))]
 /// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 /// #
@@ -140,7 +143,7 @@ pub use auditeur_macros::expand_listener;
 ///   <summary>Shared code for all examples:</summary>
 ///
 /// ```no_run
-/// # #[listener(id = "test:listener")]
+/// # #[listener("test:listener")]
 /// # #[derive(Runnable)] #[auditeur_runnable(crate_root = true)]
 /// # struct DoubleListener;
 /// # use auditeur::*;
@@ -198,7 +201,7 @@ pub use auditeur_macros::expand_listener;
 /// use shared::{Message1, Message2};
 ///
 ///
-/// #[listener(id = "test:double_listener", listen(
+/// #[listener("test:double_listener", listen(
 ///     // You can pull the inputs from a `#[has_input]` block,
 ///     Message1,
 ///     // or specify the inputs directly (which just happen to be empty).
@@ -256,7 +259,7 @@ pub use auditeur_macros::expand_listener;
 /// # }
 /// use shared::{Message1, Message2};
 ///
-/// #[listener(id = "test:double_listener", components(
+/// #[listener("test:double_listener", components(
 ///     // (
 ///     //      // You can pull a default specifier from the component itself.
 ///     //      component = ListenComponent<Self, Message1>
@@ -324,7 +327,7 @@ pub use auditeur_macros::expand_listener;
 /// use shared::{Message1, Message2};
 ///
 /// #[listener(
-///     id = "test:double_listener",
+///     "test:double_listener",
 ///     registry_component = false,
 ///     listen(Message1, Message2)
 /// )]

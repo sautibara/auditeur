@@ -62,7 +62,7 @@ use std::time::Duration;
 struct Exit;
 
 /// A [`Listener`] that exits the program once it receives an [`Exit`] message
-#[listener(id = "test:exit_listener", listen(Exit))]
+#[listener("test:exit_listener", listen(Exit))]
 #[derive(Runnable, Default, Create)] // use default implementations for Runnable and Create
 #[auditeur_runnable(crate_root = true)]
 struct ExitListener;
