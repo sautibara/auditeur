@@ -523,6 +523,43 @@ pub use auditeur_macros::component;
 /// # fn main() {}
 /// ```
 pub use auditeur_macros::has_input;
+
+/// Implements [`Runnable`](crate::resource::Runnable) through default implementations of `init`
+/// and `exit`.
+///
+/// # Examples
+///
+/// These two are equivalent:
+///
+/// ```
+/// use auditeur::prelude::*;
+/// # use auditeur::*;
+///
+/// #[derive(Runnable)]
+/// struct Runner;
+///
+/// fn assert_is_runnable<R: Runnable>() {}
+/// # fn main() {
+/// assert_is_runnable::<Runner>();
+/// # }
+/// ```
+///
+/// ```
+/// use auditeur::prelude::*;
+///
+/// struct Runner;
+///
+/// #[has_input]
+/// impl Runnable for Runner {
+///     async fn init(&mut self, (): ()) -> Result<()> { Ok(()) }
+///     async fn exit(&mut self, (): ()) -> Result<()> { Ok(()) }
+/// }
+///
+/// fn assert_is_runnable<R: Runnable>() {}
+/// # fn main() {
+/// assert_is_runnable::<Runner>();
+/// # }
+/// ```
 pub use auditeur_macros::Runnable;
 
 pub use auditeur_macros::create;
@@ -554,6 +591,7 @@ pub use auditeur_macros::Input;
 pub use auditeur_macros::GetRef;
 
 /// Automatically provides an implementation of [`MaybeGetRef`](crate::input::get::MaybeGetRef).
+///
 /// Usually, though, this is already implemented by [`resource`](macro@resource) or one of its
 /// derivatives.
 ///
