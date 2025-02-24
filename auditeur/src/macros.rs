@@ -123,17 +123,16 @@ pub use auditeur_macros::expand_listener;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input(crate_root = true)] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input(crate_root = true)] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
 /// # }
-/// use shared::{Message1, Message2};
+/// use shared::*;
 ///
 /// // This implements [`Listener`] by listening to both [`Message1`] and [`Message2`].
 /// // The inputs for these blocks are collected by the attribute and combined into a single tuple,
 /// //     so that the two components can share them :).
 /// #[derive(Runnable)]
 /// #[listener("test:double_listener", listen(Message1, Message2))]
-/// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 /// #
 /// # fn main() {}
@@ -144,7 +143,7 @@ pub use auditeur_macros::expand_listener;
 ///
 /// ```no_run
 /// # #[listener("test:listener")]
-/// # #[derive(Runnable)] #[auditeur_runnable(crate_root = true)]
+/// # #[derive(Runnable)]
 /// # struct DoubleListener;
 /// # use auditeur::*;
 /// mod shared {
@@ -165,8 +164,8 @@ pub use auditeur_macros::expand_listener;
 ///     #[has_input] impl Listen<Message1> for DoubleListener { ... }
 ///     #[has_input] impl Listen<Message2> for DoubleListener { ... }
 /// # */
-/// # #[has_input(crate_root = true)] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input(crate_root = true)] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
 /// }
 /// # fn main() {}
 /// ```
@@ -195,10 +194,10 @@ pub use auditeur_macros::expand_listener;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input(crate_root = true)] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input(crate_root = true)] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
 /// # }
-/// use shared::{Message1, Message2};
+/// use shared::*;
 ///
 ///
 /// #[listener("test:double_listener", listen(
@@ -208,7 +207,6 @@ pub use auditeur_macros::expand_listener;
 ///     Message2(input = ()),
 /// ))]
 /// #[derive(Runnable)]
-/// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 ///
 ///
@@ -254,10 +252,10 @@ pub use auditeur_macros::expand_listener;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input(crate_root = true)] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input(crate_root = true)] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
 /// # }
-/// use shared::{Message1, Message2};
+/// use shared::*;
 ///
 /// #[listener("test:double_listener", components(
 ///     // (
@@ -279,7 +277,6 @@ pub use auditeur_macros::expand_listener;
 ///     ),
 /// ))]
 /// #[derive(Runnable)]
-/// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 ///
 ///
@@ -321,10 +318,10 @@ pub use auditeur_macros::expand_listener;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input(crate_root = true)] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input(crate_root = true)] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
+/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
 /// # }
-/// use shared::{Message1, Message2};
+/// use shared::*;
 ///
 /// #[listener(
 ///     "test:double_listener",
@@ -332,7 +329,6 @@ pub use auditeur_macros::expand_listener;
 ///     listen(Message1, Message2)
 /// )]
 /// #[derive(Runnable)]
-/// # #[auditeur_runnable(crate_root = true)]
 /// struct DoubleListener;
 ///
 ///
@@ -356,7 +352,7 @@ pub use auditeur_macros::expand_listener;
 /// errors can arise from missing macro callbacks. That is, when the macro gets inputs defined in
 /// [`#[has_input]`](has_input) blocks or [`#[component]`](component) specifiers.
 ///
-/// - "cannot find macro `auditeur_input_of_impl_<trait>_for_<type>` in this scope"
+/// - "use of undeclared crate or module `auditeur_input_of_impl_<trait>_for_<type>`"
 ///     - This macro was trying to get the input from a [`#[has_input]`](has_input) block, but it
 ///       couldn't find it. This could be caused by the necessary trait not being implemented, a
 ///       missing [`#[has_input]`](has_input) annotation, or the trait being implemented in another
@@ -364,7 +360,7 @@ pub use auditeur_macros::expand_listener;
 ///       [`#[has_input]`](has_input) annotation or specify the input with `input = <input>`. Note
 ///       that, in the string representation of the trait and type, all instances of `<` are
 ///       replaced with `_lt_`, `>` with `_gt_`, `::` with `_sep_`, and `_` with `__`.
-/// - "cannot find macro `auditeur_input_of_<method>_in_impl_Runnable_for_<type>` in this scope"
+/// - "use of undeclared crate or module `auditeur_input_of_<method>_in_impl_Runnable_for_<type>`"
 ///     - The macro couldn't find the input for the listener's [`Runnable`] implementation. See
 ///       above for possible fixes.
 /// - "cannot find macro `<component_type>` in this scope"

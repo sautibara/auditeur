@@ -64,10 +64,9 @@ struct Exit;
 /// A [`Listener`] that exits the program once it receives an [`Exit`] message
 #[listener("test:exit_listener", listen(Exit))]
 #[derive(Runnable, Default, Create)] // use default implementations for Runnable and Create
-#[auditeur_runnable(crate_root = true)]
 struct ExitListener;
 
-#[has_input(crate_root = true)]
+#[has_input]
 impl Listen<Exit> for ExitListener {
     // Note that this method only has one [`Input`], so the last parameter is simple.
     // If the method had none, the last parameter would have to be `(): ()` to signify no inputs.

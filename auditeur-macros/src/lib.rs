@@ -601,12 +601,12 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-#[proc_macro_derive(Runnable, attributes(auditeur_runnable))]
+#[proc_macro_derive(Runnable)]
 pub fn runnable_derive(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
-    let (ident, attrs) = match item {
-        Item::Struct(strct) => (strct.ident, strct.attrs),
-        Item::Enum(enm) => (enm.ident, enm.attrs),
+    let ident = match item {
+        Item::Struct(strct) => strct.ident,
+        Item::Enum(enm) => enm.ident,
         _ => {
             return quote_spanned! {
                 item.span() => compile_error!("item must be a struct or enum"),
@@ -615,23 +615,7 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
         }
     };
 
-    let args = attrs
-        .into_iter()
-        .map(|attr| attr.meta)
-        .filter(|meta| meta.path().is_ident("auditeur_runnable"))
-        .last()
-        .map_or_else(
-            || Ok(proc_macro_impls::input_reflection::HasInputArgs::default()),
-            |meta| {
-                if let syn::Meta::List(list) = meta {
-                    syn::parse2(list.tokens)
-                } else {
-                    Err(syn::Error::new_spanned(meta, "expected parens"))
-                }
-            },
-        );
-
-    args.and_then(|args| proc_macro_impls::runnable_derive(&crate::type_from_ident(ident), &args))
+    proc_macro_impls::runnable_derive(&crate::type_from_ident(ident))
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

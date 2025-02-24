@@ -30,7 +30,7 @@ use crate::{
     Auditeur,
 };
 
-use super::input_reflection::{CallbackList, HasInputArgs};
+use super::input_reflection::CallbackList;
 
 fn split_results<Ok, Err, I, OkAcc, ErrAcc>(iter: I) -> (OkAcc, ErrAcc)
 where
@@ -50,21 +50,17 @@ where
     )
 }
 
-pub fn runnable_derive(implementer: &Type, args: &HasInputArgs) -> syn::Result<TokenStream> {
-    if args.owned() {
-        return Err(syn::Error::new_spanned(args, "'owned' is not allowed here"));
-    }
-
+pub fn runnable_derive(implementer: &Type) -> syn::Result<TokenStream> {
     let no_input = InputList::default();
 
     let runnable_trait = crate::type_from_ident(Ident::new("Runnable", Span::call_site()));
     let init_input_macro_ident =
-        super::input_reflection::input_macro_of_method(&runnable_trait, implementer, "init")?;
+        super::input_reflection::input_macro_ident_of_method(&runnable_trait, implementer, "init")?;
     let exit_input_macro_ident =
-        super::input_reflection::input_macro_of_method(&runnable_trait, implementer, "exit")?;
+        super::input_reflection::input_macro_ident_of_method(&runnable_trait, implementer, "exit")?;
 
-    let init_input_macro = super::export_input(&init_input_macro_ident, &no_input, args);
-    let exit_input_macro = super::export_input(&exit_input_macro_ident, &no_input, args);
+    let init_input_macro = super::export_input(&init_input_macro_ident, &no_input);
+    let exit_input_macro = super::export_input(&exit_input_macro_ident, &no_input);
 
     let resource = crate::AUDITEUR.resource();
     let anyhow = crate::AUDITEUR.anyhow();
@@ -267,22 +263,16 @@ impl Intermediate {
             let implementer_type = crate::type_from_ident(self.implementer.clone());
 
             let runnable = parse_quote!(Runnable);
-            add_callback(
-                super::input_reflection::input_macro_of_method(
-                    &runnable,
-                    &implementer_type,
-                    "init",
-                )?
-                .into(),
-            );
-            add_callback(
-                super::input_reflection::input_macro_of_method(
-                    &runnable,
-                    &implementer_type,
-                    "exit",
-                )?
-                .into(),
-            );
+            add_callback(super::input_reflection::input_macro_of_method(
+                &runnable,
+                &implementer_type,
+                "init",
+            )?);
+            add_callback(super::input_reflection::input_macro_of_method(
+                &runnable,
+                &implementer_type,
+                "exit",
+            )?);
 
             for component in without_input {
                 match component.specifier {
@@ -294,7 +284,7 @@ impl Intermediate {
                     SpecifierRef::Implementation(typ) => {
                         let input_macro =
                             super::input_reflection::input_macro_of(typ, &implementer_type)?;
-                        add_callback(input_macro.into());
+                        add_callback(input_macro);
                     }
                     SpecifierRef::Input(_) => unreachable!(),
                 }

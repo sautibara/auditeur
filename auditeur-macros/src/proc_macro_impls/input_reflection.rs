@@ -34,14 +34,29 @@ pub fn type_to_ident(typ: &Type) -> syn::Result<Ident> {
     }
 }
 
-pub fn input_macro_of(trait_: &Type, implementer: &Type) -> syn::Result<Ident> {
+fn in_root(ident: Ident) -> Path {
+    let mut segments = Punctuated::new();
+    segments.push(ident.clone().into());
+    segments.push(ident.into());
+    Path {
+        leading_colon: None,
+        segments,
+    }
+}
+
+pub fn input_macro_ident_of(trait_: &Type, implementer: &Type) -> syn::Result<Ident> {
     let trait_ = type_to_ident(trait_)?;
     let implementer = type_to_ident(implementer)?;
     let full_ident = format!("auditeur_input_of_impl_{trait_}_for_{implementer}");
     Ok(Ident::new(&full_ident, implementer.span()))
 }
 
-pub fn input_macro_of_method(
+pub fn input_macro_of(trait_: &Type, implementer: &Type) -> syn::Result<Path> {
+    let ident = input_macro_ident_of(trait_, implementer)?;
+    Ok(in_root(ident))
+}
+
+pub fn input_macro_ident_of_method(
     trait_: &Type,
     implementer: &Type,
     method: &str,
@@ -52,21 +67,33 @@ pub fn input_macro_of_method(
     Ok(Ident::new(&full_ident, implementer.span()))
 }
 
+pub fn input_macro_of_method(trait_: &Type, implementer: &Type, method: &str) -> syn::Result<Path> {
+    let ident = input_macro_ident_of_method(trait_, implementer, method)?;
+    Ok(in_root(ident))
+}
+
+pub fn export(macro_ident: &Ident, inputs: &InputList) -> TokenStream {
+    quote! {
+        #[doc(hidden)]
+        #[allow(non_snake_case, clippy::redundant_pub_crate)]
+        pub(crate) mod #macro_ident {
+            #[macro_export]
+            macro_rules! #macro_ident {
+                (($callback:path $(, $($callbacks:tt)*)?) ($($params:tt)*) $($rest:tt)*) => {
+                    $callback!(($($($callbacks)*)?) ($($params)*) $($rest)* #inputs);
+                };
+            }
+            pub use #macro_ident;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct HasInputArgs {
     args: Punctuated<HasInputArg, Token![,]>,
 }
 
 impl HasInputArgs {
-    const CRATE_ROOT_DEFAULT: bool = false;
-    pub fn top_level(&self) -> bool {
-        self.args
-            .iter()
-            .filter_map(HasInputArg::as_crate_root)
-            .last()
-            .unwrap_or(Self::CRATE_ROOT_DEFAULT)
-    }
-
     const OWNED_DEFAULT: bool = false;
     pub fn owned(&self) -> bool {
         self.args
@@ -92,26 +119,16 @@ impl ToTokens for HasInputArgs {
 }
 
 enum HasInputArg {
-    CrateRoot(Ident),
-    CrateRootExplicit(NameValue<LitBool>),
     Owned(Ident),
     OwnedExplicit(NameValue<LitBool>),
 }
 
 impl HasInputArg {
-    const fn as_crate_root(&self) -> Option<bool> {
-        match self {
-            Self::CrateRoot(_) => Some(!HasInputArgs::CRATE_ROOT_DEFAULT),
-            Self::CrateRootExplicit(name_value) => Some(name_value.value.value),
-            _ => None,
-        }
-    }
-
+    #[expect(clippy::unnecessary_wraps)]
     const fn as_owned(&self) -> Option<bool> {
         match self {
             Self::Owned(_) => Some(!HasInputArgs::OWNED_DEFAULT),
             Self::OwnedExplicit(name_value) => Some(name_value.value.value),
-            _ => None,
         }
     }
 }
@@ -119,8 +136,8 @@ impl HasInputArg {
 impl ToTokens for HasInputArg {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            Self::CrateRoot(value) | Self::Owned(value) => value.to_tokens(tokens),
-            Self::CrateRootExplicit(value) | Self::OwnedExplicit(value) => value.to_tokens(tokens),
+            Self::Owned(value) => value.to_tokens(tokens),
+            Self::OwnedExplicit(value) => value.to_tokens(tokens),
         }
     }
 }
@@ -134,14 +151,9 @@ impl Parse for HasInputArg {
             .transpose()?;
 
         match (&*ident.to_string(), explicit) {
-            ("crate_root", Some(name_value)) => Ok(Self::CrateRootExplicit(name_value)),
-            ("crate_root", None) => Ok(Self::CrateRoot(ident)),
             ("owned", Some(name_value)) => Ok(Self::OwnedExplicit(name_value)),
             ("owned", None) => Ok(Self::Owned(ident)),
-            _ => Err(syn::Error::new_spanned(
-                ident,
-                "expected one of 'crate_root' or 'owned'",
-            )),
+            _ => Err(syn::Error::new_spanned(ident, "expected 'owned'")),
         }
     }
 }
@@ -234,11 +246,11 @@ impl HasInput {
 
             let owned_inputs = referenced_inputs.into_owned_list();
             let macro_ident = if func_count > 1 {
-                input_macro_of_method(&trait_, implementer, &func.sig.ident.to_string())?
+                input_macro_ident_of_method(&trait_, implementer, &func.sig.ident.to_string())?
             } else {
-                input_macro_of(&trait_, implementer)?
+                input_macro_ident_of(&trait_, implementer)?
             };
-            macros.extend(super::export_input(&macro_ident, &owned_inputs, &self.args));
+            macros.extend(super::export_input(&macro_ident, &owned_inputs));
 
             last_arg.ty = parse_quote!( <Self as #trait_>::#const_ident<'_> );
         }
@@ -252,35 +264,14 @@ impl HasInput {
     }
 }
 
-pub fn export(macro_ident: &Ident, inputs: &InputList, args: &HasInputArgs) -> TokenStream {
-    let mut stream = quote! {
-        #[allow(non_local_definitions)]
-        #[macro_export]
-        #[doc(hidden)]
-        macro_rules! #macro_ident {
-            (($callback:path $(, $($callbacks:tt)*)?) ($($params:tt)*) $($rest:tt)*) => {
-                $callback!(($($($callbacks)*)?) ($($params)*) $($rest)* #inputs);
-            };
-        }
-    };
-    if !args.top_level() {
-        stream.extend(quote! {
-            #[allow(unused_imports)]
-            #[doc(hidden)]
-            pub(crate) use #macro_ident;
-        });
-    }
-    stream
-}
-
 #[derive(Default, Debug)]
 pub struct CallbackList {
     pub list: Punctuated<Path, syn::token::Comma>,
 }
 
 impl CallbackList {
-    pub fn push_ident_front(&mut self, ident: Ident) {
-        self.list.insert(0, Path::from(ident));
+    pub fn push_front(&mut self, path: Path) {
+        self.list.insert(0, path);
     }
 }
 
@@ -324,7 +315,7 @@ impl ExpandInputSpecifier {
                     &implementation.value,
                     &self.implementer,
                 )?;
-                self.callbacks.value.push_ident_front(macro_name);
+                self.callbacks.value.push_front(macro_name);
             }
         }
 
