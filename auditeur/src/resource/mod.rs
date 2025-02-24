@@ -35,6 +35,21 @@ impl<T: Identifiable + crate::Any + crate::input::get::MaybeGetRef + Send + Sync
 #[cfg(not(feature = "runtime-loading"))]
 impl<T: Identifiable + crate::Any + Send + Sync + 'static> Resource for T {}
 
+pub trait Runnable {
+    type InitInput<'s>: Send;
+    type ExitInput<'s>: Send;
+
+    fn init(
+        &mut self,
+        input: Self::InitInput<'_>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn exit(
+        &mut self,
+        input: Self::ExitInput<'_>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
 /// A [`Resource`] that listens to the main [`Message`] channel
 ///
 /// [`Input`]s are the way that [`Listener`]s are able to communicate with the rest of the [`App`]

@@ -36,21 +36,6 @@ where
     type ExitCombination;
 }
 
-pub trait Runnable {
-    type InitInput<'s>: Send;
-    type ExitInput<'s>: Send;
-
-    fn init(
-        &mut self,
-        input: Self::InitInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
-
-    fn exit(
-        &mut self,
-        input: Self::ExitInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
-}
-
 pub trait Component<L: Listener>: Input {
     type UserInput<'s>: Send;
     type Value: Send;

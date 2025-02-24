@@ -68,7 +68,7 @@ pub fn runnable_derive(implementer: &Type) -> syn::Result<TokenStream> {
     Ok(quote! {
         #init_input_macro
         #exit_input_macro
-        impl #resource::listener::Runnable for #implementer {
+        impl #resource::Runnable for #implementer {
             type InitInput<'a> = ();
             type ExitInput<'a> = ();
 
