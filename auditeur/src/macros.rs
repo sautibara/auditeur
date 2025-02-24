@@ -453,6 +453,75 @@ pub use auditeur_macros::listener;
 /// # }
 /// ```
 pub use auditeur_macros::component;
+
+/// Used on implementation blocks with [`Input`]s.
+///
+/// This macro attaches to `impl` blocks, collects the inputs for each method into associated
+/// types so that traits can see them, and, most importantly, exports the inputs for macros like
+/// [`#[listener]`](listener).
+///
+/// More specifically, each method's last argument is captured as that method's [`Input`]s. Then,
+/// the input list gets added as an associated type with the identifier of the method's identifier
+/// suffixed by the word `Input` (for example, the associated type for a method named `on` will be
+/// named `OnInput`). Traits that take inputs are expected to have their associated types titled in
+/// this manner.
+///
+/// # Examples
+///
+/// ```no_run
+/// use auditeur::prelude::*;
+/// # use auditeur::resource::listener::Listen;
+/// # use auditeur::*;
+/// use tokio::sync::broadcast::Sender;
+///
+/// trait TypeEqual<T> {}
+/// impl<T> TypeEqual<T> for T {}
+/// // This only allows compilation if the types T and U are equal
+/// const fn assert_types_equal<T, U: TypeEqual<T>>() {}
+///
+/// #[derive(Clone)]
+/// #[message("test:message")]
+/// struct Message1;
+///
+/// #[derive(Runnable)]
+/// #[listener("test:listener", listen(Message1))]
+/// struct Listener;
+///
+///
+/// #[has_input] // The attribute :)
+/// impl Listen<Message1> for Listener {
+///     async fn on(
+///         &mut self,
+///         // Since this is not the last argument, it is not seen as an input.
+///         _: Message1,
+///         // Instead, the last argument in the method is always treated as the input,
+///         // so the input of this block becomes (&mut Stopper, &mut Sender<Message1>).
+///         // (These are just some dummy inputs to explain how the attribute works).
+///         (stopper, sender): (&mut Stopper, &mut Sender<Message1>)
+///     ) -> Result<()> {
+///         Ok(())
+///     }
+/// }
+///
+///
+/// fn associated_type_test<'a>() {
+///     // The attribute adds an associated type with the input of the method,
+///     assert_types_equal::<
+///         <Listener as Listen<Message1>>::OnInput<'a>,
+///         (&'a mut Stopper, &'a mut Sender<Message1>)
+///     >();
+/// }
+///
+/// fn export_test() {
+///     // and also exports the inputs for other macros, which are collected by `#[listener]`
+///     assert_types_equal::<
+///         <Listener as auditeur::resource::listener::Listener>::Input,
+///         // All listener inputs must be prefixed by a unit tuple, but the rest is the same
+///         ((), Stopper, Sender<Message1>)
+///     >();
+/// }
+/// # fn main() {}
+/// ```
 pub use auditeur_macros::has_input;
 pub use auditeur_macros::Runnable;
 
