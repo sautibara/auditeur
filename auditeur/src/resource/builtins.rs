@@ -1,11 +1,32 @@
-// use tracing::{debug, error, trace};
+// use std::marker::PhantomData;
 //
-// use crate::{app, prelude::*};
+// use tracing::trace;
 //
-// #[derive(Default, Create)]
-// #[resource("auditeur:logger")]
-// pub struct Logger<M: Message + std::fmt::Debug>;
+// use crate::prelude::*;
 //
+// /// A [`Listener`] that logs all messages for `M` in [`tracing`].
+// #[derive(Create, Runnable)]
+// #[listener("auditeur:logger")]
+// pub struct Logger<M: Message + std::fmt::Debug> {
+//     phantom_data: PhantomData<M>,
+// }
+//
+// impl<M: Message + std::fmt::Debug> Default for Logger<M> {
+//     fn default() -> Self {
+//         Self {
+//             phantom_data: PhantomData,
+//         }
+//     }
+// }
+//
+// #[has_input]
+// impl<M: Message + std::fmt::Debug> Listen<M> for Logger<M> {
+//     async fn on(&mut self, message: M, (): ()) -> Result<()> {
+//         trace!("Message: {message:?}");
+//         Ok(())
+//     }
+// }
+
 // #[async_trait]
 // impl<M: Message + std::fmt::Debug> Listener<M> for Logger<M> {
 //     type Input = app::EventReceiver;

@@ -6,7 +6,7 @@ use anyhow::Result;
 use auditeur_macros::cfg_supertrait;
 use futures::Future;
 
-pub mod builtin;
+mod builtins;
 pub mod listener;
 
 /// A type that has an associated [`NamespacedId`] that uniquely represents it

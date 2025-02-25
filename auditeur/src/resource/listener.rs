@@ -15,6 +15,8 @@ use tokio::select;
 // TODO: remove this once #100013 is stabilized
 use send_future::SendFuture;
 
+// pub use super::builtins::Logger;
+
 #[doc = include_str!("listener_docs.md")]
 pub trait Listener: Resource + Runnable + Sized
 where
