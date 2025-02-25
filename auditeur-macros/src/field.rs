@@ -223,6 +223,17 @@ impl<T> Parenthesized<T> {
         }
     }
 
+    pub fn parse_with(
+        input: ParseStream<'_>,
+        parser: fn(_: ParseStream<'_>) -> syn::Result<T>,
+    ) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            paren: parenthesized!(content in input),
+            value: parser(&content)?,
+        })
+    }
+
     pub fn parse_empty(input: ParseStream) -> syn::Result<Self>
     where
         T: Default,
@@ -250,11 +261,7 @@ impl<T> Parenthesized<T> {
 
 impl<T: Parse> Parse for Parenthesized<T> {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let content;
-        Ok(Self {
-            paren: parenthesized!(content in input),
-            value: content.parse()?,
-        })
+        Self::parse_with(input, T::parse)
     }
 }
 

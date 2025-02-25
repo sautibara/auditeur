@@ -19,7 +19,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
     parenthesized, parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned,
-    token::Paren, Ident, LitBool, Token, Type,
+    token::Paren, Generics, Ident, LitBool, Token, Type, WhereClause,
 };
 
 use crate::{
@@ -50,7 +50,7 @@ where
     )
 }
 
-pub fn runnable_derive(implementer: &Type) -> syn::Result<TokenStream> {
+pub fn runnable_derive(implementer: &Type, generics: &Generics) -> syn::Result<TokenStream> {
     let no_input = InputList::default();
 
     let runnable_trait = crate::type_from_ident(Ident::new("Runnable", Span::call_site()));
@@ -65,10 +65,12 @@ pub fn runnable_derive(implementer: &Type) -> syn::Result<TokenStream> {
     let resource = crate::AUDITEUR.resource();
     let anyhow = crate::AUDITEUR.anyhow();
 
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+
     Ok(quote! {
         #init_input_macro
         #exit_input_macro
-        impl #resource::Runnable for #implementer {
+        impl #impl_generics #resource::Runnable for #implementer #type_generics #where_clause {
             type InitInput<'a> = ();
             type ExitInput<'a> = ();
 
@@ -85,18 +87,22 @@ pub struct Intermediate {
     params: Parenthesized<Vec<Type>>,
     implementer: Ident,
     listener: Parenthesized<Listener>,
+    generics: Parenthesized<Generics>,
+    where_clause: Parenthesized<Option<WhereClause>>,
     init_input: Option<InputList>,
     exit_input: Option<InputList>,
     input_lists: Vec<InputList>,
 }
 
 impl Intermediate {
-    fn new(implementer: Ident, listener: Listener) -> Self {
+    fn new(implementer: Ident, mut generics: Generics, listener: Listener) -> Self {
         Self {
             callbacks: Parenthesized::default(),
             params: Parenthesized::default(),
             implementer,
             listener: Parenthesized::default_with(listener),
+            where_clause: Parenthesized::default_with(std::mem::take(&mut generics.where_clause)),
+            generics: Parenthesized::default_with(generics),
             init_input: None,
             exit_input: None,
             input_lists: Vec::new(),
@@ -232,17 +238,21 @@ impl Intermediate {
             let auditeur = Auditeur::new();
             let resource_mod = auditeur.resource();
 
+            self.generics.value.where_clause = self.where_clause.value;
+
             let resource_impl = super::resource_impls_with_generics(
                 &self.implementer,
                 &self.listener.value.id.value,
-                &CustomGenerics::default(),
+                &CustomGenerics::from_generics(&self.generics.value),
                 &auditeur,
             );
+
+            let (impl_generics, type_generics, where_clause) = self.generics.value.split_for_impl();
 
             Ok(quote! {
                 #resource_impl
 
-                impl #resource_mod::listener::Listener for #implementer {
+                impl #impl_generics #resource_mod::listener::Listener for #implementer #type_generics #where_clause {
                     type Input = #inputs;
                     type Components = (#(#components),*);
                     type ComponentCombinations = (#combinations);
@@ -306,6 +316,10 @@ impl Parse for Intermediate {
             params: Parenthesized::parse_empty(input)?,
             implementer: input.parse()?,
             listener: input.parse()?,
+            generics: input.parse()?,
+            where_clause: Parenthesized::parse_with(input, |input| {
+                input.peek(Token![where]).then(|| input.parse()).transpose()
+            })?,
             init_input: (!input.is_empty()).then(|| input.parse()).transpose()?,
             exit_input: (!input.is_empty()).then(|| input.parse()).transpose()?,
             input_lists: {
@@ -329,6 +343,10 @@ impl ToTokens for Intermediate {
         });
         self.implementer.to_tokens(tokens);
         self.listener.to_tokens(tokens);
+
+        self.generics.to_tokens(tokens);
+        self.where_clause.to_tokens(tokens);
+
         self.init_input.to_tokens(tokens);
         self.exit_input.to_tokens(tokens);
         for input_list in &self.input_lists {
@@ -390,8 +408,8 @@ impl Listener {
         )
     }
 
-    pub fn expand(self, ident: Ident) -> syn::Result<proc_macro2::TokenStream> {
-        let intermediate = Intermediate::new(ident, self);
+    pub fn expand(self, ident: Ident, generics: Generics) -> syn::Result<proc_macro2::TokenStream> {
+        let intermediate = Intermediate::new(ident, generics, self);
         intermediate.expand_simple()
     }
 }

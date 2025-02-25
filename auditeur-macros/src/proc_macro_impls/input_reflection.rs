@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{
     parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned, FnArg, Ident, ImplItem,
-    ImplItemFn, ItemImpl, LitBool, Path, Token, Type,
+    ImplItemFn, ItemImpl, LitBool, Path, Token, Type, TypePath,
 };
 
 use crate::{
@@ -76,6 +76,7 @@ pub fn export(macro_ident: &Ident, inputs: &InputList) -> TokenStream {
     quote! {
         #[doc(hidden)]
         #[allow(non_snake_case, clippy::redundant_pub_crate)]
+        #[allow(unused_imports)]
         pub(crate) mod #macro_ident {
             #[macro_export]
             macro_rules! #macro_ident {
@@ -216,9 +217,10 @@ impl HasInput {
                 "expected this to be a trait implementation",
             ));
         };
-        let (_, trait_generics, _) = self.implementation.generics.split_for_impl();
-        let trait_: Type = parse_quote!( #trait_ #trait_generics );
-
+        let trait_ = Type::Path(TypePath {
+            qself: None,
+            path: trait_.clone(),
+        });
         let implementer = &self.implementation.self_ty;
 
         let mut types = Vec::new();

@@ -186,11 +186,6 @@ impl Auditeur {
         quote! { #root::input }
     }
 
-    pub fn anyhow(&self) -> proc_macro2::TokenStream {
-        let root = &self.root;
-        quote! { #root::anyhow }
-    }
-
     #[cfg(feature = "path-any")]
     pub fn path_any(&self) -> proc_macro2::TokenStream {
         let root = &self.root;
@@ -281,9 +276,9 @@ pub fn create(_: TokenStream, item: TokenStream) -> TokenStream {
 pub fn create_derive(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 
-    let ident = match item {
-        Item::Struct(strct) => strct.ident,
-        Item::Enum(enm) => enm.ident,
+    let (ident, generics) = match item {
+        Item::Struct(strct) => (strct.ident, strct.generics),
+        Item::Enum(enm) => (enm.ident, enm.generics),
         _ => {
             return quote_spanned! {
                 item.span() => compile_error!("item must be a struct or enum"),
@@ -292,13 +287,15 @@ pub fn create_derive(item: TokenStream) -> TokenStream {
         }
     };
 
-    let auditeur = Auditeur::new();
+    let auditeur = &AUDITEUR;
     let resource_mod = auditeur.resource();
     let anyhow = auditeur.anyhow();
 
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+
     quote! {
         // we can be generic over message because there are no inputs to depend on it
-        impl #resource_mod::Create for #ident {
+        impl #impl_generics #resource_mod::Create for #ident #type_generics #where_clause {
             type RegistryInput = ();
             type ExternalInput = ();
             async fn create((): (), (): ()) -> #anyhow::Result<Self> {
@@ -539,9 +536,9 @@ pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
     let listener = parse_macro_input!(attr as proc_macro_impls::Listener);
     let item = parse_macro_input!(item as Item);
 
-    let ident = match &item {
-        Item::Struct(strct) => &strct.ident,
-        Item::Enum(enm) => &enm.ident,
+    let (ident, generics) = match &item {
+        Item::Struct(strct) => (&strct.ident, &strct.generics),
+        Item::Enum(enm) => (&enm.ident, &enm.generics),
         _ => {
             return syn::Error::new_spanned(item, "expected a struct or enum")
                 .into_compile_error()
@@ -550,7 +547,7 @@ pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let impls = listener
-        .expand(ident.clone())
+        .expand(ident.clone(), generics.clone())
         .unwrap_or_else(syn::Error::into_compile_error);
 
     quote! {
@@ -604,9 +601,9 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Runnable)]
 pub fn runnable_derive(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
-    let ident = match item {
-        Item::Struct(strct) => strct.ident,
-        Item::Enum(enm) => enm.ident,
+    let (ident, generics) = match item {
+        Item::Struct(strct) => (strct.ident, strct.generics),
+        Item::Enum(enm) => (enm.ident, enm.generics),
         _ => {
             return quote_spanned! {
                 item.span() => compile_error!("item must be a struct or enum"),
@@ -615,7 +612,7 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
         }
     };
 
-    proc_macro_impls::runnable_derive(&crate::type_from_ident(ident))
+    proc_macro_impls::runnable_derive(&crate::type_from_ident(ident), &generics)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
