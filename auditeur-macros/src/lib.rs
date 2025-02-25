@@ -131,7 +131,7 @@ impl ToTokens for Root {
             Crate::Auditeur => (),
             Crate::AuditeurPlugin => quote! { ::auditeur }.to_tokens(tokens),
             Crate::AuditeurPluginHost => {
-                quote! { ::auditeur_plugin::auditeur_plugin_host }.to_tokens(tokens);
+                quote! { ::auditeur_plugin::auditeur }.to_tokens(tokens);
             }
         }
     }
