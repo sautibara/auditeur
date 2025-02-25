@@ -84,7 +84,7 @@ impl Listen<Exit> for ExitListener {
 # async fn main() {
 // Create a new App with only an ExitListener
 let app =
-    App::new().with_bundle(new_bundle!("test:exit").with_listener_new::<ExitListener>(()));
+    App::new().with_bundle(new_bundle!("test:exit").with_listener::<ExitListener>(()));
 // Build it into a Registry so that we can get the message sender before running it
 // Usually, it's simpler just to call app.run(_)
 let registry = app.build(1024).await.expect("failed to build app");

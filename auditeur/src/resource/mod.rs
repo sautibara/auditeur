@@ -1,6 +1,6 @@
 //! Items that can be added to an [`App`] and potentially run
 
-use crate::{app::RegistryEvent, prelude::*};
+use crate::prelude::*;
 
 use anyhow::Result;
 use auditeur_macros::cfg_supertrait;
@@ -50,35 +50,6 @@ pub trait Runnable {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-/// A [`Resource`] that listens to the main [`Message`] channel
-///
-/// [`Input`]s are the way that [`Listener`]s are able to communicate with the rest of the [`App`]
-#[async_trait]
-pub trait Listener<M: Message>: Resource + Send {
-    type Input: Input;
-
-    async fn handle(&mut self, message: M, input: &mut Self::Input) -> Result<()>;
-
-    async fn init(&mut self, input: &mut Self::Input) -> Result<()> {
-        let _ = input;
-        Ok(())
-    }
-
-    async fn exit(&mut self, input: &mut Self::Input) -> Result<()> {
-        let _ = input;
-        Ok(())
-    }
-
-    async fn registry_event(
-        &mut self,
-        event: RegistryEvent,
-        input: &mut Self::Input,
-    ) -> Result<()> {
-        let _ = (event, input);
-        Ok(())
-    }
-}
-
 /// A [`Resource`] that runs its own method in the main async loop
 ///
 /// The main use of `Watcher`s is that they can ask for [`Input`]s from the rest of the [`App`]
@@ -111,7 +82,7 @@ pub trait Create: Sized {
 }
 
 // #[resource("rpc:client")]
-// #[listener(on(AudioMessage))]
+// #[listener(on(message::Audio))]
 // struct Client {
 //     ...
 // }
@@ -125,10 +96,10 @@ pub trait Create: Sized {
 // }
 //
 // impl Listener for Client {
-//     type Components = (ListenComponent<Client, AudioMessage>);
+//     type Components = (ListenComponent<Client, message::Audio>);
 // }
 //
-// impl Listen<AudioMessage> for Client {
+// impl Listen<message::Audio> for Client {
 //     #[resource_method]
-//     async fn on(&mut self, message: AudioMessage, library: &mut Get<Library>) {}
+//     async fn on(&mut self, message: message::Audio, library: &mut Get<Library>) {}
 // }

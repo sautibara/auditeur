@@ -39,13 +39,15 @@ pub mod prelude {
         input::get::Get,
         macros::{
             component, create, has_input, ident, identifiable, listener, message, resource, Create,
-            GetRef, PathAny, Runnable,
+            GetRef, Input, PathAny, Runnable,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
-        // TODO: remove Listener from the prelude
-        resource::{Create, Listener, Runnable, Watcher},
+        resource::{
+            listener::{Listen, Listener},
+            Create, Runnable, Watcher,
+        },
     };
 
     #[cfg(feature = "path-any")]

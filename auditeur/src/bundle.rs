@@ -108,16 +108,10 @@ impl Bundle {
 
     /// Add a [`Listener`] to this bundle
     ///
-    /// Listeners run in the main loop, listening to the main message channel. Like watchers, they
+    /// Listeners run in the main loop, listening to their
+    /// [`Component`](crate::resource::listener::Component)s. Like watchers, they
     /// can use [inputs](Input) to reference and talk to other [resources](mod@crate::resource).
-    pub fn with_listener<M: Message, L: Listener<M> + Create>(
-        self,
-        external_input: L::ExternalInput,
-    ) -> Self {
-        self.with(loader::Listener::<M, L>::new(external_input))
-    }
-
-    pub fn with_listener_new<L: crate::resource::listener::Listener + Create>(
+    pub fn with_listener<L: crate::resource::listener::Listener + Create>(
         self,
         external_input: L::ExternalInput,
     ) -> Self {

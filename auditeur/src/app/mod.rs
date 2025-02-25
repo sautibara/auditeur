@@ -1,7 +1,7 @@
 //! The main entry-point for the application: loading and running [resources](mod@crate::resource)
 //!
 //! The main [`App`] handles loading [resources](crate::resource::Resource),
-//! [listeners](crate::resource::Listener), and [watchers](crate::resource::Watcher) from
+//! [listeners](crate::resource::listener::Listener), and [watchers](crate::resource::Watcher) from
 //! [bundles](Bundle) given by the user.
 //!
 //! # The Loading Process
@@ -91,10 +91,11 @@ pub(crate) struct BuiltBundle {
 /// The main entry-point for the application: the thing that runs resources
 ///
 /// The app handles loading [resources](crate::resource::Resource),
-/// [listeners](crate::resource::Listener), and [watchers](crate::resource::Watcher), giving them
-/// the correct [inputs](crate::input::Input) (including [each other](crate::input::get::Get)), and
-/// [running them](Self::run) asynchronously. It also makes sure they are loaded in the correct
-/// order, through [constraints](Constraints), allowing them to have other dependencies.
+/// [listeners](crate::resource::listener::Listener), and [watchers](crate::resource::Watcher),
+/// giving them the correct [inputs](crate::input::Input) (including
+/// [each other](crate::input::get::Get)), and [running them](Self::run) asynchronously. It also
+/// makes sure they are loaded in the correct order, through [constraints](Constraints), allowing
+/// them to have other dependencies.
 ///
 /// The main container for resources is the [`Bundle`], and all resources that are added to an
 /// `App` must be contained within one. As such, all resources added to an app must be added
@@ -892,9 +893,9 @@ pub enum RegistryEvent {
     Exit,
     /// Stop `id`, making it exit
     ///
-    /// Note: this is automatically handled for both [listeners](crate::resource::Listener) and
-    /// [watchers](crate::resource::Watcher), but custom [`Runner`]s will have to listen to this
-    /// message themselves.
+    /// Note: this is automatically handled for both
+    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher),
+    /// but custom [`Runner`]s will have to listen to this message themselves.
     Stop(NamespacedId),
     /// `id` has begun being loaded into the main [`Registry`]
     ///
@@ -912,15 +913,16 @@ pub enum RegistryEvent {
     /// `id` has started running
     ///
     /// Note: this only is emitted for resources that have [`Runner`]s, like
-    /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
-    /// [Resources](crate::resource::Resource) are never run, they never emit this message.
+    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher).
+    /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
+    /// message.
     Running(NamespacedId),
     /// `id` has stopped running
     ///
     /// Note: this only is emitted for resources that are [`Runner`]s, like
-    /// [listeners](crate::resource::Listener) and [watchers](crate::resource::Watcher). As simple
-    /// [Resources](crate::resource::Resource) are never run, they never emit this message - see
-    /// [`Self::Unloaded`] instead, if that information is needed.
+    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher).
+    /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
+    /// message - see [`Self::Unloaded`] instead, if that information is needed.
     Stopped(NamespacedId),
     /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
     /// [references](crate::input::get::Get) of it from other [resources](mod@crate::resource) have

@@ -1,8 +1,5 @@
-use std::marker::PhantomData;
-
 use crate::prelude::*;
 
-use crate::resource::Listener as ListenerTrait;
 use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
@@ -28,43 +25,6 @@ pub trait Loader: Send {
     fn constraints(&self) -> Constraints;
     /// Return a reference to the contained [resource](mod@crate::resource)'s [`NamespacedId`]
     fn ident(&self) -> &NamespacedIdRef;
-}
-
-pub struct Listener<M: Message, L: ListenerTrait<M> + Create> {
-    external_input: L::ExternalInput,
-    phantom_data: PhantomData<M>,
-}
-
-impl<M: Message, L: ListenerTrait<M> + Create> Listener<M, L> {
-    pub const fn new(external_input: L::ExternalInput) -> Self {
-        Self {
-            external_input,
-            phantom_data: PhantomData,
-        }
-    }
-}
-
-#[async_trait]
-impl<M: Message, L: ListenerTrait<M> + Create> Loader for Listener<M, L> {
-    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let registry_input = L::RegistryInput::create(registry, L::const_ident()).await?;
-        let listener = L::create(registry_input, self.external_input)
-            .await
-            .map_err(|error| Error::FromResource {
-                id: L::const_ident().into(),
-                error,
-            })?;
-        let runner = loaded::Listener::build(listener, registry).await?;
-        Ok(Box::new(runner))
-    }
-
-    fn constraints(&self) -> Constraints {
-        L::RegistryInput::constraints().extend(L::Input::constraints())
-    }
-
-    fn ident(&self) -> &NamespacedIdRef {
-        L::const_ident()
-    }
 }
 
 pub struct Resource<R: ResourceTrait + Create> {
