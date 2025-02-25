@@ -30,7 +30,7 @@ pub fn derive(strct: ItemStruct) -> proc_macro2::TokenStream {
             let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
             quote! {
                 async fn create<'a>(registry: &'a #auditeur::app::Registry, as_resource: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
-                    let ( #(#members),* ) = #auditeur::try_join!(
+                    let ( #(#members,)* ) = #auditeur::try_join!(
                         #( <#types as #input_mod::Input>::create(registry, as_resource) ),*
                     )?;
                     Ok(Self { #(#members),* })
@@ -51,7 +51,7 @@ pub fn derive(strct: ItemStruct) -> proc_macro2::TokenStream {
             let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
             quote! {
                 async fn create(registry: &#auditeur::app::Registry, as_resource: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
-                    let ( #(#members),* ) = #auditeur::try_join!(
+                    let ( #(#members,)* ) = #auditeur::try_join!(
                         #( <#types as #input_mod::Input>::create(registry, as_resource) ),*
                     )?;
                     Ok(Self( #(#members),* ))
