@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail};
 use dashmap::DashMap;
 use tracing::trace;
 
-use crate::{app::EventSender, prelude::*};
+use crate::{app::EventSender, prelude::*, resource::listener};
 
 use super::{EventReceiver, GetRequest};
 
@@ -87,7 +87,12 @@ impl Drop for LoadedBundle {
 // keep their parents alive, if they exist. From this, dependencies are always kept alive at least
 // as long as their dependents.
 // TODO: add methods to actually view the entire map
-#[resource("auditeur:resource_map")]
+#[derive(Runnable)]
+#[listener(
+    "auditeur:resource_map",
+    registry_component = false,
+    components((component = MainComponent, input = ())),
+)]
 pub struct ResourceMap {
     sender: EventSender,
     /// This contains all of the shared information
@@ -221,62 +226,77 @@ impl ResourceMap {
     }
 }
 
-#[async_trait]
-impl Watcher for ResourceMap {
-    type Input = (EventReceiver, Stopper);
+#[doc(hidden)]
+pub struct MainComponent {
+    receiver: EventReceiver,
+    should_exit: bool,
+}
 
-    // insta-stop trick to control stopping
-    // this should be one of the last resources to exit
-    async fn run(&mut self, (_, stopper): &mut Self::Input) -> Result<()> {
-        stopper.stop::<Self>();
-        Ok(())
+impl Input for MainComponent {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+        Ok(Self {
+            receiver: registry.event_receiver(),
+            should_exit: false,
+        })
+    }
+}
+
+impl listener::Component<ResourceMap> for MainComponent {
+    type Value = RegistryEvent;
+    type UserInput<'s> = ();
+
+    async fn wait(&mut self, _: &ResourceMap) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        let res = self.receiver.recv().await;
+        Ok(res.map_or(ControlFlow::Break(()), ControlFlow::Continue))
     }
 
-    async fn exit(&mut self, (receiver, _): &mut Self::Input) -> Result<()> {
-        let mut should_exit = false;
-        while let Some(event) = receiver.recv().await {
-            match event {
-                RegistryEvent::BundleLoading { id, parent, .. } => {
-                    self.add_bundle(id, parent.as_deref())?;
-                }
-                RegistryEvent::Loading { id, bundle } => {
-                    self.add_resource(id, &bundle)?;
-                }
-                RegistryEvent::Reference { by, to } => {
-                    self.add_reference(&by, &to)?;
-                }
-                RegistryEvent::Running(id) => {
-                    let resource = self.clone_resource(&id)?;
-                    self.shared.runners.insert(id, resource);
-                }
-                RegistryEvent::Stopped(id) => {
-                    self.shared.runners.remove(&id);
-                    // this should be the last runner
-                    if should_exit && self.shared.runners.len() <= 1 {
-                        break;
-                    }
-                }
-                #[cfg(feature = "runtime-loading")]
-                RegistryEvent::NonRunnable(supplier) => {
-                    if let Some(resource) = self.get_resource(supplier.id()) {
-                        if let Some(owned) = supplier.take() {
-                            resource.supply_owned(owned).await;
-                        }
-                    }
-                }
-                #[cfg(feature = "runtime-loading")]
-                RegistryEvent::Get(get_request) => {
-                    if let Some(resource_info) = self.get_resource(get_request.id()) {
-                        resource_info.check_get_request(&get_request).await;
-                    }
-                }
-                RegistryEvent::Exit => {
-                    should_exit = true;
-                }
-                _ => (),
+    async fn handle(
+        &mut self,
+        event: RegistryEvent,
+        map: &mut ResourceMap,
+        (): Self::UserInput<'_>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        match event {
+            RegistryEvent::BundleLoading { id, parent, .. } => {
+                map.add_bundle(id, parent.as_deref())?;
             }
+            RegistryEvent::Loading { id, bundle } => {
+                map.add_resource(id, &bundle)?;
+            }
+            RegistryEvent::Reference { by, to } => {
+                map.add_reference(&by, &to)?;
+            }
+            RegistryEvent::Running(id) => {
+                let resource = map.clone_resource(&id)?;
+                map.shared.runners.insert(id, resource);
+            }
+            RegistryEvent::Stopped(id) => {
+                map.shared.runners.remove(&id);
+                // this should be the last runner
+                if self.should_exit && map.shared.runners.len() <= 1 {
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::NonRunnable(supplier) => {
+                if let Some(resource) = map.get_resource(supplier.id()) {
+                    if let Some(owned) = supplier.take() {
+                        resource.supply_owned(owned).await;
+                    }
+                }
+            }
+            #[cfg(feature = "runtime-loading")]
+            RegistryEvent::Get(get_request) => {
+                if let Some(resource_info) = map.get_resource(get_request.id()) {
+                    resource_info.check_get_request(&get_request).await;
+                }
+            }
+            RegistryEvent::Exit => {
+                self.should_exit = true;
+            }
+            _ => (),
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 }
 

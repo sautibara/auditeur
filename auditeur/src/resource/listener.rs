@@ -14,6 +14,7 @@ use tokio::select;
 
 // TODO: remove this once #100013 is stabilized
 use send_future::SendFuture;
+use tracing::debug;
 
 // pub use super::builtins::Logger;
 
@@ -240,6 +241,8 @@ impl<L: Listener> Runner for LoadedListener<L> {
         let exit_input = <L::Input as Subset<L::ExitCombination>>::subset_mut(&mut self.input);
         let res = self.listener.exit(exit_input).send().await;
         self.event_sender.handle_error(res, self.listener.ident());
+
+        debug!("exit");
     }
 }
 

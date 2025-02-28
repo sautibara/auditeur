@@ -119,7 +119,7 @@ impl App {
     pub fn new() -> Self {
         let mut this = Self::new_empty();
         #[cfg(feature = "resource-map")]
-        this.add_bundle(new_bundle!("auditeur:resource_map").with_watcher::<ResourceMap>(()));
+        this.add_bundle(new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(()));
         this
     }
 
