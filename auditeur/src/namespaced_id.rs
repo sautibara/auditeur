@@ -13,6 +13,10 @@ use std::{
     str::FromStr,
 };
 
+use serde::{
+    de::{self, Visitor},
+    Deserialize, Serialize,
+};
 use thiserror::Error;
 
 /// A reference to a [`NamespacedId`]
@@ -250,6 +254,72 @@ impl PartialEq<NamespacedId> for NamespacedIdRef {
     }
 }
 
+/// An error encountered while parsing a [`NamespacedId`]
+#[derive(Clone, Debug, Error)]
+pub enum ParseError {
+    #[error("expected a non-empty string")]
+    Empty,
+    #[error("incorrect amount of separator (':') characters found (expected 1, found {found}")]
+    IncorrectSeparatorAmount { found: usize },
+    #[error("unexpected whitespace found in namespace or id")]
+    UnexpectedWhitespace,
+}
+
+impl FromStr for NamespacedId {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.split_whitespace().count() > 1 {
+            return Err(ParseError::UnexpectedWhitespace);
+        }
+        let mut iter = s.split(':');
+        let Some(namespace) = iter.next() else {
+            return Err(ParseError::Empty);
+        };
+        let Some(id) = iter.next() else {
+            return Err(ParseError::IncorrectSeparatorAmount { found: 0 });
+        };
+        let rest = iter.count();
+        if rest > 0 {
+            return Err(ParseError::IncorrectSeparatorAmount { found: rest });
+        }
+        Ok(Self::new(namespace, id))
+    }
+}
+
+impl Serialize for NamespacedId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for NamespacedId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(NamespacedIdVisitor)
+    }
+}
+
+struct NamespacedIdVisitor;
+impl Visitor<'_> for NamespacedIdVisitor {
+    type Value = NamespacedId;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "a namespaced id string in the form of namespace:id")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        v.parse().map_err(de::Error::custom)
+    }
+}
+
 /// A struct used in [`ident!`](macro@crate::ident) to coerce a byte array to a static
 /// [`NamespacedIdRef`].
 #[repr(C)]
@@ -257,30 +327,6 @@ impl PartialEq<NamespacedId> for NamespacedIdRef {
 pub struct Coerce<T: ?Sized> {
     pub namespace_size: usize,
     pub data: T,
-}
-
-impl FromStr for NamespacedId {
-    type Err = ParseError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let components: Vec<_> = s.split(':').collect();
-        let [namespace, id] = &components[..] else {
-            return match components.len() {
-                0..=1 => Err(ParseError::NotEnoughComponents),
-                2 => unreachable!(),
-                3.. => Err(ParseError::TooManyComponents),
-            };
-        };
-        Ok(Self::new(namespace, id))
-    }
-}
-
-/// An error encountered while parsing a [`NamespacedId`]
-#[derive(Debug, Error)]
-pub enum ParseError {
-    #[error("the id should not have more than one colon")]
-    TooManyComponents,
-    #[error("the id should have a colon in the middle")]
-    NotEnoughComponents,
 }
 
 #[cfg(test)]

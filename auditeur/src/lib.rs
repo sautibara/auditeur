@@ -39,13 +39,13 @@ pub mod prelude {
         input::get::Get,
         macros::{
             component, create, has_input, ident, identifiable, listener, message, resource, Create,
-            GetRef, Input, PathAny, Runnable,
+            GetRef, Input, PathAny, Response, Runnable,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
-            listener::{Listen, Listener},
+            listener::{Listen, Listener, Respond},
             Create, Runnable, Watcher,
         },
     };

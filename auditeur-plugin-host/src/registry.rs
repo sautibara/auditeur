@@ -13,6 +13,21 @@ use tracing::{debug, trace};
 use crate::{source::Binary, Error, PluginName};
 use auditeur_plugin::{loading::Plugin, LibraryHandle};
 
+// FIXME: Let a, b, and c be resources within separate libraries.
+// Then, let a depend on b, and c own a reference and LibraryHandle to a.
+// Then, let a be dropped in the Registry.
+// But now since the PluginRegistry doesn't see a being used, it can also unload b.
+// But a still depends on b - when c uses a, a could still try to use b - a use after free.
+// This could be fixed by requiring references to be added when they're given to another resource.
+
+// Fix this by creating some type of CallbackCollector (please change name) that ould collect dynamic
+// objects that implement some type of Source trait, which would allow getting the source id of a
+// dynamic object (eventually for a RegistryEvent::Reference event). This would be included as a
+// component with shared (UserInput) input of some type of CallbackCollection. It would then listen
+// on some type of message channel that could send new callbacks. The callbacks would be owned by
+// the CallbackCollection and only accessible as references. This would allow removing callbacks
+// too.
+
 struct Shared {
     libraries: HashMap<NamespacedId, LibraryHandle>,
     bundles: HashMap<PluginName, NamespacedId>,

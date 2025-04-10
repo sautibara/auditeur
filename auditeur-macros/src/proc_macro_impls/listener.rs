@@ -146,7 +146,7 @@ impl Intermediate {
         let listen_components_len = self
             .listener
             .value
-            .listen_components()
+            .builtin_components()
             .filter(|component| !component.has_input())
             .count();
         if listen_components_len > self.input_lists.len() {
@@ -155,7 +155,7 @@ impl Intermediate {
         let listen_components = self
             .listener
             .value
-            .listen_components_mut()
+            .builtin_components_mut()
             .filter(|component| !component.has_input());
         let inputs = self.input_lists.drain(..listen_components_len);
 
@@ -370,17 +370,17 @@ impl Listener {
             .map_or(true, |boolean| boolean.value.value)
     }
 
-    fn listen_components(&self) -> impl Iterator<Item = &BuiltinComponent> {
+    fn builtin_components(&self) -> impl Iterator<Item = &BuiltinComponent> {
         self.parameters
             .iter()
-            .filter_map(|param| param.as_listen())
+            .filter_map(|param| param.as_builtin())
             .flat_map(|builtins| builtins.values.iter())
     }
 
-    fn listen_components_mut(&mut self) -> impl Iterator<Item = &mut BuiltinComponent> {
+    fn builtin_components_mut(&mut self) -> impl Iterator<Item = &mut BuiltinComponent> {
         self.parameters
             .iter_mut()
-            .filter_map(|param| param.as_listen_mut())
+            .filter_map(|param| param.as_builtin_mut())
             .flat_map(|builtins| builtins.values.iter_mut())
     }
 
@@ -400,7 +400,7 @@ impl Listener {
 
     fn components(&self) -> impl Iterator<Item = ComponentRef> {
         (self
-            .listen_components()
+            .builtin_components()
             .map(|builtin| builtin.as_component_ref()))
         .chain(
             self.custom_components()
@@ -438,6 +438,7 @@ impl ToTokens for Listener {
 #[derive(Debug)]
 enum Parameter {
     Listen(List<BuiltinComponent>),
+    Respond(List<BuiltinComponent>),
     RegistryComponent(NameValue<LitBool>),
     Components(List<Component>),
 }
@@ -467,19 +468,17 @@ impl Parameter {
         }
     }
 
-    const fn as_listen(&self) -> Option<&List<BuiltinComponent>> {
-        if let Self::Listen(v) = self {
-            Some(v)
-        } else {
-            None
+    const fn as_builtin(&self) -> Option<&List<BuiltinComponent>> {
+        match self {
+            Self::Listen(list) | Self::Respond(list) => Some(list),
+            _ => None,
         }
     }
 
-    const fn as_listen_mut(&mut self) -> Option<&mut List<BuiltinComponent>> {
-        if let Self::Listen(v) = self {
-            Some(v)
-        } else {
-            None
+    const fn as_builtin_mut(&mut self) -> Option<&mut List<BuiltinComponent>> {
+        match self {
+            Self::Listen(list) | Self::Respond(list) => Some(list),
+            _ => None,
         }
     }
 }
@@ -497,6 +496,18 @@ impl Parse for Parameter {
                         input,
                         |message| parse_quote!( Listen<#message> ),
                         |message| parse_quote!( #resource_mod::listener::ListenComponent<Self, #message> ),
+                    )
+                },
+            )?)),
+            "respond" => Ok(Self::Respond(List::parse_after_with(
+                ident,
+                input,
+                |input| {
+                    let resource_mod = Auditeur::new().resource();
+                    BuiltinComponent::parse(
+                        input,
+                        |message| parse_quote!( Respond<#message> ),
+                        |message| parse_quote!( #resource_mod::listener::RespondComponent<Self, #message> ),
                     )
                 },
             )?)),
@@ -519,7 +530,7 @@ impl Parse for Parameter {
 impl ToTokens for Parameter {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            Self::Listen(list) => list.to_tokens(tokens),
+            Self::Listen(list) | Self::Respond(list) => list.to_tokens(tokens),
             Self::RegistryComponent(name_value) => name_value.to_tokens(tokens),
             Self::Components(list) => list.to_tokens(tokens),
         }

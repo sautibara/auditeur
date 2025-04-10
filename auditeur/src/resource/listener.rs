@@ -3,11 +3,12 @@
 use std::marker::PhantomData;
 
 use crate::{
-    app::{EventReceiver, EventSender, LoadedResource, Loader, Runner},
+    app::{EventReceiver, EventSender, LoadedResource, Loader, RespondReceiver, Runner},
     input::subset::Subset,
     prelude::*,
 };
 
+use auditeur_macros::cfg_supertrait;
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 use tokio::select;
@@ -101,6 +102,100 @@ impl<L: Listen<M>, M: Message> Component<L> for ListenComponent<L, M> {
     ) -> anyhow::Result<ControlFlow<()>> {
         listener.on(message, input).send().await?;
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+pub trait Respond<M: Message>: Listener {
+    type Response: Response;
+
+    type OnInput<'s>: Send;
+    fn on(
+        &mut self,
+        message: M,
+        input: <Self as Respond<M>>::OnInput<'_>,
+    ) -> impl Future<Output = Self::Response> + Send;
+}
+
+#[cfg_supertrait(feature = "path-any", crate::path_any::PathAnyConst)]
+pub trait Response: Send + Sync + 'static {}
+
+#[component((<$_:ty, $message:ty>) => (implementation = Respond<$message>))]
+pub struct RespondComponent<R: Respond<M>, M: Message> {
+    receiver: RespondReceiver<Respondable<M, R::Response>>,
+}
+
+#[cfg_attr(feature = "path-any", derive(PathAny))]
+#[doc(hidden)]
+pub struct Respondable<M: Message, R: Response> {
+    message: M,
+    response_channel: tokio::sync::oneshot::Sender<R>,
+}
+
+impl<R: Respond<M>, M: Message> Input for RespondComponent<R, M> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+        Ok(Self {
+            receiver: registry.respond_receiver::<R, M>().await,
+        })
+    }
+}
+
+impl<R: Respond<M>, M: Message> Component<R> for RespondComponent<R, M> {
+    type Value = Respondable<M, R::Response>;
+    type UserInput<'s> = <R as Respond<M>>::OnInput<'s>;
+
+    async fn wait(&mut self, _: &R) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
+        match self.receiver.recv().await {
+            Some(message) => Ok(ControlFlow::Continue(message)),
+            None => Ok(ControlFlow::Break(())),
+        }
+    }
+
+    async fn handle(
+        &mut self,
+        respondable: Self::Value,
+        responder: &mut R,
+        input: Self::UserInput<'_>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        let Respondable {
+            message,
+            response_channel,
+        } = respondable;
+        let response = responder.on(message, input).send().await;
+        let _ = response_channel.send(response);
+        Ok(ControlFlow::Continue(()))
+    }
+}
+
+pub struct Transceiver<R: Respond<M>, M: Message> {
+    sender: tokio::sync::mpsc::Sender<Respondable<M, R::Response>>,
+}
+
+impl<R: Respond<M>, M: Message> Input for Transceiver<R, M> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+        Ok(Self {
+            sender: registry.respond_sender::<R, M>(),
+        })
+    }
+}
+
+impl<R: Respond<M>, M: Message> Transceiver<R, M> {
+    pub async fn send(&self, message: M) -> Option<R::Response> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let respondable = Respondable {
+            message,
+            response_channel: sender,
+        };
+        let _ = self.sender.send(respondable).await;
+        receiver.await.ok()
+    }
+}
+
+impl<R: Respond<M>, M: Message> Clone for Transceiver<R, M> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+        }
     }
 }
 

@@ -191,3 +191,36 @@ mod tokio_sync_broadcast {
 
     implement_path_any_external!(Sender, <T: 'static + PathAnyConst>);
 }
+
+mod tokio_sync_mpsc {
+    use super::PathAnyConst;
+    use auditeur_macros::implement_path_any_external;
+    use tokio::sync::mpsc::Receiver;
+    use tokio::sync::mpsc::Sender;
+
+    implement_path_any_external!(Sender, <T: 'static + PathAnyConst>);
+    implement_path_any_external!(Receiver, <T: 'static + PathAnyConst>);
+}
+
+mod std_sync {
+    use super::PathAnyConst;
+    use auditeur_macros::implement_path_any_external;
+    use std::sync::Arc;
+
+    implement_path_any_external!(Arc, <T: 'static + PathAnyConst>);
+}
+
+mod tokio_sync_mutex {
+    use super::PathAnyConst;
+    use auditeur_macros::implement_path_any_external;
+    use tokio::sync::Mutex;
+
+    implement_path_any_external!(Mutex, <T: 'static + PathAnyConst>);
+}
+
+mod std_option {
+    use super::PathAnyConst;
+    use auditeur_macros::implement_path_any_external;
+
+    implement_path_any_external!(Option, <T: 'static + PathAnyConst>);
+}

@@ -36,14 +36,17 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_recursion::async_recursion;
 use dashmap::mapref::one::MappedRef;
+use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
+use tokio::sync::Mutex;
 #[cfg(feature = "runtime-loading")]
 use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "runtime-loading")]
@@ -57,6 +60,8 @@ use tracing::Instrument;
 use crate::bundle;
 use crate::input::get::GetRef;
 use crate::prelude::*;
+use crate::resource::listener::Respond;
+use crate::resource::listener::Respondable;
 
 mod constraints;
 pub(crate) mod loaded;
@@ -557,21 +562,28 @@ impl RunningRegistry {
 
 struct Channels {
     capacity: usize,
-    map: DashMap<NamespacedId, Box<dyn crate::Any + Send + Sync>>,
+    listen_map: DashMap<NamespacedId, Box<dyn crate::Any + Send + Sync>>,
+    respond_map: DashMap<(NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>>,
 }
+
+type RespondChannels<R, M> = (
+    mpsc::Sender<Respondable<M, <R as Respond<M>>::Response>>,
+    Arc<Mutex<Option<mpsc::Receiver<Respondable<M, <R as Respond<M>>::Response>>>>>,
+);
 
 impl Channels {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            map: DashMap::new(),
+            listen_map: DashMap::new(),
+            respond_map: DashMap::new(),
         }
     }
 
     fn sender_ref<M: Message>(
         &self,
     ) -> MappedRef<'_, NamespacedId, Box<dyn crate::Any + Send + Sync>, broadcast::Sender<M>> {
-        self.map
+        self.listen_map
             .entry(M::const_ident().to_owned())
             .or_insert_with(|| Box::new(broadcast::Sender::<M>::new(self.capacity)))
             .downgrade()
@@ -587,6 +599,82 @@ impl Channels {
 
     fn receiver<M: Message>(&self) -> broadcast::Receiver<M> {
         self.sender_ref().subscribe()
+    }
+
+    fn respond_ref<R: Respond<M>, M: Message>(
+        &self,
+    ) -> Ref<'_, (NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>> {
+        self.respond_map
+            .entry((M::const_ident().to_owned(), R::const_ident().to_owned()))
+            .or_insert_with(|| {
+                let (sender, receiver) = mpsc::channel::<Respondable<M, R::Response>>(16);
+                Box::new((sender, Arc::new(Mutex::new(Some(receiver)))))
+            })
+            .downgrade()
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    fn respond_sender<R: Respond<M>, M: Message>(
+        &self,
+    ) -> mpsc::Sender<Respondable<M, R::Response>> {
+        let boxed = self.respond_ref::<R, M>();
+        let (sender, _): &RespondChannels<R, M> = boxed
+            .downcast_ref()
+            .expect("this should always be a valid Sender and Receiver");
+        sender.clone()
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    async fn respond_receiver<R: Respond<M>, M: Message>(
+        &self,
+    ) -> RespondReceiver<Respondable<M, R::Response>> {
+        let boxed = self.respond_ref::<R, M>();
+        let (_, receiver_mutex): &RespondChannels<R, M> = boxed
+            .downcast_ref()
+            .expect("this should always be a valid Sender and Receiver");
+        let mut receiver_option = receiver_mutex.lock().await;
+        let Some(receiver) = receiver_option.take() else {
+            panic!("attempted to take the Respond receiver channel for resource {} and message {}, but it was already taken", R::const_ident(), M::const_ident());
+        };
+        RespondReceiver {
+            receiver,
+            source: receiver_mutex.clone(),
+        }
+    }
+}
+
+pub(crate) struct RespondReceiver<M: Send + 'static> {
+    receiver: mpsc::Receiver<M>,
+    source: Arc<Mutex<Option<mpsc::Receiver<M>>>>,
+}
+
+impl<M: Send + 'static> Drop for RespondReceiver<M> {
+    fn drop(&mut self) {
+        let (_, dummy_receiver) = mpsc::channel(1);
+        let receiver = std::mem::replace(&mut self.receiver, dummy_receiver);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let source = self.source.clone();
+            handle.spawn(async move {
+                let mut source = source.lock().await;
+                *source = Some(receiver);
+            });
+        } else {
+            let mut source = self.source.blocking_lock();
+            *source = Some(receiver);
+        }
+    }
+}
+
+impl<M: Send + 'static> Deref for RespondReceiver<M> {
+    type Target = mpsc::Receiver<M>;
+    fn deref(&self) -> &Self::Target {
+        &self.receiver
+    }
+}
+
+impl<M: Send + 'static> DerefMut for RespondReceiver<M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.receiver
     }
 }
 
@@ -827,6 +915,18 @@ impl Registry {
     #[must_use]
     pub fn message_receiver<M: Message>(&self) -> broadcast::Receiver<M> {
         self.channels.receiver()
+    }
+
+    pub(crate) fn respond_sender<R: Respond<M>, M: Message>(
+        &self,
+    ) -> mpsc::Sender<Respondable<M, R::Response>> {
+        self.channels.respond_sender::<R, M>()
+    }
+
+    pub(crate) async fn respond_receiver<R: Respond<M>, M: Message>(
+        &self,
+    ) -> RespondReceiver<Respondable<M, R::Response>> {
+        self.channels.respond_receiver::<R, M>().await
     }
 
     #[must_use]

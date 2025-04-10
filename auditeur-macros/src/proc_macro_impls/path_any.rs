@@ -1,16 +1,13 @@
 use syn::GenericParam;
 use syn::Ident;
 
-use crate::{custom_generics::CustomGenerics, Auditeur};
+use crate::custom_generics::CustomGenerics;
+use crate::AUDITEUR;
 
 use quote::quote;
 
-pub fn path_any(
-    ident: &Ident,
-    generics: &CustomGenerics,
-    auditeur: &Auditeur,
-) -> proc_macro2::TokenStream {
-    let path_any_mod = auditeur.path_any();
+pub fn path_any(ident: &Ident, generics: &CustomGenerics) -> proc_macro2::TokenStream {
+    let path_any_mod = AUDITEUR.path_any();
 
     let CustomGenerics {
         impl_generics,

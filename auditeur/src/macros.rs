@@ -94,6 +94,9 @@ pub use auditeur_macros::identifiable;
 /// ```
 pub use auditeur_macros::message;
 
+/// Implements [`Response`] for any type.
+pub use auditeur_macros::Response;
+
 // these two are used in [`macro@listener`]
 #[doc(hidden)]
 pub use auditeur_macros::expand_input_specifier;

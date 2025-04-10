@@ -22,6 +22,7 @@ dashmap = { version = "6.0.1", optional = true }
 tracing = "0.1.40"
 send-future = "0.1.0"
 slice-dst = "1.5.1"
+serde = "1.0.219"
 
 [lints.clippy]
 enum_glob_use = "warn"

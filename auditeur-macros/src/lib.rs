@@ -187,6 +187,7 @@ impl Auditeur {
     }
 
     #[cfg(feature = "path-any")]
+    #[allow(dead_code)]
     pub fn path_any(&self) -> proc_macro2::TokenStream {
         let root = &self.root;
         quote! { #root::path_any }
@@ -243,7 +244,7 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
     let identifiable_impl = proc_macro_impls::identifiable_with_generics(&id, ident, &generics);
 
     #[cfg(feature = "path-any")]
-    let path_any_impl = proc_macro_impls::path_any(ident, &generics, &auditeur);
+    let path_any_impl = proc_macro_impls::path_any(ident, &generics);
     #[cfg(not(feature = "path-any"))]
     let path_any_impl = quote!();
 
@@ -254,6 +255,30 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #item
         #identifiable_impl
+        #path_any_impl
+    }
+    .into()
+}
+
+#[proc_macro_derive(Response)]
+pub fn response(item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as Item);
+
+    let (ident, generics) = match CustomGenerics::from_item(&mut item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
+    };
+
+    #[cfg(feature = "path-any")]
+    let path_any_impl = proc_macro_impls::path_any(ident, &generics);
+    #[cfg(not(feature = "path-any"))]
+    let path_any_impl = quote!();
+
+    let resource = AUDITEUR.resource();
+
+    quote! {
+        impl #resource::listener::Response for #ident {}
+
         #path_any_impl
     }
     .into()
@@ -388,8 +413,7 @@ pub fn path_any(item: TokenStream) -> TokenStream {
         Err(error) => return error.into_compile_error().into(),
     };
 
-    let auditeur = Auditeur::new();
-    proc_macro_impls::path_any(&ident, &generics, &auditeur).into()
+    proc_macro_impls::path_any(&ident, &generics).into()
 }
 
 #[cfg(feature = "path-any")]
@@ -397,9 +421,8 @@ pub fn path_any(item: TokenStream) -> TokenStream {
 pub fn implement_path_any_external(ident: TokenStream) -> TokenStream {
     let PathAnyExternal { ident, generics } = parse_macro_input!(ident as PathAnyExternal);
 
-    let auditeur = Auditeur::new();
     // TODO: ensure that there are no name collisions
-    proc_macro_impls::path_any(&ident, &CustomGenerics::from_generics(&generics), &auditeur).into()
+    proc_macro_impls::path_any(&ident, &CustomGenerics::from_generics(&generics)).into()
 }
 
 #[cfg(feature = "path-any")]

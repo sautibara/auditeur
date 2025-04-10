@@ -21,7 +21,7 @@ pub fn resource_impls_with_generics(
     auditeur: &Auditeur,
 ) -> proc_macro2::TokenStream {
     #[cfg(feature = "path-any")]
-    let path_any_impl = super::path_any(ident, generics, auditeur);
+    let path_any_impl = super::path_any(ident, generics);
     #[cfg(not(feature = "path-any"))]
     let path_any_impl = quote!();
 

@@ -79,6 +79,7 @@ pub fn export(macro_ident: &Ident, inputs: &InputList) -> TokenStream {
         #[allow(unused_imports)]
         pub(crate) mod #macro_ident {
             #[macro_export]
+            #[doc(hidden)]
             macro_rules! #macro_ident {
                 (($callback:path $(, $($callbacks:tt)*)?) ($($params:tt)*) $($rest:tt)*) => {
                     $callback!(($($($callbacks)*)?) ($($params)*) $($rest)* #inputs);
