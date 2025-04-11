@@ -125,7 +125,7 @@ pub struct RespondComponent<R: Respond<M>, M: Message> {
 }
 
 #[cfg_attr(feature = "path-any", derive(PathAny))]
-#[doc(hidden)]
+#[doc(hidden)] // NOTE: this is an implementation detail, only public because it's in traits
 pub struct Respondable<M: Message, R: Response> {
     message: M,
     response_channel: tokio::sync::oneshot::Sender<R>,

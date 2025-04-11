@@ -8,9 +8,14 @@ Once a component receives an event, it obtains mutable access to the listener an
 inputs and handles the event (see [`Component::handle`]). After handling the event, it yields
 control back to the main loop so that other components can wait for events as well.
 
-For example, the [`Listen`] trait provides [`ListenComponent`]: a component that handles listening 
+For example, the [`Listen`] trait provides [`ListenComponent`]: a component that handles listening
 to a message stream shared between all other resources (a broadcast). In effect, this allows
 [`Listener`]s to listen to many different message streams in the app.
+
+However, since [`Listen`] is a broadcast, it can't form a message channel to send a response back
+to the original sender. For this case, you can instead use [`Respond`], which in turn provides
+[`RespondComponent`]. This trait allows you to send responses to the messages you receive in
+exchange for other resources not being able to see the messages being sent in either direction.
 
 # Inputs
 

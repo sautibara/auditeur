@@ -95,6 +95,35 @@ pub use auditeur_macros::identifiable;
 pub use auditeur_macros::message;
 
 /// Implements [`Response`] for any type.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use auditeur::*;
+/// use auditeur::prelude::*;
+///
+/// #[derive(Default, Create, Runnable)]
+/// #[listener("test:double_listener", respond(Marco))]
+/// struct Listener {}
+///
+/// #[derive(Clone)]
+/// #[message("example:marco")]
+/// struct Marco;
+///
+/// #[derive(Response)]
+/// struct Polo;
+///
+/// #[has_input]
+/// impl Respond<Marco> for Listener {
+///     type Response = Polo;
+///
+///     async fn on(&mut self, _: Marco, (): ()) -> Polo {
+///         Polo
+///     }
+/// }
+/// #
+/// # fn main() {}
+/// ```
 pub use auditeur_macros::Response;
 
 // these two are used in [`macro@listener`]
@@ -226,6 +255,16 @@ pub use auditeur_macros::expand_listener;
 ///        )> + Listen<Message1> + Listen<Message2>
 /// {}
 /// ```
+///
+/// ## Respond
+///
+/// Much like [`Listen`], to respond to messages with [`Respond`], provide the list of
+/// them wrapped by `respond(<message>,*)`. To manually provide inputs for a message, use
+/// `respond(<message>(input = <inputs>))`.
+///
+/// ### Examples
+///
+/// See [`derive(Response)`](macro@Response)
 ///
 /// ## Components
 ///
