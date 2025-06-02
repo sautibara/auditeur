@@ -367,7 +367,7 @@ impl Listener {
             .iter()
             .filter_map(Parameter::as_registry_component)
             .last()
-            .map_or(true, |boolean| boolean.value.value)
+            .is_none_or(|boolean| boolean.value.value)
     }
 
     fn builtin_components(&self) -> impl Iterator<Item = &BuiltinComponent> {
