@@ -438,7 +438,7 @@ impl ToTokens for Listener {
 #[derive(Debug)]
 enum Parameter {
     Listen(List<BuiltinComponent>),
-    Respond(List<BuiltinComponent>),
+    Take(List<BuiltinComponent>),
     RegistryComponent(NameValue<LitBool>),
     Components(List<Component>),
 }
@@ -470,14 +470,14 @@ impl Parameter {
 
     const fn as_builtin(&self) -> Option<&List<BuiltinComponent>> {
         match self {
-            Self::Listen(list) | Self::Respond(list) => Some(list),
+            Self::Listen(list) | Self::Take(list) => Some(list),
             _ => None,
         }
     }
 
     const fn as_builtin_mut(&mut self) -> Option<&mut List<BuiltinComponent>> {
         match self {
-            Self::Listen(list) | Self::Respond(list) => Some(list),
+            Self::Listen(list) | Self::Take(list) => Some(list),
             _ => None,
         }
     }
@@ -499,18 +499,14 @@ impl Parse for Parameter {
                     )
                 },
             )?)),
-            "respond" => Ok(Self::Respond(List::parse_after_with(
-                ident,
-                input,
-                |input| {
-                    let resource_mod = Auditeur::new().resource();
-                    BuiltinComponent::parse(
-                        input,
-                        |message| parse_quote!( Respond<#message> ),
-                        |message| parse_quote!( #resource_mod::listener::RespondComponent<Self, #message> ),
-                    )
-                },
-            )?)),
+            "take" => Ok(Self::Take(List::parse_after_with(ident, input, |input| {
+                let resource_mod = Auditeur::new().resource();
+                BuiltinComponent::parse(
+                    input,
+                    |message| parse_quote!( Take<#message> ),
+                    |message| parse_quote!( #resource_mod::listener::TakeComponent<Self, #message> ),
+                )
+            })?)),
             "registry_component" => Ok(Self::RegistryComponent(NameValue::parse_after(
                 ident, input,
             )?)),
@@ -530,7 +526,7 @@ impl Parse for Parameter {
 impl ToTokens for Parameter {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            Self::Listen(list) | Self::Respond(list) => list.to_tokens(tokens),
+            Self::Listen(list) | Self::Take(list) => list.to_tokens(tokens),
             Self::RegistryComponent(name_value) => name_value.to_tokens(tokens),
             Self::Components(list) => list.to_tokens(tokens),
         }

@@ -60,8 +60,8 @@ use tracing::Instrument;
 use crate::bundle;
 use crate::input::get::GetRef;
 use crate::prelude::*;
-use crate::resource::listener::Respond;
-use crate::resource::listener::Respondable;
+use crate::resource::listener::Take;
+use crate::Message;
 
 mod constraints;
 pub(crate) mod loaded;
@@ -181,7 +181,7 @@ impl App {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn run(self, capacity: usize) -> Result<(), Self> {
+    pub async fn run(self, capacity: usize) -> Result<(), (Self, Error)> {
         let registry = self.build(capacity).await?;
         registry.run().await;
         Ok(())
@@ -196,7 +196,7 @@ impl App {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn build(self, capacity: usize) -> Result<Registry, Self> {
+    pub async fn build(self, capacity: usize) -> Result<Registry, (Self, Error)> {
         let mut registry = Registry::new(capacity);
         self.add_to_registry(&mut registry).await?;
         Ok(registry)
@@ -208,16 +208,10 @@ impl App {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn add_to_registry(mut self, registry: &mut Registry) -> Result<(), Self> {
+    pub async fn add_to_registry(mut self, registry: &mut Registry) -> Result<(), (Self, Error)> {
         self.add_to_registry_fallible(registry)
             .await
-            .map_err(|err| {
-                registry.event_sender.send_error(
-                    ident!("auditeur:registry").to_owned(),
-                    anyhow::Error::from(err).context("registry failed to build"),
-                );
-                self
-            })
+            .map_err(|err| (self, err))
     }
 
     async fn add_to_registry_fallible(&mut self, registry: &mut Registry) -> Result<(), Error> {
@@ -566,10 +560,7 @@ struct Channels {
     respond_map: DashMap<(NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>>,
 }
 
-type RespondChannels<R, M> = (
-    mpsc::Sender<Respondable<M, <R as Respond<M>>::Response>>,
-    Arc<Mutex<Option<mpsc::Receiver<Respondable<M, <R as Respond<M>>::Response>>>>>,
-);
+type RespondChannels<M> = (mpsc::Sender<M>, Arc<Mutex<Option<mpsc::Receiver<M>>>>);
 
 impl Channels {
     fn new(capacity: usize) -> Self {
@@ -580,7 +571,7 @@ impl Channels {
         }
     }
 
-    fn sender_ref<M: Message>(
+    fn sender_ref<M: ListenMessage>(
         &self,
     ) -> MappedRef<'_, NamespacedId, Box<dyn crate::Any + Send + Sync>, broadcast::Sender<M>> {
         self.listen_map
@@ -593,62 +584,58 @@ impl Channels {
             })
     }
 
-    fn sender<M: Message>(&self) -> broadcast::Sender<M> {
+    fn sender<M: ListenMessage>(&self) -> broadcast::Sender<M> {
         self.sender_ref().clone()
     }
 
-    fn receiver<M: Message>(&self) -> broadcast::Receiver<M> {
+    fn receiver<M: ListenMessage>(&self) -> broadcast::Receiver<M> {
         self.sender_ref().subscribe()
     }
 
-    fn respond_ref<R: Respond<M>, M: Message>(
+    fn respond_ref<R: Take<M>, M: Message>(
         &self,
     ) -> Ref<'_, (NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>> {
         self.respond_map
             .entry((M::const_ident().to_owned(), R::const_ident().to_owned()))
             .or_insert_with(|| {
-                let (sender, receiver) = mpsc::channel::<Respondable<M, R::Response>>(16);
+                let (sender, receiver) = mpsc::channel::<M>(16);
                 Box::new((sender, Arc::new(Mutex::new(Some(receiver)))))
             })
             .downgrade()
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    fn respond_sender<R: Respond<M>, M: Message>(
-        &self,
-    ) -> mpsc::Sender<Respondable<M, R::Response>> {
+    fn respond_sender<R: Take<M>, M: Message>(&self) -> mpsc::Sender<M> {
         let boxed = self.respond_ref::<R, M>();
-        let (sender, _): &RespondChannels<R, M> = boxed
+        let (sender, _): &RespondChannels<M> = boxed
             .downcast_ref()
             .expect("this should always be a valid Sender and Receiver");
         sender.clone()
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    async fn respond_receiver<R: Respond<M>, M: Message>(
-        &self,
-    ) -> RespondReceiver<Respondable<M, R::Response>> {
+    async fn respond_receiver<R: Take<M>, M: Message>(&self) -> TakeReceiver<M> {
         let boxed = self.respond_ref::<R, M>();
-        let (_, receiver_mutex): &RespondChannels<R, M> = boxed
+        let (_, receiver_mutex): &RespondChannels<M> = boxed
             .downcast_ref()
             .expect("this should always be a valid Sender and Receiver");
         let mut receiver_option = receiver_mutex.lock().await;
         let Some(receiver) = receiver_option.take() else {
             panic!("attempted to take the Respond receiver channel for resource {} and message {}, but it was already taken", R::const_ident(), M::const_ident());
         };
-        RespondReceiver {
+        TakeReceiver {
             receiver,
             source: receiver_mutex.clone(),
         }
     }
 }
 
-pub(crate) struct RespondReceiver<M: Send + 'static> {
+pub(crate) struct TakeReceiver<M: Send + 'static> {
     receiver: mpsc::Receiver<M>,
     source: Arc<Mutex<Option<mpsc::Receiver<M>>>>,
 }
 
-impl<M: Send + 'static> Drop for RespondReceiver<M> {
+impl<M: Send + 'static> Drop for TakeReceiver<M> {
     fn drop(&mut self) {
         let (_, dummy_receiver) = mpsc::channel(1);
         let receiver = std::mem::replace(&mut self.receiver, dummy_receiver);
@@ -665,14 +652,14 @@ impl<M: Send + 'static> Drop for RespondReceiver<M> {
     }
 }
 
-impl<M: Send + 'static> Deref for RespondReceiver<M> {
+impl<M: Send + 'static> Deref for TakeReceiver<M> {
     type Target = mpsc::Receiver<M>;
     fn deref(&self) -> &Self::Target {
         &self.receiver
     }
 }
 
-impl<M: Send + 'static> DerefMut for RespondReceiver<M> {
+impl<M: Send + 'static> DerefMut for TakeReceiver<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.receiver
     }
@@ -908,24 +895,20 @@ impl Registry {
 /// Methods to access the various channels that the registry contains
 impl Registry {
     #[must_use]
-    pub fn message_sender<M: Message>(&self) -> broadcast::Sender<M> {
+    pub fn message_sender<M: ListenMessage>(&self) -> broadcast::Sender<M> {
         self.channels.sender()
     }
 
     #[must_use]
-    pub fn message_receiver<M: Message>(&self) -> broadcast::Receiver<M> {
+    pub fn message_receiver<M: ListenMessage>(&self) -> broadcast::Receiver<M> {
         self.channels.receiver()
     }
 
-    pub(crate) fn respond_sender<R: Respond<M>, M: Message>(
-        &self,
-    ) -> mpsc::Sender<Respondable<M, R::Response>> {
+    pub(crate) fn respond_sender<R: Take<M>, M: Message>(&self) -> mpsc::Sender<M> {
         self.channels.respond_sender::<R, M>()
     }
 
-    pub(crate) async fn respond_receiver<R: Respond<M>, M: Message>(
-        &self,
-    ) -> RespondReceiver<Respondable<M, R::Response>> {
+    pub(crate) async fn respond_receiver<R: Take<M>, M: Message>(&self) -> TakeReceiver<M> {
         self.channels.respond_receiver::<R, M>().await
     }
 
@@ -979,7 +962,7 @@ impl Input for Registry {
     }
 }
 
-impl<M: Message> Input for Sender<M> {
+impl<M: ListenMessage> Input for Sender<M> {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(registry.message_sender())
     }

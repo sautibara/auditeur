@@ -3,12 +3,12 @@
 use std::marker::PhantomData;
 
 use crate::{
-    app::{EventReceiver, EventSender, LoadedResource, Loader, RespondReceiver, Runner},
+    app::{EventReceiver, EventSender, LoadedResource, Loader, Runner, TakeReceiver},
     input::subset::Subset,
     prelude::*,
+    Message,
 };
 
-use auditeur_macros::cfg_supertrait;
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 use tokio::select;
@@ -57,7 +57,7 @@ pub trait Component<L: Listener>: Input {
     ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send;
 }
 
-pub trait Listen<M: Message>: Listener {
+pub trait Listen<M: ListenMessage>: Listener {
     type OnInput<'s>: Send;
 
     fn on(
@@ -68,12 +68,12 @@ pub trait Listen<M: Message>: Listener {
 }
 
 #[component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
-pub struct ListenComponent<L: Listen<M>, M: Message> {
+pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
     receiver: tokio::sync::broadcast::Receiver<M>,
     listener: PhantomData<L>,
 }
 
-impl<L: Listen<M>, M: Message> Input for ListenComponent<L, M> {
+impl<L: Listen<M>, M: ListenMessage> Input for ListenComponent<L, M> {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(Self {
             receiver: registry.message_receiver::<M>(),
@@ -82,7 +82,7 @@ impl<L: Listen<M>, M: Message> Input for ListenComponent<L, M> {
     }
 }
 
-impl<L: Listen<M>, M: Message> Component<L> for ListenComponent<L, M> {
+impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
     type Value = M;
     type UserInput<'s> = <L as Listen<M>>::OnInput<'s>;
 
@@ -105,43 +105,33 @@ impl<L: Listen<M>, M: Message> Component<L> for ListenComponent<L, M> {
     }
 }
 
-pub trait Respond<M: Message>: Listener {
-    type Response: Response;
-
+pub trait Take<M: Message>: Listener {
     type OnInput<'s>: Send;
     fn on(
         &mut self,
         message: M,
-        input: <Self as Respond<M>>::OnInput<'_>,
-    ) -> impl Future<Output = Self::Response> + Send;
+        input: <Self as Take<M>>::OnInput<'_>,
+    ) -> impl Future<Output = ()> + Send;
 }
 
-#[cfg_supertrait(feature = "path-any", crate::path_any::PathAnyConst)]
-pub trait Response: Send + Sync + 'static {}
-
-#[component((<$_:ty, $message:ty>) => (implementation = Respond<$message>))]
-pub struct RespondComponent<R: Respond<M>, M: Message> {
-    receiver: RespondReceiver<Respondable<M, R::Response>>,
+#[component((<$_:ty, $message:ty>) => (implementation = Take<$message>))]
+pub struct TakeComponent<R: Take<M>, M: Message> {
+    receiver: TakeReceiver<M>,
+    pd: PhantomData<R>,
 }
 
-#[cfg_attr(feature = "path-any", derive(PathAny))]
-#[doc(hidden)] // NOTE: this is an implementation detail, only public because it's in traits
-pub struct Respondable<M: Message, R: Response> {
-    message: M,
-    response_channel: tokio::sync::oneshot::Sender<R>,
-}
-
-impl<R: Respond<M>, M: Message> Input for RespondComponent<R, M> {
+impl<R: Take<M>, M: Message> Input for TakeComponent<R, M> {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(Self {
             receiver: registry.respond_receiver::<R, M>().await,
+            pd: PhantomData,
         })
     }
 }
 
-impl<R: Respond<M>, M: Message> Component<R> for RespondComponent<R, M> {
-    type Value = Respondable<M, R::Response>;
-    type UserInput<'s> = <R as Respond<M>>::OnInput<'s>;
+impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
+    type Value = M;
+    type UserInput<'s> = <R as Take<M>>::OnInput<'s>;
 
     async fn wait(&mut self, _: &R) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
@@ -153,48 +143,40 @@ impl<R: Respond<M>, M: Message> Component<R> for RespondComponent<R, M> {
 
     async fn handle(
         &mut self,
-        respondable: Self::Value,
+        message: Self::Value,
         responder: &mut R,
         input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        let Respondable {
-            message,
-            response_channel,
-        } = respondable;
-        let response = responder.on(message, input).send().await;
-        let _ = response_channel.send(response);
+        responder.on(message, input).send().await;
         Ok(ControlFlow::Continue(()))
     }
 }
 
-pub struct Transceiver<R: Respond<M>, M: Message> {
-    sender: tokio::sync::mpsc::Sender<Respondable<M, R::Response>>,
+pub struct Giver<R: Take<M>, M: Message> {
+    sender: tokio::sync::mpsc::Sender<M>,
+    pd: PhantomData<R>,
 }
 
-impl<R: Respond<M>, M: Message> Input for Transceiver<R, M> {
+impl<R: Take<M>, M: Message> Input for Giver<R, M> {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(Self {
             sender: registry.respond_sender::<R, M>(),
+            pd: PhantomData,
         })
     }
 }
 
-impl<R: Respond<M>, M: Message> Transceiver<R, M> {
-    pub async fn send(&self, message: M) -> Option<R::Response> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let respondable = Respondable {
-            message,
-            response_channel: sender,
-        };
-        let _ = self.sender.send(respondable).await;
-        receiver.await.ok()
+impl<R: Take<M>, M: Message> Giver<R, M> {
+    pub async fn give(&self, message: M) {
+        let _ = self.sender.send(message).await;
     }
 }
 
-impl<R: Respond<M>, M: Message> Clone for Transceiver<R, M> {
+impl<R: Take<M>, M: Message> Clone for Giver<R, M> {
     fn clone(&self) -> Self {
         Self {
             sender: self.sender.clone(),
+            pd: PhantomData,
         }
     }
 }

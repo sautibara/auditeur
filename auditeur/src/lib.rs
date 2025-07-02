@@ -45,7 +45,7 @@ pub mod prelude {
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
-            listener::{Listen, Listener, Respond},
+            listener::{Listen, Listener, Take},
             Create, Runnable, Watcher,
         },
     };
@@ -53,7 +53,7 @@ pub mod prelude {
     #[cfg(feature = "path-any")]
     pub(crate) use crate::path_any::PathAny;
     pub(crate) use crate::{
-        input::Input, resource::Identifiable, resource::Resource, Any, Error, Message,
+        input::Input, resource::Identifiable, resource::Resource, Any, Error, ListenMessage,
     };
     pub(crate) use tokio::sync::broadcast::Sender;
 
@@ -65,8 +65,12 @@ pub mod prelude {
     pub use async_trait::async_trait;
 }
 
-#[cfg_supertrait(feature = "path-any", path_any::PathAnyConst)]
-pub trait Message: Identifiable + Clone + Send + Sync + 'static {}
+#[cfg_supertrait(feature = "path-any", crate::path_any::PathAnyConst)]
+pub trait Message: Identifiable + Send + Sync + 'static {}
+
+pub trait ListenMessage: Message + Clone {}
+
+impl<M: Message + Clone> ListenMessage for M {}
 
 #[macro_export]
 macro_rules! bake_message {

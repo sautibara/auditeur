@@ -176,7 +176,7 @@ impl Watcher for PluginRegistry {
                         // SAFETY: safety must be upheld by the caller of PluginSender::send
                         let _ = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
                     }
-                    if let Err(registry) = app.add_to_registry(registry).await {
+                    if let Err((registry, _)) = app.add_to_registry(registry).await {
                         for unloaded_bundle in registry.unloaded_bundles() {
                             // FIXME: If only part of a bundle is loaded, the registry gets put
                             // into a terrible situation. It can't just drop the library, since one
