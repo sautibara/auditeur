@@ -37,6 +37,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +45,7 @@ use async_recursion::async_recursion;
 use dashmap::mapref::one::MappedRef;
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
+use futures::FutureExt;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
@@ -765,7 +767,20 @@ impl Registry {
     async fn run_runner(runner: Box<dyn Runner>, sender: EventSender) {
         let id = runner.ident().to_owned();
         sender.send(RegistryEvent::Running(id.clone()));
-        runner.run().instrument(info_span!("runner", %id)).await;
+        // We actually don't know if the runner will be unwind safe
+        // (for example, the runner could use interior mutability
+        // to break an invariant in another runner and then panic).
+        // But we can't add the bound to async_trait,
+        // so instead we just assume that it will be anyways.
+        // It's more likely that the runner will be unwind safe,
+        // and we don't want the entire app to exit because of a panic.
+        let panic_result = AssertUnwindSafe(runner.run())
+            .catch_unwind()
+            .instrument(info_span!("runner", %id))
+            .await;
+        if panic_result.is_err() {
+            error!(%id, "runner stopped due to a panic");
+        }
         sender.send(RegistryEvent::Stopped(id));
     }
 
