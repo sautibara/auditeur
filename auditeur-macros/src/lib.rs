@@ -125,7 +125,7 @@ impl ToTokens for Root {
             proc_macro_crate::FoundCrate::Name(ref name) => {
                 Ident::new(name, Span::call_site()).to_tokens(tokens);
             }
-        };
+        }
 
         match self.crate_ {
             Crate::Auditeur => (),

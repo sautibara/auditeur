@@ -109,6 +109,7 @@ impl Intermediate {
         }
     }
 
+    #[allow(clippy::result_large_err)] // to give back self - can't box
     fn into_callback(mut self) -> Result<proc_macro2::TokenStream, Self> {
         let mut pairs = self.callbacks.value.list.into_pairs();
         let first = pairs.next();
@@ -366,7 +367,7 @@ impl Listener {
         self.parameters
             .iter()
             .filter_map(Parameter::as_registry_component)
-            .last()
+            .next_back()
             .is_none_or(|boolean| boolean.value.value)
     }
 

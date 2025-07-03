@@ -307,6 +307,7 @@ impl<L: Listener> Runner for LoadedListener<L> {
         let res = self.listener.init(init_input).send().await;
         self.event_sender.handle_error(res, self.listener.ident());
 
+        // TODO: catch_unwind
         <L::Components as ComponentList<L>>::run(
             &mut self.components,
             &mut self.listener,

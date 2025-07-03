@@ -1401,7 +1401,7 @@ impl EventReceiver {
             self.index += 1;
             // can't use else 'cause the compiler gets angry at the mutable ref above
             return Ok(val);
-        };
+        }
         // the easiest way to check if the channel is closed is through this method
         if self.watch.has_changed().is_err() {
             Err(EventTryRecvError::Closed)

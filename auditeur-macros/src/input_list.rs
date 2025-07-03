@@ -234,7 +234,7 @@ pub struct InputReference {
     and_token: Token![&],
     lifetime: Option<Lifetime>,
     mut_token: Token![mut],
-    input: Type,
+    input: Box<Type>,
 }
 
 impl InputReference {
@@ -250,14 +250,14 @@ impl From<Type> for InputReference {
             and_token: Token![&](span),
             lifetime: None,
             mut_token: Token![mut](span),
-            input,
+            input: Box::new(input),
         }
     }
 }
 
 impl From<InputReference> for Type {
     fn from(value: InputReference) -> Self {
-        value.input
+        *value.input
     }
 }
 

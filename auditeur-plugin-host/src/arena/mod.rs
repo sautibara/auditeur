@@ -3,9 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use auditeur_plugin::auditeur::{
-    app::{App, EventSender},
-};
+use auditeur_plugin::auditeur::app::{App, EventSender};
 use tokio::try_join;
 use tracing::{debug, trace};
 
@@ -53,7 +51,7 @@ impl Action {
         false
     }
 
-    fn as_compile_mut(&mut self) -> Option<&mut HashSet<PluginName>> {
+    const fn as_compile_mut(&mut self) -> Option<&mut HashSet<PluginName>> {
         if let Self::Compile(v) = self {
             Some(v)
         } else {
@@ -61,7 +59,7 @@ impl Action {
         }
     }
 
-    fn as_load_mut(&mut self) -> Option<&mut Vec<Binary>> {
+    const fn as_load_mut(&mut self) -> Option<&mut Vec<Binary>> {
         if let Self::Load(v) = self {
             Some(v)
         } else {

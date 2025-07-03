@@ -3,6 +3,7 @@
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
+    fmt::Write,
     io::Read,
     path::PathBuf,
     process::Stdio,
@@ -151,7 +152,8 @@ impl Workspace {
             .values()
             .map(|crt| crt.mirror.to_string_lossy())
             .fold('\n'.to_string(), |mut string, path| {
-                string.push_str(&format!("  \"{path}\",\n"));
+                // NOTE: can't return an error
+                let _ = writeln!(string, "  \"{path}\",");
                 string
             });
         let opt_level = &self.opts.opt_level;

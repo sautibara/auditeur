@@ -101,7 +101,7 @@ impl HasInputArgs {
         self.args
             .iter()
             .filter_map(HasInputArg::as_owned)
-            .last()
+            .next_back()
             .unwrap_or(Self::OWNED_DEFAULT)
     }
 }
