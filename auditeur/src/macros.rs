@@ -94,38 +94,6 @@ pub use auditeur_macros::identifiable;
 /// ```
 pub use auditeur_macros::message;
 
-/// Implements [`Response`] for any type.
-///
-/// # Examples
-///
-/// ```no_run
-/// # use auditeur::*;
-/// use auditeur::prelude::*;
-///
-/// #[derive(Default, Create, Runnable)]
-/// #[listener("test:double_listener", respond(Marco))]
-/// struct Listener {}
-///
-/// #[derive(Clone)]
-/// #[message("example:marco")]
-/// struct Marco;
-///
-/// #[derive(Response)]
-/// struct Polo;
-///
-/// #[has_input]
-/// impl Respond<Marco> for Listener {
-///     type Response = Polo;
-///
-///     async fn on(&mut self, _: Marco, (): ()) -> Polo {
-///         Polo
-///     }
-/// }
-/// #
-/// # fn main() {}
-/// ```
-pub use auditeur_macros::Response;
-
 // these two are used in [`macro@listener`]
 #[doc(hidden)]
 pub use auditeur_macros::expand_input_specifier;
@@ -454,7 +422,7 @@ pub use auditeur_macros::listener;
 /// ```no_run
 /// use auditeur::prelude::*;
 /// # use auditeur::resource::listener::Listen;
-/// use auditeur::Message;
+/// use auditeur::ListenMessage;
 ///
 /// // If a specifier isn't given, the default is `input = ()`.
 /// // That is, this expects no generic arguments and outputs a specifier with no inputs.
@@ -471,7 +439,7 @@ pub use auditeur_macros::listener;
 /// //   second one as a metavariable. Then, it outputs a specifier delegating to the
 /// //   implementation of the `Listen` trait with the metavariable as a generic argument.
 /// #[component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
-/// pub struct ListenComponent<L: Listen<M>, M: Message> {
+/// pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
 /// # /*
 ///     ...
 /// # */

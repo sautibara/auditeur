@@ -260,30 +260,6 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-#[proc_macro_derive(Response)]
-pub fn response(item: TokenStream) -> TokenStream {
-    let mut item = parse_macro_input!(item as Item);
-
-    let (ident, generics) = match CustomGenerics::from_item(&mut item) {
-        Ok(tuple) => tuple,
-        Err(err) => return err.into_compile_error().into(),
-    };
-
-    #[cfg(feature = "path-any")]
-    let path_any_impl = proc_macro_impls::path_any(ident, &generics);
-    #[cfg(not(feature = "path-any"))]
-    let path_any_impl = quote!();
-
-    let resource = AUDITEUR.resource();
-
-    quote! {
-        impl #resource::listener::Response for #ident {}
-
-        #path_any_impl
-    }
-    .into()
-}
-
 #[proc_macro]
 pub fn ident(string: TokenStream) -> TokenStream {
     let id = parse_macro_input!(string as NamespacedId);
