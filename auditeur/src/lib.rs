@@ -30,6 +30,8 @@ pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn A
 pub use anyhow;
 #[doc(hidden)]
 pub use futures::try_join;
+#[doc(hidden)]
+pub use tokio;
 
 pub mod prelude {
     pub use crate::resource::Identifiable as _;
@@ -38,8 +40,8 @@ pub mod prelude {
         bundle::Bundle,
         input::get::Get,
         macros::{
-            component, create, has_input, ident, identifiable, listener, message, resource, Create,
-            GetRef, Input, PathAny, Runnable,
+            component, create, has_input, ident, identifiable, listener, message, resource,
+            respond, Create, GetRef, Input, PathAny, Runnable,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros

@@ -5,10 +5,10 @@ use crate::{custom_generics::CustomGenerics, Auditeur};
 use quote::{format_ident, quote};
 
 #[allow(clippy::cognitive_complexity)] // sorry...
-pub fn derive(strct: ItemStruct) -> proc_macro2::TokenStream {
-    let (ident, generics, attrs) = (strct.ident, strct.generics, strct.attrs);
+pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
+    let (ident, generics, attrs) = (&strct.ident, &strct.generics, &strct.attrs);
 
-    let generics = CustomGenerics::from_attr_or_generics(&attrs, &generics);
+    let generics = CustomGenerics::from_attr_or_generics(attrs, generics);
     let generics = match generics {
         Ok(generics) => generics,
         Err(error) => return error.into_compile_error(),

@@ -140,10 +140,7 @@ impl AppExt for App {
                 .with_watcher::<Arena>(arena.map_err(Into::into))
                 .with_watcher::<PluginRegistry>(registry),
         );
-        self.add_errors(
-            Arena::const_ident(),
-            errors.into_iter().map(Into::into),
-        );
+        self.add_errors(Arena::const_ident(), errors.into_iter().map(Into::into));
         self
     }
 }

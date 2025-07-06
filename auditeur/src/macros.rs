@@ -613,3 +613,5 @@ pub use auditeur_macros::MaybeGetRef;
 /// [`PathAnyConst`](crate::path_any::PathAnyConst)
 #[cfg(feature = "path-any")]
 pub use auditeur_macros::PathAny;
+
+pub use auditeur_macros::respond;

@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::Auditeur;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NamespacedId {
     pub namespace: String,
     pub id: String,

@@ -43,6 +43,13 @@ mod proc_macro_impls {
     pub use listener::Intermediate as IntermediateListener;
     pub use listener::{runnable_derive, ComponentCallback, Listener};
 
+    mod respond;
+    pub use respond::Meta as RespondMeta;
+    pub use respond::Respond;
+
+    mod message;
+    pub use message::derive_message;
+
     #[cfg(feature = "path-any")]
     mod maybe_get_ref;
     #[cfg(feature = "path-any")]
@@ -239,23 +246,11 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(err) => return err.into_compile_error().into(),
     };
 
-    let auditeur = Auditeur::new();
-
-    let identifiable_impl = proc_macro_impls::identifiable_with_generics(&id, ident, &generics);
-
-    #[cfg(feature = "path-any")]
-    let path_any_impl = proc_macro_impls::path_any(ident, &generics);
-    #[cfg(not(feature = "path-any"))]
-    let path_any_impl = quote!();
-
-    let crate_name = auditeur.crate_name();
+    let implementation = proc_macro_impls::derive_message(ident, &id, &generics);
 
     quote! {
-        impl #crate_name::Message for #ident {}
-
         #item
-        #identifiable_impl
-        #path_any_impl
+        #implementation
     }
     .into()
 }
@@ -310,7 +305,7 @@ pub fn create_derive(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Input, attributes(custom_generics))]
 pub fn derive_input(item: TokenStream) -> TokenStream {
     let strct = parse_macro_input!(item as ItemStruct);
-    proc_macro_impls::derive_input(strct).into()
+    proc_macro_impls::derive_input(&strct).into()
 }
 
 #[proc_macro_derive(GetRef)]
@@ -613,5 +608,25 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
 
     proc_macro_impls::runnable_derive(&crate::type_from_ident(ident), &generics)
         .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_attribute]
+pub fn respond(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let meta = parse_macro_input!(attr as proc_macro_impls::RespondMeta);
+    let item = parse_macro_input!(item as ItemImpl);
+
+    let mut respond = proc_macro_impls::Respond::new(meta, item);
+
+    respond
+        .expand()
+        .unwrap_or_else(|err| {
+            let item = respond.item_impl;
+            let error = err.into_compile_error();
+            quote! {
+                #item
+                #error
+            }
+        })
         .into()
 }

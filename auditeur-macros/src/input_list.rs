@@ -38,7 +38,6 @@ impl Default for InputList {
 }
 
 impl InputList {
-    #[expect(dead_code)]
     pub fn into_reference_list(self) -> InputReferenceList {
         match self {
             Self::Single(typ) => InputReferenceList::Single(typ.into()),
@@ -286,8 +285,8 @@ impl ToTokens for InputReference {
 
 #[derive(Clone, Debug)]
 pub struct SetSelection {
-    in_set: bool,
-    span: proc_macro2::Span,
+    pub in_set: bool,
+    pub span: proc_macro2::Span,
 }
 
 impl SetSelection {
@@ -308,7 +307,7 @@ impl ToTokens for SetSelection {
 }
 
 pub struct Combination {
-    selections: Punctuated<SetSelection, Token![,]>,
+    pub selections: Punctuated<SetSelection, Token![,]>,
 }
 
 impl Combination {

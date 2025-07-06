@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use quote::ToTokens;
 use syn::{
     bracketed, parenthesized,
@@ -24,6 +26,14 @@ pub struct NameValue<T> {
     pub ident: Ident,
     pub eq: syn::token::Eq,
     pub value: T,
+}
+
+impl<T> Deref for NameValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }
 
 impl<T> NameValue<T> {
@@ -100,6 +110,14 @@ pub struct List<T> {
     pub ident: Ident,
     pub parens: Paren,
     pub values: Punctuated<T, syn::token::Comma>,
+}
+
+impl<T> Deref for List<T> {
+    type Target = Punctuated<T, syn::token::Comma>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
 }
 
 impl<T: Parse> List<T> {
