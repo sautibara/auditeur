@@ -18,8 +18,13 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
-    parenthesized, parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned,
-    token::Paren, Generics, Ident, LitBool, Token, Type, WhereClause,
+    parenthesized,
+    parse::Parse,
+    parse_quote,
+    punctuated::{Pair, Punctuated},
+    spanned::Spanned,
+    token::Paren,
+    Generics, Ident, LitBool, Token, Type, WhereClause,
 };
 
 use crate::{
@@ -27,7 +32,7 @@ use crate::{
     field::{Comma, List, NameValue, Parenthesized},
     input_list::{Combination, InputList},
     namespaced_id::NamespacedId,
-    Auditeur,
+    type_from_ident, Auditeur,
 };
 
 use super::input_reflection::CallbackList;
@@ -123,8 +128,8 @@ impl Intermediate {
         Ok(quote! { #first_callback!(#self); })
     }
 
-    fn not_enough_inputs_error(&self) -> syn::Result<()> {
-        Err(syn::Error::new_spanned(
+    fn not_enough_inputs_error(&self) -> syn::Error {
+        syn::Error::new_spanned(
             &self.listener.value,
             format!(
                 "didn't receive enough input lists through macros - expected {}, received: {}",
@@ -140,49 +145,51 @@ impl Intermediate {
                     .map(|list| list.into_token_stream().to_string())
                     .fold(String::new(), |string, list| string + &list + " ")
             ),
-        ))
+        )
     }
 
     fn apply_input(&mut self) -> syn::Result<()> {
-        let listen_components_len = self
-            .listener
-            .value
-            .builtin_components()
-            .filter(|component| !component.has_input())
-            .count();
-        if listen_components_len > self.input_lists.len() {
-            self.not_enough_inputs_error()?;
-        }
-        let listen_components = self
-            .listener
-            .value
-            .builtin_components_mut()
-            .filter(|component| !component.has_input());
-        let inputs = self.input_lists.drain(..listen_components_len);
+        let mut inputs = self.input_lists.drain(..);
 
-        for (listen_component, input) in listen_components.zip(inputs) {
-            listen_component.set_input(input);
+        {
+            let mut listen_components = self
+                .listener
+                .value
+                .builtin_components_mut()
+                .filter(|component| !component.has_input());
+
+            for (listen_component, input) in listen_components.by_ref().zip(inputs.by_ref()) {
+                listen_component.set_input(input);
+            }
+
+            let has_remaining_component = listen_components.next().is_some();
+            if has_remaining_component {
+                drop((inputs, listen_components));
+                return Err(self.not_enough_inputs_error());
+            }
         }
 
-        let custom_components_len = self
-            .listener
-            .value
-            .custom_components()
-            .filter(|component| !component.has_input())
-            .count();
-        if custom_components_len > self.input_lists.len() {
-            self.not_enough_inputs_error()?;
-        }
-        let custom_components = self
-            .listener
-            .value
-            .custom_components_mut()
-            .filter(|component| !component.has_input());
-        let inputs = self.input_lists.drain(..custom_components_len);
+        {
+            let mut custom_components = self
+                .listener
+                .value
+                .custom_components_mut()
+                .filter(|component| !component.has_input());
 
-        for (custom_component, input) in custom_components.zip(inputs) {
-            custom_component.set_input(input);
+            for (custom_component, input) in custom_components.by_ref().zip(inputs.by_ref()) {
+                custom_component.set_input(input);
+            }
+
+            let has_remaining_component = custom_components.next().is_some();
+            if has_remaining_component {
+                drop((inputs, custom_components));
+                return Err(self.not_enough_inputs_error());
+            }
         }
+
+        let inputs: Vec<_> = inputs.collect();
+        self.input_lists = inputs;
+
         Ok(())
     }
 
@@ -192,12 +199,16 @@ impl Intermediate {
     }
 
     fn expand_simple(mut self) -> syn::Result<proc_macro2::TokenStream> {
+        self.expand_respond()?;
+
         let (with_input, without_input): (Vec<_>, Vec<_>) =
             split_results(self.listener.value.components().map(ComponentRef::as_input));
 
-        if let (Some(init_input), Some(exit_input), true) =
-            (&self.init_input, &self.exit_input, without_input.is_empty())
-        {
+        if let (Some(init_input), Some(exit_input), true) = (
+            &self.init_input,
+            &self.exit_input,
+            without_input.is_empty() && self.callbacks.value.list.is_empty(),
+        ) {
             // we have all the inputs, bless
             let mut inputs = InputList::default();
             let mut combinations: Punctuated<_, Token![,]> = Punctuated::new();
@@ -263,8 +274,7 @@ impl Intermediate {
         } else {
             // we have to fill the rest of the inputs :(
 
-            let auditeur = Auditeur::new();
-            let crate_name = auditeur.crate_name();
+            let auditeur = &*crate::AUDITEUR;
 
             // use closures here to get around a lack of view types
             let mut add_callback = |path| self.callbacks.value.list.push(path);
@@ -273,23 +283,27 @@ impl Intermediate {
             let implementer_type = crate::type_from_ident(self.implementer.clone());
 
             let runnable = parse_quote!(Runnable);
-            add_callback(super::input_reflection::input_macro_of_method(
-                &runnable,
-                &implementer_type,
-                "init",
-            )?);
-            add_callback(super::input_reflection::input_macro_of_method(
-                &runnable,
-                &implementer_type,
-                "exit",
-            )?);
+            if self.init_input.is_none() {
+                add_callback(super::input_reflection::input_macro_of_method(
+                    &runnable,
+                    &implementer_type,
+                    "init",
+                )?);
+            }
+            if self.exit_input.is_none() {
+                add_callback(super::input_reflection::input_macro_of_method(
+                    &runnable,
+                    &implementer_type,
+                    "exit",
+                )?);
+            }
 
             for component in without_input {
                 match component.specifier {
                     SpecifierRef::None => {
                         add_callback(component.macro_ident().into());
                         add_specifier_param(component.component.clone());
-                        add_callback(parse_quote!( #crate_name::expand_input_specifier ));
+                        add_callback(parse_quote!( #auditeur::expand_input_specifier ));
                     }
                     SpecifierRef::Implementation(typ) => {
                         let input_macro =
@@ -300,11 +314,66 @@ impl Intermediate {
                 }
             }
 
-            add_callback(parse_quote!( #crate_name::expand_listener ));
+            add_callback(parse_quote!( #auditeur::expand_listener ));
 
             Ok(self
                 .into_callback()
                 .expect("there should be at least one callback"))
+        }
+    }
+
+    fn expand_respond(&mut self) -> syn::Result<()> {
+        let parameters = std::mem::take(&mut self.listener.value.parameters);
+        let mut parameters: Punctuated<Parameter, Token![,]> = parameters
+            .into_pairs()
+            .filter_map(|pair| {
+                let (param, punct) = pair.into_tuple();
+                let res = self.handle_parameter(param);
+                let res = res.transpose()?;
+                Some(res.map(|param| Pair::new(param, punct)))
+            })
+            .collect::<syn::Result<_>>()?;
+        parameters.pop_punct();
+        self.listener.value.parameters = parameters;
+
+        Ok(())
+    }
+
+    fn handle_parameter(&mut self, parameter: Parameter) -> syn::Result<Option<Parameter>> {
+        match parameter {
+            Parameter::RespondFlag(_) => {
+                let macro_path = super::respond_macro_ident(&self.implementer);
+                self.callbacks
+                    .value
+                    .list
+                    .push(parse_quote!(#macro_path::#macro_path));
+                Ok(None)
+            }
+            Parameter::Respond(ident, mut meta) => {
+                if meta.value.id.is_none() {
+                    meta.value.id = Some(self.listener.value.id.clone());
+                }
+                let config = meta.value.to_config(&self.implementer)?;
+                let mut values = Punctuated::new();
+                values.push(BuiltinComponent::new(
+                    type_from_ident((*config.query.message_ident).clone()),
+                    None,
+                    BuiltinComponentType::Take,
+                ));
+                if let Some(config) = &config.transaction {
+                    values.push(BuiltinComponent::new(
+                        type_from_ident((*config.message_ident).clone()),
+                        None,
+                        BuiltinComponentType::Take,
+                    ));
+                }
+                Ok(Some(Parameter::Take(List {
+                    ident: Ident::new("take", ident.span()),
+                    parens: meta.paren,
+                    values,
+                })))
+            }
+            other => Ok(Some(other)),
         }
     }
 }
@@ -441,6 +510,8 @@ enum Parameter {
     Take(List<BuiltinComponent>),
     RegistryComponent(NameValue<LitBool>),
     Components(List<Component>),
+    RespondFlag(Ident),
+    Respond(Ident, Parenthesized<super::RespondMeta>),
 }
 
 impl Parameter {
@@ -490,27 +561,24 @@ impl Parse for Parameter {
             "listen" => Ok(Self::Listen(List::parse_after_with(
                 ident,
                 input,
-                |input| {
-                    let resource_mod = Auditeur::new().resource();
-                    BuiltinComponent::parse(
-                        input,
-                        |message| parse_quote!( Listen<#message> ),
-                        |message| parse_quote!( #resource_mod::listener::ListenComponent<Self, #message> ),
-                    )
-                },
+                |input| BuiltinComponent::parse(input, BuiltinComponentType::Listen),
             )?)),
             "take" => Ok(Self::Take(List::parse_after_with(ident, input, |input| {
-                let resource_mod = Auditeur::new().resource();
-                BuiltinComponent::parse(
-                    input,
-                    |message| parse_quote!( Take<#message> ),
-                    |message| parse_quote!( #resource_mod::listener::TakeComponent<Self, #message> ),
-                )
+                BuiltinComponent::parse(input, BuiltinComponentType::Take)
             })?)),
             "registry_component" => Ok(Self::RegistryComponent(NameValue::parse_after(
                 ident, input,
             )?)),
             "components" => Ok(Self::Components(List::parse_after(ident, input)?)),
+            "respond" => {
+                if input.peek(syn::token::Paren) {
+                    input
+                        .parse::<Parenthesized<super::RespondMeta>>()
+                        .map(|parenthesized| Self::Respond(ident, parenthesized))
+                } else {
+                    Ok(Self::RespondFlag(ident))
+                }
+            }
             "id" => Err(syn::Error::new_spanned(
                 ident,
                 "'id' is only accepted as the first parameter",
@@ -529,6 +597,11 @@ impl ToTokens for Parameter {
             Self::Listen(list) | Self::Take(list) => list.to_tokens(tokens),
             Self::RegistryComponent(name_value) => name_value.to_tokens(tokens),
             Self::Components(list) => list.to_tokens(tokens),
+            Self::RespondFlag(ident) => ident.to_tokens(tokens),
+            Self::Respond(ident, parenthesized) => {
+                ident.to_tokens(tokens);
+                parenthesized.to_tokens(tokens);
+            }
         }
     }
 }
@@ -541,19 +614,37 @@ struct BuiltinComponent {
     opts: Option<BuiltinComponentOpts>,
 }
 
+#[derive(Clone, Copy)]
+enum BuiltinComponentType {
+    Listen,
+    Take,
+}
+
 impl BuiltinComponent {
-    fn parse(
-        input: syn::parse::ParseStream,
-        implementation: impl FnOnce(&Type) -> Type,
-        component: impl FnOnce(&Type) -> Type,
-    ) -> syn::Result<Self> {
+    fn new(message: Type, opts: Option<BuiltinComponentOpts>, typ: BuiltinComponentType) -> Self {
+        let auditeur = &*crate::AUDITEUR;
+        let (implementation_type, component_type) = match typ {
+            BuiltinComponentType::Listen => (
+                parse_quote!( Listen<#message> ),
+                parse_quote!( #auditeur::resource::listener::ListenComponent<Self, #message> ),
+            ),
+            BuiltinComponentType::Take => (
+                parse_quote!( Take<#message> ),
+                parse_quote!( #auditeur::resource::listener::TakeComponent<Self, #message> ),
+            ),
+        };
+        Self {
+            implementation_type,
+            component_type,
+            message_type: message,
+            opts,
+        }
+    }
+
+    fn parse(input: syn::parse::ParseStream, typ: BuiltinComponentType) -> syn::Result<Self> {
         let message_type = input.parse()?;
-        Ok(Self {
-            implementation_type: implementation(&message_type),
-            component_type: component(&message_type),
-            message_type,
-            opts: input.peek(Paren).then(|| input.parse()).transpose()?,
-        })
+        let opts = input.peek(Paren).then(|| input.parse()).transpose()?;
+        Ok(Self::new(message_type, opts, typ))
     }
 
     fn as_component_ref(&self) -> ComponentRef {

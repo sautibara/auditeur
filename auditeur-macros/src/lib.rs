@@ -44,6 +44,7 @@ mod proc_macro_impls {
     pub use listener::{runnable_derive, ComponentCallback, Listener};
 
     mod respond;
+    pub use respond::macro_ident as respond_macro_ident;
     pub use respond::Meta as RespondMeta;
     pub use respond::Respond;
 

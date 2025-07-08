@@ -14,6 +14,10 @@ use crate::{
     namespaced_id::NamespacedId,
 };
 
+pub fn macro_ident(item_ident: &Ident) -> Ident {
+    format_ident!("auditeur_respond_impl_of_{item_ident}")
+}
+
 // #[respond(
 //     "core:library",
 //     query(
@@ -69,7 +73,7 @@ impl Respond {
 
         let (methods, inputs) = self.gather_methods_and_inputs()?;
 
-        let macro_def = self.define_macro(ident, &config, &inputs);
+        let macro_def = Self::define_macro(ident, &config, &inputs);
 
         let query_enum = Self::define_query_enum(&config, &methods);
         let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs)?;
@@ -485,18 +489,22 @@ impl Respond {
     }
 
     fn define_macro(
-        &self,
         item_ident: &Ident,
         config: &Config,
         input_list: &InputList,
     ) -> proc_macro2::TokenStream {
-        let macro_ident = format_ident!("auditeur_respond_impl_of_{item_ident}");
+        let macro_ident = macro_ident(item_ident);
 
-        let meta = &self.meta;
+        let query_message = &config.query.message_ident;
+        let mut take = quote! {
+            #query_message(input = #input_list),
+        };
 
-        let mut input = quote! { #input_list };
-        if config.transaction.is_some() {
-            input_list.to_tokens(&mut input);
+        if let Some(transaction_config) = &config.transaction {
+            let transaction_message = &transaction_config.message_ident;
+            take.extend(quote! {
+                #transaction_message(input = #input_list),
+            });
         }
 
         quote! {
@@ -507,8 +515,8 @@ impl Respond {
                 #[macro_export]
                 #[doc(hidden)]
                 macro_rules! #macro_ident {
-                    (($callback:path $(, $($callbacks:tt)*)?) ($($params:tt)*) () $($rest:tt)*) => {
-                        $callback!(($($($callbacks)*)?) ($($params)*) (#meta) $($rest)* #input);
+                    (($callback:path $(, $($callbacks:tt)*)?) ($($_params:tt)*) $_ident:ident ($($meta:tt)*) $($rest:tt)*) => {
+                        $callback!(($($($callbacks)*)?) ($($_params)*) $_ident ($($meta)*, take(#take)) $($rest)*);
                     };
                 }
                 pub use #macro_ident;
@@ -679,8 +687,9 @@ impl TakeDefaultSuffixes {
     };
 }
 
+#[derive(Debug)]
 pub struct Meta {
-    id: Option<Comma<NamespacedId>>,
+    pub id: Option<Comma<NamespacedId>>,
     params: Punctuated<MetaParam, Token![,]>,
 }
 
@@ -812,6 +821,7 @@ impl ToTokens for Meta {
     }
 }
 
+#[derive(Debug)]
 enum MetaParam {
     Query(List<TakeTypesParam>),
     Transaction(List<TakeTypesParam>),
@@ -876,6 +886,7 @@ impl ToTokens for MetaParam {
     }
 }
 
+#[derive(Debug)]
 enum TakeTypesParam {
     MessageParams(List<ItemParam>),
     MessageIdent(NameValue<Ident>),
@@ -957,6 +968,7 @@ impl ToTokens for TakeTypesParam {
     }
 }
 
+#[derive(Debug)]
 enum ItemParam {
     Ident(NameValue<Ident>),
     Id(NameValue<NamespacedId>),

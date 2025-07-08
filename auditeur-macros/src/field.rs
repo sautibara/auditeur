@@ -172,7 +172,7 @@ impl<'a, T> IntoIterator for &'a mut List<T> {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Comma<T> {
     pub value: T,
     pub comma: Option<syn::token::Comma>,
