@@ -39,7 +39,6 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_recursion::async_recursion;
 use dashmap::mapref::one::MappedRef;
@@ -47,11 +46,11 @@ use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use futures::FutureExt;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+#[cfg(feature = "runtime-loading")]
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
-#[cfg(feature = "runtime-loading")]
-use tokio::sync::{mpsc, oneshot};
-#[cfg(feature = "runtime-loading")]
 use tracing::error;
 use tracing::info_span;
 use tracing::instrument;
@@ -211,6 +210,7 @@ impl App {
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
     pub async fn add_to_registry(mut self, registry: &mut Registry) -> Result<(), (Self, Error)> {
+        trace!("{self:?}");
         self.add_to_registry_fallible(registry)
             .await
             .map_err(|err| (self, err))
@@ -241,6 +241,7 @@ impl App {
         registry: &mut Registry,
         id: &NamespacedIdRef,
     ) -> Result<(), Error> {
+        trace!("resolving loader {id}");
         let loader = self
             .loaders
             .get_mut(id)
@@ -271,6 +272,7 @@ impl App {
         registry: &mut Registry,
         id: &NamespacedIdRef,
     ) -> Result<(), Error> {
+        trace!("resolving bundle {id}");
         let bundle = self
             .bundles
             .get_mut(id)
@@ -403,9 +405,12 @@ impl RegistryState {
         &self,
         reference_holder: &NamespacedIdRef,
         event_sender: &EventSender,
+        parent: &Registry,
     ) -> Option<R::Ref> {
         match self {
-            Self::Building(registry) => registry.get_as::<R>(reference_holder, event_sender),
+            Self::Building(registry) => {
+                registry.get_as::<R>(reference_holder, parent, event_sender)
+            }
             #[cfg(feature = "runtime-loading")]
             Self::Running(registry) => registry.get_as::<R>(reference_holder, event_sender).await,
         }
@@ -467,6 +472,7 @@ impl BuildingRegistry {
     fn get_as<R: Resource + GetRef>(
         &self,
         reference_holder: &NamespacedIdRef,
+        parent: &Registry,
         event_sender: &EventSender,
     ) -> Option<R::Ref> {
         let id = R::const_ident().into();
@@ -474,7 +480,7 @@ impl BuildingRegistry {
         let reference = loaded
             .resource_any()
             .downcast_ref::<R>()
-            .map(GetRef::get_ref);
+            .map(|loaded| loaded.get_ref(parent));
         // only send the event if the reference actually succeeded
         if reference.is_some() {
             event_sender.send(RegistryEvent::Reference {
@@ -527,7 +533,7 @@ impl RunningRegistry {
         event_sender.send(RegistryEvent::Get(Arc::new(get_request)));
         // if the request if fulfilled, this will return Some
         // if it isn't and all requests get dropped, the channel drops and returns a RecvError
-        let reference = tokio::time::timeout(Duration::from_millis(100), receiver)
+        let reference = tokio::time::timeout(std::time::Duration::from_millis(100), receiver)
             .await
             .ok()?
             .ok()?;
@@ -846,8 +852,46 @@ impl Registry {
         reference_holder: &NamespacedIdRef,
     ) -> Option<R::Ref> {
         self.state
-            .get_as::<R>(reference_holder, &self.event_sender)
+            .get_as::<R>(reference_holder, &self.event_sender, self)
             .await
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+pub(crate) struct PartialHandle {
+    channels: Arc<Channels>,
+    event_sender: EventSender,
+    resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
+}
+
+#[cfg(feature = "runtime-loading")]
+impl PartialHandle {
+    pub(crate) fn new(registry: &Registry) -> Self {
+        let resource_sender = match &registry.state {
+            RegistryState::Running(running) => running.resource_sender.clone(),
+            RegistryState::Building(building) => building.resource_sender.clone(),
+        };
+        Self {
+            channels: registry.channels.clone(),
+            event_sender: registry.event_sender.clone(),
+            resource_sender,
+        }
+    }
+
+    pub(crate) fn supply_map_handle(self, handle: resource_map::Handle) -> Registry {
+        let Self {
+            channels,
+            event_sender,
+            resource_sender,
+        } = self;
+        Registry {
+            channels,
+            event_sender,
+            state: RegistryState::Running(RunningRegistry {
+                resource_sender,
+                map: handle,
+            }),
+        }
     }
 }
 
@@ -869,28 +913,15 @@ impl Registry {
     ///
     /// - If [`ResourceMap`] hasn't been loaded yet
     pub fn handle(&self, reference_holder: &NamespacedIdRef) -> Result<Self, Error> {
-        let (resource_sender, map) = match &self.state {
-            RegistryState::Running(running) => {
-                (running.resource_sender.clone(), running.map.clone())
-            }
-            RegistryState::Building(building) => (
-                building.resource_sender.clone(),
-                building
-                    .get_as::<ResourceMap>(reference_holder, &self.event_sender)
-                    .ok_or_else(|| Error::LoaderNotFound {
-                        id: ResourceMap::const_ident().to_owned(),
-                    })?,
-            ),
+        let map = match &self.state {
+            RegistryState::Running(running) => running.map.clone(),
+            RegistryState::Building(building) => building
+                .get_as::<ResourceMap>(reference_holder, self, &self.event_sender)
+                .ok_or_else(|| Error::LoaderNotFound {
+                    id: ResourceMap::const_ident().to_owned(),
+                })?,
         };
-        let implementation = RegistryState::Running(RunningRegistry {
-            resource_sender,
-            map,
-        });
-        let handle = Self {
-            channels: self.channels.clone(),
-            event_sender: self.event_sender.clone(),
-            state: implementation,
-        };
+        let handle = PartialHandle::new(self).supply_map_handle(map);
         Ok(handle)
     }
 
@@ -1132,8 +1163,8 @@ impl GetRequest {
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
     /// [`GetRef`] and send the result back to the original asker.
     #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub async fn check<R: Resource>(&self, resource: &R) {
-        self.check_ref(resource).await;
+    pub async fn check<R: Resource>(&self, resource: &R, registry: &Registry) {
+        self.check_ref(resource, registry).await;
     }
 
     /// Returns `true` if `R` if the resource that is asked for by this request
@@ -1145,13 +1176,13 @@ impl GetRequest {
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
     /// [`GetRef`] and send the result back to the original asker.
     #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub async fn check_ref(&self, resource: &dyn Resource) {
+    pub async fn check_ref(&self, resource: &dyn Resource, registry: &Registry) {
         if !self.matches_ref(resource) {
             return;
         }
         trace!("fulfilling get request");
         #[allow(clippy::option_if_let_else)] // not using the return type...
-        if let Some(reference) = resource.maybe_get_ref() {
+        if let Some(reference) = resource.maybe_get_ref(registry) {
             self.send(reference).await;
         } else {
             warn!("resource matches GetRequest, but MaybeGetRef returned None");

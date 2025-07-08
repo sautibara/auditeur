@@ -63,7 +63,7 @@ pub trait GetRef {
     /// A synchronized reference to the original [`Resource`]
     type Ref: Clone + crate::Any + Send + Sync;
     /// Get a synchronized reference to `Self`
-    fn get_ref(&self) -> Self::Ref;
+    fn get_ref(&self, registry: &Registry) -> Self::Ref;
 }
 
 /// A trait that returns [`Some(R::Ref)`](GetRef::Ref) if the type implements [`GetRef`], or [`None`] otherwise
@@ -76,27 +76,29 @@ pub trait GetRef {
 /// [`#[derive(MaybeGetRef)]`](macro@crate::MaybeGetRef)
 #[cfg(feature = "runtime-loading")]
 pub trait MaybeGetRef {
-    fn maybe_get_ref(&self) -> Option<Box<dyn CloneAny>>;
+    fn maybe_get_ref(&self, registry: &Registry) -> Option<Box<dyn CloneAny>>;
 }
 
 #[doc(hidden)]
 #[cfg(feature = "runtime-loading")]
 pub mod maybe_get_ref {
+    use crate::app::Registry;
+
     use super::CloneAny;
 
     pub trait Specialization {
-        fn specialization(&self) -> Option<Box<dyn CloneAny>>;
+        fn specialization(&self, registry: &Registry) -> Option<Box<dyn CloneAny>>;
     }
 
     impl<T> Specialization for &T {
-        fn specialization(&self) -> Option<Box<dyn CloneAny>> {
+        fn specialization(&self, _: &Registry) -> Option<Box<dyn CloneAny>> {
             None
         }
     }
 
     impl<T: super::GetRef + crate::Any> Specialization for &mut &T {
-        fn specialization(&self) -> Option<Box<dyn CloneAny>> {
-            Some(Box::new(self.get_ref()))
+        fn specialization(&self, registry: &Registry) -> Option<Box<dyn CloneAny>> {
+            Some(Box::new(self.get_ref(registry)))
         }
     }
 }
@@ -117,7 +119,7 @@ impl<T: Clone + crate::Any + Send + Sync> CloneAny for T {
         Box::new(self.clone())
     }
 
-    fn as_any(self: Box<Self>) -> Box<dyn PathAny> {
+    fn as_any(self: Box<Self>) -> Box<dyn crate::path_any::PathAny> {
         self
     }
 }

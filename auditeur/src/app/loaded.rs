@@ -1,6 +1,7 @@
 use futures::pin_mut;
 use tokio::select;
-use tracing::{debug, instrument, trace, warn};
+#[allow(clippy::wildcard_imports)] // dnc
+use tracing::*;
 
 use crate::prelude::*;
 
@@ -88,16 +89,19 @@ pub struct Watcher<W: WatcherTrait> {
     input: W::Input,
     event_receiver: EventReceiver,
     event_sender: EventSender,
+    #[cfg(feature = "runtime-loading")]
+    registry: Registry,
 }
 
 impl<W: WatcherTrait> Watcher<W> {
     pub async fn build(watcher: W, registry: &Registry) -> Result<Self, Error> {
-        let input = <W::Input as Input>::create(registry, watcher.ident()).await?;
         Ok(Self {
-            inner: watcher,
-            input,
+            #[cfg(feature = "runtime-loading")]
+            registry: registry.handle(watcher.ident())?,
             event_receiver: registry.event_receiver(),
             event_sender: registry.event_sender(),
+            input: <W::Input as Input>::create(registry, watcher.ident()).await?,
+            inner: watcher,
         })
     }
 
@@ -153,7 +157,7 @@ impl<W: WatcherTrait> Runner for Watcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
-        let reference = self.inner.maybe_get_ref();
+        let reference = self.inner.maybe_get_ref(&self.registry);
 
         {
             let mut meta_receiver = self.event_receiver.resubscribe();

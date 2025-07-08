@@ -184,13 +184,25 @@ impl<R: Take<M>, M: Message> Clone for Giver<R, M> {
 #[component(() => ())]
 pub struct RegistryComponent {
     receiver: EventReceiver,
+    #[cfg(feature = "runtime-loading")]
+    registry: Registry,
 }
 
 impl Input for RegistryComponent {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    #[cfg_attr(not(feature = "runtime-loading"), expect(unused_variables))]
+    async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(Self {
             receiver: registry.event_receiver(),
+            #[cfg(feature = "runtime-loading")]
+            registry: registry.handle(as_resource)?,
         })
+    }
+
+    fn constraints() -> Constraints {
+        #[cfg(not(feature = "runtime-loading"))]
+        return Constraints::default();
+        #[cfg(feature = "runtime-loading")]
+        return Registry::constraints();
     }
 }
 
@@ -206,6 +218,7 @@ impl<L: Listener> Component<L> for RegistryComponent {
         }
     }
 
+    #[cfg_attr(not(feature = "runtime-loading"), expect(unused_variables))]
     async fn handle(
         &mut self,
         event: Self::Value,
@@ -217,7 +230,7 @@ impl<L: Listener> Component<L> for RegistryComponent {
             RegistryEvent::Exit => ControlFlow::Break(()),
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(ref get_request) => {
-                get_request.check(listener).await;
+                get_request.check(listener, &self.registry).await;
                 ControlFlow::Continue(())
             }
             _ => ControlFlow::Continue(()),
@@ -307,7 +320,6 @@ impl<L: Listener> Runner for LoadedListener<L> {
         let res = self.listener.init(init_input).send().await;
         self.event_sender.handle_error(res, self.listener.ident());
 
-        // TODO: catch_unwind
         <L::Components as ComponentList<L>>::run(
             &mut self.components,
             &mut self.listener,
@@ -338,7 +350,7 @@ impl<L: Listener> Identifiable for LoadedListener<L> {
 }
 
 impl<L: Listener> LoadedResource for LoadedListener<L> {
-    fn resource_any(&self) -> &dyn PathAny {
+    fn resource_any(&self) -> &dyn crate::Any {
         &self.listener
     }
 
@@ -376,7 +388,9 @@ impl<L: Listener + Create> Loader for ListenerLoader<L> {
     }
 
     fn constraints(&self) -> Constraints {
-        L::RegistryInput::constraints().extend(L::Input::constraints())
+        L::RegistryInput::constraints()
+            .extend(L::Input::constraints())
+            .extend(L::Components::constraints())
     }
 
     fn ident(&self) -> &NamespacedIdRef {

@@ -18,7 +18,7 @@ futures = "0.3.30"
 auditeur-macros = { version = "0.1.0", path = "../auditeur-macros" }
 # others
 bevy_utils_proc_macros = "0.13.2"
-dashmap = { version = "6.0.1", optional = true }
+dashmap = { version = "6.0.1" }
 tracing = "0.1.40"
 send-future = "0.1.0"
 slice-dst = "1.5.1"
@@ -31,5 +31,5 @@ nursery = "warn"
 
 [features]
 path-any = ["auditeur-macros/path-any"]
-resource-map = ["dep:dashmap"]
+resource-map = []
 runtime-loading = ["resource-map", "auditeur-macros/runtime-loading"]

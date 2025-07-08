@@ -245,7 +245,6 @@ impl Intermediate {
                 &self.implementer,
                 &self.listener.value.id.value,
                 &CustomGenerics::from_generics(&self.generics.value),
-                &auditeur,
             );
 
             let (impl_generics, type_generics, where_clause) = self.generics.value.split_for_impl();

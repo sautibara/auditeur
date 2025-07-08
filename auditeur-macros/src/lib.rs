@@ -50,14 +50,14 @@ mod proc_macro_impls {
     mod message;
     pub use message::derive_message;
 
-    #[cfg(feature = "path-any")]
+    #[cfg(feature = "runtime-loading")]
     mod maybe_get_ref;
-    #[cfg(feature = "path-any")]
+    #[cfg(feature = "runtime-loading")]
     pub use maybe_get_ref::maybe_get_ref;
 
-    #[cfg(feature = "runtime-loading")]
+    #[cfg(feature = "path-any")]
     mod path_any;
-    #[cfg(feature = "runtime-loading")]
+    #[cfg(feature = "path-any")]
     pub use path_any::path_any;
 }
 
@@ -323,13 +323,12 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
         }
     };
 
-    let auditeur = Auditeur::new();
-    let input_mod = auditeur.input();
+    let auditeur = &*AUDITEUR;
 
     quote! {
-        impl #input_mod::get::GetRef for #ident {
+        impl #auditeur::input::get::GetRef for #ident {
             type Ref = Self;
-            fn get_ref(&self) -> Self {
+            fn get_ref(&self, _: &#auditeur::app::Registry) -> Self {
                 self.clone()
             }
         }
@@ -359,7 +358,7 @@ pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
         Err(error) => return error.into_compile_error().into(),
     };
 
-    proc_macro_impls::maybe_get_ref(&ident, &generics, &Auditeur::new()).into()
+    proc_macro_impls::maybe_get_ref(&ident, &generics).into()
 }
 
 #[cfg(feature = "path-any")]

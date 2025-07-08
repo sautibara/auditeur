@@ -84,7 +84,10 @@ impl<W: WatcherTrait + Create> Loader for Watcher<W> {
     }
 
     fn constraints(&self) -> Constraints {
-        W::RegistryInput::constraints().extend(W::Input::constraints())
+        let constraints = W::RegistryInput::constraints().extend(W::Input::constraints());
+        #[cfg(feature = "runtime-loading")]
+        let constraints = constraints.extend(Registry::constraints());
+        constraints
     }
 
     fn ident(&self) -> &NamespacedIdRef {

@@ -606,6 +606,7 @@ impl<'a> Method<'a> {
 pub struct Config<'a> {
     pub query: TakeConfig<'a>,
     pub transaction: Option<TakeConfig<'a>>,
+    pub get_ref: bool,
 }
 
 pub struct TakeConfig<'a> {
@@ -666,7 +667,13 @@ impl Meta {
             })
             .transpose()?;
 
-        Ok(Config { query, transaction })
+        let get_ref = self.params.iter().any(MetaParam::is_get_ref);
+
+        Ok(Config {
+            query,
+            transaction,
+            get_ref,
+        })
     }
 
     fn id(&self) -> Option<&NamespacedId> {
@@ -766,6 +773,7 @@ enum MetaParam {
     Query(List<TakeTypesParam>),
     Transaction(List<TakeTypesParam>),
     TransactionAutoFlag(Ident),
+    GetRefFlag(Ident),
 }
 
 impl MetaParam {
@@ -786,10 +794,15 @@ impl MetaParam {
     }
 
     const fn is_transaction(&self) -> bool {
-        match self {
-            Self::Transaction(_) | Self::TransactionAutoFlag(_) => true,
-            Self::Query(_) => false,
-        }
+        matches!(self, Self::Transaction(_) | Self::TransactionAutoFlag(_))
+    }
+
+    /// Returns `true` if the meta param is [`GetRefFlag`].
+    ///
+    /// [`GetRefFlag`]: MetaParam::GetRefFlag
+    #[must_use]
+    const fn is_get_ref(&self) -> bool {
+        matches!(self, Self::GetRefFlag(..))
     }
 }
 
@@ -805,6 +818,7 @@ impl Parse for MetaParam {
                     Ok(Self::TransactionAutoFlag(ident))
                 }
             }
+            "get_ref" => Ok(Self::GetRefFlag(ident)),
             other => Err(input.error(format!("expected 'query' or 'transaction', found {other}"))),
         }
     }
@@ -814,7 +828,7 @@ impl ToTokens for MetaParam {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
             Self::Query(list) | Self::Transaction(list) => list.to_tokens(tokens),
-            Self::TransactionAutoFlag(ident) => ident.to_tokens(tokens),
+            Self::TransactionAutoFlag(ident) | Self::GetRefFlag(ident) => ident.to_tokens(tokens),
         }
     }
 }

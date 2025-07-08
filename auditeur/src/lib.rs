@@ -41,7 +41,7 @@ pub mod prelude {
         input::get::Get,
         macros::{
             component, create, has_input, ident, identifiable, listener, message, resource,
-            respond, Create, GetRef, Input, PathAny, Runnable,
+            respond, Create, GetRef, Input, Runnable,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros
@@ -53,7 +53,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "path-any")]
-    pub(crate) use crate::path_any::PathAny;
+    pub use crate::macros::PathAny;
     pub(crate) use crate::{
         input::Input, resource::Identifiable, resource::Resource, Any, Error, ListenMessage,
     };

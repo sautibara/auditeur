@@ -8,11 +8,12 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use dashmap::DashMap;
-use tracing::trace;
 
 use crate::{app::EventSender, prelude::*, resource::listener};
 
-use super::{EventReceiver, GetRequest};
+use super::EventReceiver;
+#[cfg(feature = "runtime-loading")]
+use super::{GetRequest, PartialHandle};
 
 struct LoadedResource {
     id: NamespacedId,
@@ -34,7 +35,7 @@ impl Drop for LoadedResource {
 #[cfg(feature = "runtime-loading")]
 impl LoadedResource {
     async fn supply_owned(&self, resource: Box<dyn super::LoadedResource>) {
-        trace!(
+        tracing::trace!(
             "adding {} to the ResourceMap as a NonRunnable",
             resource.ident()
         );
@@ -43,10 +44,10 @@ impl LoadedResource {
     }
 
     /// Runs `func` on the contained owned resource, if it exists
-    async fn check_get_request(&self, get_request: &GetRequest) {
+    async fn check_get_request(&self, get_request: &GetRequest, registry: &Registry) {
         let resource_option = self.resource.read().await;
         if let Some(resource) = resource_option.as_deref() {
-            get_request.check_ref(resource.resource()).await;
+            get_request.check_ref(resource.resource(), registry).await;
         }
     }
 }
@@ -226,9 +227,38 @@ impl ResourceMap {
     }
 }
 
+#[cfg(feature = "runtime-loading")]
+enum RegistryInput {
+    Partial(Option<PartialHandle>),
+    Full(Registry),
+}
+
+#[cfg(feature = "runtime-loading")]
+impl RegistryInput {
+    fn supply<'a>(&'a mut self, map: &ResourceMap) -> &'a Registry {
+        match self {
+            Self::Partial(partial) => {
+                let partial = partial.take().unwrap_or_else(|| {
+                    unreachable!("RegistryInput::Partial(None) is never constructed")
+                });
+                let registry_handle = partial.supply_map_handle(map.handle());
+
+                *self = Self::Full(registry_handle);
+                match self {
+                    Self::Full(registry) => registry,
+                    Self::Partial(_) => unreachable!(),
+                }
+            }
+            Self::Full(registry) => registry,
+        }
+    }
+}
+
 #[doc(hidden)]
 pub struct MainComponent {
     receiver: EventReceiver,
+    #[cfg(feature = "runtime-loading")]
+    registry: RegistryInput,
     should_exit: bool,
 }
 
@@ -236,6 +266,8 @@ impl Input for MainComponent {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(Self {
             receiver: registry.event_receiver(),
+            #[cfg(feature = "runtime-loading")]
+            registry: RegistryInput::Partial(Some(PartialHandle::new(registry))),
             should_exit: false,
         })
     }
@@ -288,7 +320,10 @@ impl listener::Component<ResourceMap> for MainComponent {
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(get_request) => {
                 if let Some(resource_info) = map.get_resource(get_request.id()) {
-                    resource_info.check_get_request(&get_request).await;
+                    let registry = self.registry.supply(map);
+                    resource_info
+                        .check_get_request(&get_request, registry)
+                        .await;
                 }
             }
             RegistryEvent::Exit => {
@@ -310,7 +345,7 @@ pub struct Handle {
 
 impl crate::input::get::GetRef for ResourceMap {
     type Ref = Handle;
-    fn get_ref(&self) -> Self::Ref {
+    fn get_ref(&self, _: &Registry) -> Self::Ref {
         self.handle()
     }
 }

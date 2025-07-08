@@ -1,12 +1,11 @@
 use quote::quote;
 use syn::{Ident, Item};
 
-use crate::{custom_generics::CustomGenerics, namespaced_id::NamespacedId, Auditeur};
+use crate::{custom_generics::CustomGenerics, namespaced_id::NamespacedId};
 
 pub fn resource(mut item: Item, id: &NamespacedId) -> syn::Result<proc_macro2::TokenStream> {
     let (ident, generics) = CustomGenerics::from_item(&mut item)?;
-    let auditeur = Auditeur::new();
-    let impls = resource_impls_with_generics(ident, id, &generics, &auditeur);
+    let impls = resource_impls_with_generics(ident, id, &generics);
 
     Ok(quote! {
         #item
@@ -18,7 +17,6 @@ pub fn resource_impls_with_generics(
     ident: &Ident,
     id: &NamespacedId,
     generics: &CustomGenerics,
-    auditeur: &Auditeur,
 ) -> proc_macro2::TokenStream {
     #[cfg(feature = "path-any")]
     let path_any_impl = super::path_any(ident, generics);
@@ -26,7 +24,7 @@ pub fn resource_impls_with_generics(
     let path_any_impl = quote!();
 
     #[cfg(feature = "runtime-loading")]
-    let maybe_get_ref_impl = super::maybe_get_ref(ident, generics, auditeur);
+    let maybe_get_ref_impl = super::maybe_get_ref(ident, generics);
     #[cfg(not(feature = "runtime-loading"))]
     let maybe_get_ref_impl = quote!();
 
