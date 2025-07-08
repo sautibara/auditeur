@@ -159,14 +159,19 @@ pub struct Giver<R: Take<M>, M: Message> {
 
 impl<R: Take<M>, M: Message> Input for Giver<R, M> {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(Self {
-            sender: registry.respond_sender::<R, M>(),
-            pd: PhantomData,
-        })
+        Ok(Self::new(registry))
     }
 }
 
 impl<R: Take<M>, M: Message> Giver<R, M> {
+    #[must_use]
+    pub fn new(registry: &Registry) -> Self {
+        Self {
+            sender: registry.respond_sender::<R, M>(),
+            pd: PhantomData,
+        }
+    }
+
     pub async fn give(&self, message: M) {
         let _ = self.sender.send(message).await;
     }

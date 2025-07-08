@@ -81,16 +81,20 @@ impl Respond {
             #connection_struct
         };
 
-        if let Some(config) = config.transaction {
-            let transaction_struct = Self::define_transaction_struct(&config);
-            let ref_struct = Self::define_ref_struct(ident, &config, &methods, &inputs);
-            let take_transaction_impl = Self::impl_take_transaction(ident, &config, inputs)?;
+        if let Some(config) = &config.transaction {
+            let transaction_struct = Self::define_transaction_struct(config);
+            let ref_struct = Self::define_ref_struct(ident, config, &methods, &inputs);
+            let take_transaction_impl = Self::impl_take_transaction(ident, config, inputs)?;
 
             message_impls.extend(quote! {
                 #transaction_struct
                 #ref_struct
                 #take_transaction_impl
             });
+        }
+
+        if config.get_ref {
+            message_impls.extend(Self::impl_get_ref(ident, &config));
         }
 
         let item_impl = &self.item_impl;
@@ -276,6 +280,10 @@ impl Respond {
             giver: #auditeur::resource::listener::Giver<#item_ident, #message_ident>,
         };
 
+        let mut create_fields = quote! {
+            giver: #auditeur::resource::listener::Giver::new(registry),
+        };
+
         let response = format_ident!("{RESPONSE}");
 
         let mut methods_out = proc_macro2::TokenStream::new();
@@ -307,6 +315,10 @@ impl Respond {
                 transactions: #auditeur::resource::listener::Giver<#item_ident, #transaction_message>,
             });
 
+            create_fields.extend(quote! {
+                transactions: #auditeur::resource::listener::Giver::new(registry),
+            });
+
             methods_out.extend(quote! {
                 pub async fn run_transaction<T: Send + Sync + 'static>(
                     &self,
@@ -334,19 +346,28 @@ impl Respond {
 
         let ref_ident = &config.query.ref_ident;
 
-        let struct_def = parse_quote!(
-            pub struct #ref_ident { #fields }
-        );
-
-        let input_impl = super::derive_input(&struct_def);
-
         quote! {
-            #struct_def
+            #[derive(Clone)]
+            pub struct #ref_ident { #fields }
 
-            #input_impl
+            impl #auditeur::input::Input for #ref_ident {
+                async fn create(registry: &#auditeur::app::Registry, _: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
+                    Ok(Self::new(registry))
+                }
+
+                fn constraints() -> #auditeur::app::Constraints {
+                    #auditeur::app::Constraints::empty()
+                }
+            }
 
             #[allow(clippy::missing_panics_doc)]
-            impl #ref_ident { #methods_out }
+            impl #ref_ident {
+                fn new(registry: &#auditeur::app::Registry) -> Self {
+                    Self { #create_fields }
+                }
+
+                #methods_out
+            }
         }
     }
 
@@ -491,6 +512,28 @@ impl Respond {
                     };
                 }
                 pub use #macro_ident;
+            }
+        }
+    }
+
+    fn impl_get_ref(item_ident: &Ident, config: &Config) -> proc_macro2::TokenStream {
+        let auditeur = &*crate::AUDITEUR;
+        let connection = &config.query.ref_ident;
+
+        #[cfg(feature = "path-any")]
+        let any_impl = super::path_any(connection, &CustomGenerics::default());
+        #[cfg(not(feature = "path-any"))]
+        let any_impl = quote! {};
+
+        quote! {
+            #any_impl
+
+            impl #auditeur::input::get::GetRef for #item_ident {
+                type Ref = #connection;
+
+                fn get_ref(&self, registry: &#auditeur::app::Registry) -> Self::Ref {
+                    #connection::new(registry)
+                }
             }
         }
     }
