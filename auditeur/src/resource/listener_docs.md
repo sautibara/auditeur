@@ -13,9 +13,12 @@ to a message stream shared between all other resources (a broadcast). In effect,
 [`Listener`]s to listen to many different message streams in the app.
 
 However, since [`Listen`] is a broadcast, it can't form a message channel to send a response back
-to the original sender. For this case, you can instead use [`Respond`], which in turn provides
-[`RespondComponent`]. This trait allows you to send responses to the messages you receive in
-exchange for other resources not being able to see the messages being sent in either direction.
+to the original sender. For this case, you can instead use [`Take`], which in turn provides
+[`TakeComponent`]. This trait allows you to send messages that only a single listener can see,
+providing a mechanism for forming one-to-one conversations.
+
+For example, [`#[respond]`] uses `Take` to allow other resources to call methods with return values
+on a listener.
 
 # Inputs
 

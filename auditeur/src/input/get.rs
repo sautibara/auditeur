@@ -43,7 +43,7 @@ impl<T: Resource + GetRef> DerefMut for Get<T> {
 ///
 /// ```
 /// # // see the doc test for bundle::Supplier for why this is necessary
-/// # use auditeur::{input, path_any};
+/// # use auditeur::{input, path_any, app};
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 /// use auditeur::input::get::GetRef;
@@ -53,7 +53,8 @@ impl<T: Resource + GetRef> DerefMut for Get<T> {
 /// pub struct Shared(Arc<usize>);
 ///
 /// let shared: Shared = Shared(Arc::new(0));
-/// let reference: Shared = shared.get_ref();
+/// let registry = Registry::new(0);
+/// let reference: Shared = shared.get_ref(&registry);
 ///
 /// assert!(Arc::ptr_eq(&shared.0, &reference.0));
 /// # }

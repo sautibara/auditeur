@@ -4,6 +4,8 @@
 use crate::prelude::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // used for doc links
 use crate::resource::listener::*;
+#[allow(unused_imports)] // used for doc links
+use crate::Message;
 
 /// Returns a parsed static reference to a [`NamespacedIdRef`].
 ///
@@ -31,7 +33,7 @@ pub use auditeur_macros::ident;
 ///
 /// ```
 /// # // see the doctest for bundle::Supplier for why this is necessary
-/// # use auditeur::{namespaced_id, resource, path_any, input};
+/// # use auditeur::*;
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 ///
@@ -224,15 +226,11 @@ pub use auditeur_macros::expand_listener;
 /// {}
 /// ```
 ///
-/// ## Respond
+/// ## Take
 ///
-/// Much like [`Listen`], to respond to messages with [`Respond`], provide the list of
-/// them wrapped by `respond(<message>,*)`. To manually provide inputs for a message, use
-/// `respond(<message>(input = <inputs>))`.
-///
-/// ### Examples
-///
-/// See [`derive(Response)`](macro@Response)
+/// Much like [`Listen`], to take messages with [`Take`], provide the list of
+/// them wrapped by `take(<message>,*)`. To manually provide inputs for a message, use
+/// `take(<message>(input = <inputs>))`.
 ///
 /// ## Components
 ///
@@ -385,7 +383,7 @@ pub use auditeur_macros::expand_listener;
 ///
 /// ```text
 /// <attribute>:
-///   | #[listener(id = "<namespace>:<id>", <parameter>,*)]
+///   | #[listener("<namespace>:<id>", <parameter>,*)]
 ///
 /// <parameter>:
 ///   | registry_component = <boolean>
@@ -583,7 +581,7 @@ pub use auditeur_macros::Input;
 ///
 /// ```
 /// # // see the doc test for bundle::Supplier for why this is necessary
-/// # use auditeur::{input, path_any};
+/// # use auditeur::{input, path_any, app};
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 /// use auditeur::input::get::GetRef;
@@ -593,7 +591,8 @@ pub use auditeur_macros::Input;
 /// pub struct Shared(Arc<usize>);
 ///
 /// let shared: Shared = Shared(Arc::new(0));
-/// let reference: Shared = shared.get_ref();
+/// let registry = Registry::new(0);
+/// let reference: Shared = shared.get_ref(&registry);
 ///
 /// assert!(Arc::ptr_eq(&shared.0, &reference.0));
 /// # }
@@ -614,4 +613,203 @@ pub use auditeur_macros::MaybeGetRef;
 #[cfg(feature = "path-any")]
 pub use auditeur_macros::PathAny;
 
+/// Allows [`Listener`] methods with return values to be called by other resources.
+///
+/// Other resources are given a `Connection` struct that can ask the listener (through a message)
+/// to run a certain method. Then, the listener sends the response through a [oneshot
+/// channel](tokio::sync::oneshot) contained in the message. This allows the methods to take a
+/// mutable reference to the listener, take in [`Input`]s (which aren't reflected in the
+/// connection's methods), and return values back to the resource.
+///
+/// # Examples
+///
+/// ```
+/// use auditeur::prelude::*;
+/// use tokio::sync::broadcast;
+/// # use auditeur::*;
+///
+/// #[derive(Default, Create, Runnable)]
+/// // All that needs to be done in the `#[listener]` macro is to pass in a `respond` flag.
+/// // The macro then pulls the necessary information from the `impl` block for which messages
+/// // to listen to.
+/// #[listener("test:counter", respond)]
+/// struct Counter {
+///     value: usize,
+/// }
+///
+/// // The macro takes the NamespacedId of the listener as the first argument to fill out the id
+/// // for the `Query` message (which is automatically generated).
+/// // The `get_ref` flag makes `Get<Counter>` return the created `CounterConnection` struct.
+/// // The connection has methods that call the corresponding methods on the actual `Counter`.
+/// #[respond("test:counter", get_ref)]
+/// impl Counter {
+///     // These methods can have return values, but note that neither the parameters or return
+///     // types can hold references (since they're sent using messages). To get around this,
+///     // use transactions, clone items, or use `Arc`s.
+///     // Thankfully here we don't have to worry about that, since `usize` is copyable.
+///     // The last parameter must be an [`Input`], but it isn't needed here so we just use `()`.
+///     pub fn get(&self, (): ()) -> usize {
+///         self.value
+///     }
+///
+///     // If methods are provided that return nothing, when they're called on the connection
+///     // and awaited, the future will await until the listener is finished handling the method.
+///     // This is used here to allow other resources to wait until the value is fully set.
+///     pub fn set(&mut self, value: usize, sender: &mut broadcast::Sender<CounterChanged>) {
+///         self.value = value;
+///         let _ = sender.send(CounterChanged);
+///     }
+/// }
+///
+/// #[derive(Clone)]
+/// #[message("test:counter_changed")]
+/// struct CounterChanged;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), auditeur::Error> {
+///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<Counter>(()));
+///     app.run_with(
+///         1024,
+///         |(counter, receiver): (Get<Counter>, broadcast::Receiver<CounterChanged>)| async move {
+///             // All methods on a `Connection` struct take `&self` and are asynchronous since they
+///             // send and receive messages. They also don't take in any inputs, because the listener
+///             // already handles the inputs.
+///             assert!(receiver.is_empty());
+///             assert_eq!(counter.get().await, 0);
+///             counter.set(5).await;
+///             assert_eq!(counter.get().await, 5);
+///             assert!(!receiver.is_empty());
+///         }
+///     ).await
+/// }
+/// ```
+///
+/// # Transaction
+///
+/// If specified, `Connection`s can also accept transactions, which allow running multiple methods
+/// at the same time on the listener. Specifically, they accept closures with a `Ref` argument.
+/// The `Ref` acts as a mutable reference to the listener and allows running methods directly on the
+/// listener without specifying inputs (the inputs are held in the ref alongside the listener). It
+/// also implements [`Deref`](std::ops::Deref) and [`DerefMut`](std::ops::DerefMut) so other
+/// public methods on the listener can be run.
+///
+/// Note that these aren't SQL type transactions - if they don't succeed, they will not
+/// automatically be cancelled.
+///
+/// ## Examples
+///
+/// ```
+/// use auditeur::prelude::*;
+/// # use auditeur::*;
+///
+/// #[derive(Default, Create, Runnable)]
+/// #[listener("test:vec_resource", respond)]
+/// pub struct VecResource {
+///     items: Vec<usize>,
+/// }
+///
+/// #[respond("test:vec_resource", get_ref, transaction)]
+/// impl VecResource {
+///     pub fn push_usize(&mut self, value: usize, (): ()) {
+///         self.items.push(value);
+///     }
+///
+///     pub fn get_unwrap(&self, index: usize, (): ()) -> usize {
+///         *self.items.get(index).unwrap()
+///     }
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), auditeur::Error> {
+///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<VecResource>(()));
+///     app.run_with(1024, |vec: Get<VecResource>| async move {
+///         // Use `spawn_transaction` to run a transaction without returning a value.
+///         // While the future does have to be `await`ed, it will not await the listener fully
+///         // running the future - use `run_transaction` for that.
+///         vec.spawn_transaction(|mut vec| {
+///             for val in (0..5).rev() {
+///                 // Note that transactions are run by the listener itself, so we don't have to
+///                 // await any messages being sent.
+///                 vec.push_usize(val);
+///             }
+///         }).await;
+///
+///         // Here, run_transaction is used to return a value: the first five elements in the vec.
+///         let vals: Vec<usize> = vec.run_transaction(|vec| {
+///             (0..5).map(|index| vec.get_unwrap(index)).collect()
+///         }).await;
+///
+///         assert_eq!(&[4, 3, 2, 1, 0], &*vals);
+///     }).await
+/// }
+/// ```
+///
+/// # Syntax
+///
+/// ```text
+/// <RespondMeta>:
+///   | <NamespacedId>, <Param>,*
+///   | <Param>,*
+///
+/// <Param>:
+///   | query(<TypesParam>,*)
+///   | transaction(<TypesParam>,*)
+///   | transaction
+///   | get_ref
+///
+/// <TypesParam>
+///   | message_ident = <Ident>
+///   | message_id = <NamespacedId>
+///   | ref_ident = <Ident>
+/// ```
+///
+/// Components:
+/// - `<NamespacedId>`: The base id to use for both `query` and `transaction`'s message ids.
+/// - `query`
+///     - `message_ident`: The message with variants for each method that could be called.
+///         - Default: `<ident>Query`
+///     - `message_id`: The identifier of that message.
+///         - Default: `<namespace>:<id>_query`
+///     - `ref_ident`: The `Connection` with methods that wrap sending and receiving messages.
+///         - Default: `<ident>Connection`
+/// - `transaction`
+///     - `message_ident`: The message that contains a transaction closure.
+///         - Default: `<ident>Transaction`
+///     - `message_id`: The identifier of that message.
+///         - Default: `<namespace>:<id>_transaction`
+///     - `ref_ident`: The `Ref` that holds a reference to the listener, allowing direct access of
+///       the methods.
+///         - Default: `<ident>Ref`
+/// - `get_ref`: If the macro should generate a [`GetRef`] implementation for the listener.
+///
+/// ## Examples
+///
+/// ```no_run
+/// use auditeur::prelude::*;
+/// use std::future::Future;
+/// # use auditeur::*;
+///
+/// #[derive(Default, Create, Runnable)]
+/// #[listener("test:example", respond)]
+/// pub struct Example;
+///
+/// #[respond(
+///     "test:example",
+///     query(message_ident = Query, message_id = "test:query", ref_ident = Connection),
+///     transaction(message_ident = Transaction, message_id = "test:transaction", ref_ident = Ref),
+///     get_ref
+/// )]
+/// impl Example {
+///     pub fn func(&self, val: usize, (): ()) -> usize { val }
+/// }
+///
+/// fn enforce_trait_bounds<Example>()
+/// where
+///     Example: Take<Query> + Take<Transaction>,
+/// {}
+///
+/// # fn main() {
+/// enforce_trait_bounds::<Example>();
+/// # }
+/// ```
 pub use auditeur_macros::respond;

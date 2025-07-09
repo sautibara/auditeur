@@ -303,10 +303,10 @@ impl Respond {
             methods_out.extend(quote! {
                 #(#docs)*
                 pub async fn #method_ident(&self, #(#arg0: #ty),*) -> #return_type {
-                    let (#response, receiver) = #auditeur::tokio::sync::oneshot::channel();
+                    let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
                     let query = #message_ident::#variant { #response, #(#arg1),* };
                     self.giver.give(query).await;
-                    receiver.await.expect(stringify!(#item_ident, "::", #method_ident, " panicked"))
+                    auditeur_receiver.await.expect(concat!(stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
                 }
             });
         }
@@ -334,7 +334,7 @@ impl Respond {
                         let _ = response.send(res);
                     })
                     .await;
-                    receiver.await.expect(stringify!(#item_ident, " transaction panicked"))
+                    receiver.await.expect(concat!(stringify!(#item_ident), " transaction panicked"))
                 }
 
                 pub async fn spawn_transaction(
@@ -484,6 +484,19 @@ impl Respond {
                 input: #input_list,
             }
 
+            impl std::ops::Deref for #ref_ident<'_> {
+                type Target = #item_ident;
+                fn deref(&self) -> &Self::Target {
+                    &self.deref
+                }
+            }
+
+            impl std::ops::DerefMut for #ref_ident<'_> {
+                fn deref_mut(&mut self) -> &mut Self::Target {
+                    &mut self.deref
+                }
+            }
+
             impl #ref_ident<'_> { #methods_out }
         }
     }
@@ -516,7 +529,7 @@ impl Respond {
                 #[doc(hidden)]
                 macro_rules! #macro_ident {
                     (($callback:path $(, $($callbacks:tt)*)?) ($($_params:tt)*) $_ident:ident ($($meta:tt)*) $($rest:tt)*) => {
-                        $callback!(($($($callbacks)*)?) ($($_params)*) $_ident ($($meta)*, take(#take)) $($rest)*);
+                        $callback!(($($($callbacks)*)?) ($($_params)*) $_ident ($($meta)* take(#take)) $($rest)*);
                     };
                 }
                 pub use #macro_ident;

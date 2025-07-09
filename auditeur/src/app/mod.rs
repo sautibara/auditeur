@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::future::Future;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -185,6 +186,30 @@ impl App {
     pub async fn run(self, capacity: usize) -> Result<(), (Self, Error)> {
         let registry = self.build(capacity).await?;
         registry.run().await;
+        Ok(())
+    }
+
+    /// Runs an asynchronous function alongside the app, stopping the app once the function exits.
+    /// The function may also take in [`Input`]s.
+    ///
+    /// # Errors
+    ///
+    /// - If one of the loaders failed to build
+    /// - If a dependency wasn't found
+    pub async fn run_with<F, Fut, I>(self, capacity: usize, func: F) -> Result<(), Error>
+    where
+        F: FnOnce(I) -> Fut,
+        Fut: Future<Output = ()>,
+        I: Input,
+    {
+        let ident = ident!("auditeur:run_with");
+        let registry = self.build(capacity).await.map_err(|(_, err)| err)?;
+        let input = I::create(&registry, ident).await?;
+        let stopper = Stopper::create(&registry, ident).await?;
+        let running = tokio::spawn(registry.run());
+        func(input).await;
+        stopper.exit();
+        let _ = running.await;
         Ok(())
     }
 
@@ -564,6 +589,7 @@ impl RunningRegistry {
 
 struct Channels {
     capacity: usize,
+    // TODO: these probably don't have to be [`DashMap`]s - profile this or something
     listen_map: DashMap<NamespacedId, Box<dyn crate::Any + Send + Sync>>,
     respond_map: DashMap<(NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>>,
 }
@@ -693,7 +719,9 @@ pub struct Registry {
 }
 
 impl Registry {
-    fn new(capacity: usize) -> Self {
+    /// Creates a new, empty registry.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
         Self {
             channels: Arc::new(Channels::new(capacity)),
             event_sender: EventSender::new(),
@@ -1008,9 +1036,15 @@ impl Input for Registry {
     }
 }
 
-impl<M: ListenMessage> Input for Sender<M> {
+impl<M: ListenMessage> Input for broadcast::Sender<M> {
     async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         Ok(registry.message_sender())
+    }
+}
+
+impl<M: ListenMessage> Input for broadcast::Receiver<M> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+        Ok(registry.message_receiver())
     }
 }
 

@@ -333,7 +333,9 @@ impl Intermediate {
                 Some(res.map(|param| Pair::new(param, punct)))
             })
             .collect::<syn::Result<_>>()?;
-        parameters.pop_punct();
+        if !parameters.trailing_punct() && !parameters.is_empty() {
+            parameters.push_punct(Token![,](Span::call_site()));
+        }
         self.listener.value.parameters = parameters;
 
         Ok(())

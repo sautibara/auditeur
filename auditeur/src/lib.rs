@@ -57,7 +57,6 @@ pub mod prelude {
     pub(crate) use crate::{
         input::Input, resource::Identifiable, resource::Resource, Any, Error, ListenMessage,
     };
-    pub(crate) use tokio::sync::broadcast::Sender;
 
     pub use anyhow;
     pub use anyhow::Result;
