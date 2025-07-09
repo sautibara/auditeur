@@ -21,14 +21,14 @@ pub fn macro_ident(item_ident: &Ident) -> Ident {
 // #[respond(
 //     "core:library",
 //     query(
-//         auto,
-//         message(ident = LibraryQuery, id = "core:library_query"),
-//         ref(ident = LibraryConnection),
+//         message_ident = LibraryQuery,
+//         message_id = "core:library_query",
+//         ref_ident = LibraryConnection,
 //     ),
 //     transaction(
-//         auto,
-//         message(ident = LibraryTransaction, id = "core:library_transaction"),
-//         ref(ident = LibraryRef),
+//         message_ident = LibraryTransaction,
+//         message_id = "core:library_transaction",
+//         ref_ident = LibraryRef,
 //     ),
 // )]
 
@@ -739,14 +739,13 @@ impl Meta {
         defaults: TakeDefaultSuffixes,
         param_name: &'static str,
     ) -> syn::Result<TakeConfig<'a>> {
-        let (message_ident, message_id, ref_ident, ref_id) = params.fold(
-            (None, None, None, None),
-            |(message_ident, message_id, ref_ident, ref_id), param| {
+        let (message_ident, message_id, ref_ident) = params.fold(
+            (None, None, None),
+            |(message_ident, message_id, ref_ident), param| {
                 (
                     param.message_ident().or(message_ident),
                     param.message_id().or(message_id),
                     param.ref_ident().or(ref_ident),
-                    param.ref_id().or(ref_id),
                 )
             },
         );
@@ -782,13 +781,6 @@ impl Meta {
             || Cow::Owned(format_ident!("{item_ident}{}", defaults.ref_ident)),
             Cow::Borrowed,
         );
-
-        if ref_id.is_some() {
-            return Err(syn::Error::new(
-                self.span(),
-                "specifying an id for the reference does nothing",
-            ));
-        }
 
         Ok(TakeConfig {
             message_ident,
@@ -888,16 +880,14 @@ impl ToTokens for MetaParam {
 
 #[derive(Debug)]
 enum TakeTypesParam {
-    MessageParams(List<ItemParam>),
+    MessageId(NameValue<NamespacedId>),
     MessageIdent(NameValue<Ident>),
-    RefParams(List<ItemParam>),
     RefIdent(NameValue<Ident>),
 }
 
 impl TakeTypesParam {
     fn message_ident(&self) -> Option<&Ident> {
         match self {
-            Self::MessageParams(list) => list.iter().filter_map(ItemParam::ident).next_back(),
             Self::MessageIdent(name_value) => Some(name_value),
             _ => None,
         }
@@ -905,22 +895,14 @@ impl TakeTypesParam {
 
     fn message_id(&self) -> Option<&NamespacedId> {
         match self {
-            Self::MessageParams(list) => list.iter().filter_map(ItemParam::id).next_back(),
+            Self::MessageId(name_value) => Some(name_value),
             _ => None,
         }
     }
 
     fn ref_ident(&self) -> Option<&Ident> {
         match self {
-            Self::RefParams(list) => list.iter().filter_map(ItemParam::ident).next_back(),
             Self::RefIdent(name_value) => Some(name_value),
-            _ => None,
-        }
-    }
-
-    fn ref_id(&self) -> Option<&NamespacedId> {
-        match self {
-            Self::RefParams(list) => list.iter().filter_map(ItemParam::id).next_back(),
             _ => None,
         }
     }
@@ -930,28 +912,11 @@ impl Parse for TakeTypesParam {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let ident: Ident = input.parse()?;
         match &*ident.to_string() {
-            "message" => {
-                let lookahead = input.lookahead1();
-                if lookahead.peek(token::Paren) {
-                    List::parse_after(ident, input).map(Self::MessageParams)
-                } else if lookahead.peek(Token![=]) {
-                    NameValue::parse_after(ident, input).map(Self::MessageIdent)
-                } else {
-                    Err(lookahead.error())
-                }
-            }
-            "ref" => {
-                let lookahead = input.lookahead1();
-                if lookahead.peek(token::Paren) {
-                    List::parse_after(ident, input).map(Self::RefParams)
-                } else if lookahead.peek(Token![=]) {
-                    NameValue::parse_after(ident, input).map(Self::RefIdent)
-                } else {
-                    Err(lookahead.error())
-                }
-            }
+            "message_ident" => NameValue::parse_after(ident, input).map(Self::MessageIdent),
+            "message_id" => NameValue::parse_after(ident, input).map(Self::MessageId),
+            "ref_ident" => NameValue::parse_after(ident, input).map(Self::RefIdent),
             other => Err(input.error(format!(
-                "expected 'auto', 'message', or 'ref', found {other}"
+                "expected 'message_ident', 'message_id, or 'ref_ident', found {other}"
             ))),
         }
     }
@@ -960,52 +925,10 @@ impl Parse for TakeTypesParam {
 impl ToTokens for TakeTypesParam {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            Self::MessageParams(list) | Self::RefParams(list) => list.to_tokens(tokens),
+            Self::MessageId(name_value) => name_value.to_tokens(tokens),
             Self::MessageIdent(name_value) | Self::RefIdent(name_value) => {
                 name_value.to_tokens(tokens);
             }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ItemParam {
-    Ident(NameValue<Ident>),
-    Id(NameValue<NamespacedId>),
-}
-
-impl ItemParam {
-    fn ident(&self) -> Option<&Ident> {
-        match self {
-            Self::Ident(name_value) => Some(name_value),
-            Self::Id(_) => None,
-        }
-    }
-
-    fn id(&self) -> Option<&NamespacedId> {
-        match self {
-            Self::Id(name_value) => Some(name_value),
-            Self::Ident(_) => None,
-        }
-    }
-}
-
-impl Parse for ItemParam {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-        match &*ident.to_string() {
-            "ident" => NameValue::parse_after(ident, input).map(Self::Ident),
-            "id" => NameValue::parse_after(ident, input).map(Self::Id),
-            other => Err(input.error(format!("expected 'ident' or 'id', found {other}"))),
-        }
-    }
-}
-
-impl ToTokens for ItemParam {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        match self {
-            Self::Ident(name_value) => name_value.to_tokens(tokens),
-            Self::Id(name_value) => name_value.to_tokens(tokens),
         }
     }
 }
