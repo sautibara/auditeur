@@ -66,18 +66,21 @@ impl Respond {
 
     pub fn expand(&mut self) -> syn::Result<proc_macro2::TokenStream> {
         self.check_impl_signature()?;
-        self.check_and_make_methods_private()?;
+
+        let visibilities = self.check_methods()?;
+        let (methods, inputs) = self.gather_methods_and_inputs(visibilities)?;
 
         let ident = self.ident()?;
         let config = self.meta.to_config(ident)?;
 
-        let (methods, inputs) = self.gather_methods_and_inputs()?;
+        let hidden = Self::hidden(&methods);
 
         let macro_def = Self::define_macro(ident, &config, &inputs);
 
-        let query_enum = Self::define_query_enum(&config, &methods);
+        let query_enum = Self::define_query_enum(&config, &methods, hidden.as_ref());
         let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs)?;
-        let connection_struct = Self::define_connection_struct(ident, &config, &methods);
+        let connection_struct =
+            Self::define_connection_struct(ident, &config, &methods, hidden.as_ref());
 
         let mut message_impls = quote! {
             #query_enum
@@ -86,8 +89,9 @@ impl Respond {
         };
 
         if let Some(config) = &config.transaction {
-            let transaction_struct = Self::define_transaction_struct(config);
-            let ref_struct = Self::define_ref_struct(ident, config, &methods, &inputs);
+            let transaction_struct = Self::define_transaction_struct(config, hidden.as_ref());
+            let ref_struct =
+                Self::define_ref_struct(ident, config, &methods, &inputs, hidden.as_ref());
             let take_transaction_impl = Self::impl_take_transaction(ident, config, inputs)?;
 
             message_impls.extend(quote! {
@@ -131,19 +135,6 @@ impl Respond {
         }
     }
 
-    fn check_and_make_methods_private(&mut self) -> syn::Result<()> {
-        for item in &mut self.item_impl.items {
-            match item {
-                ImplItem::Fn(item) => item.vis = Visibility::Inherited,
-                item => {
-                    return Err(syn::Error::new_spanned(item, "expected only methods"));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn ident(&self) -> syn::Result<&Ident> {
         match &*self.item_impl.self_ty {
             Type::Path(path) => path.path.require_ident(),
@@ -154,22 +145,53 @@ impl Respond {
         }
     }
 
-    fn gather_methods_and_inputs(&self) -> syn::Result<(Vec<Method>, InputList)> {
-        let mut inputs = InputList::default();
-        let methods = self
-            .item_impl
+    fn check_methods(&mut self) -> syn::Result<Vec<Visibility>> {
+        self.item_impl
             .items
-            .iter()
+            .iter_mut()
             .map(|item| match item {
-                ImplItem::Fn(item) => item,
+                ImplItem::Fn(method) => Ok(std::mem::replace(
+                    &mut method.vis,
+                    Visibility::Public(Token![pub](Span::call_site())),
+                )),
+                _ => Err(syn::Error::new_spanned(item, "expected a function")),
+            })
+            .collect::<syn::Result<_>>()
+    }
+
+    fn gather_methods_and_inputs(
+        &self,
+        visibilities: Vec<Visibility>,
+    ) -> syn::Result<(Vec<Method>, InputList)> {
+        let mut inputs = InputList::default();
+        let methods = (self.item_impl.items.iter())
+            .zip(visibilities)
+            .map(|(item, visibility)| match item {
+                ImplItem::Fn(method) => Method::new(method, visibility, &mut inputs),
                 _ => unreachable!(),
             })
-            .map(|method| Method::new(method, &mut inputs))
             .collect::<syn::Result<_>>()?;
         Ok((methods, inputs))
     }
 
-    fn define_query_enum(config: &Config<'_>, methods: &[Method]) -> proc_macro2::TokenStream {
+    fn hidden(methods: &[Method]) -> Option<proc_macro2::TokenStream> {
+        if methods.iter().all(|method| {
+            matches!(
+                method.vis,
+                Visibility::Inherited | Visibility::Restricted(_)
+            )
+        }) {
+            Some(quote! { #[doc(hidden)] })
+        } else {
+            None
+        }
+    }
+
+    fn define_query_enum(
+        config: &Config<'_>,
+        methods: &[Method],
+        hidden: Option<&proc_macro2::TokenStream>,
+    ) -> proc_macro2::TokenStream {
         let auditeur = &*crate::AUDITEUR;
 
         let mut variants = proc_macro2::TokenStream::new();
@@ -181,9 +203,18 @@ impl Respond {
             let response = format_ident!("{RESPONSE}");
             let docs = &method.docs;
 
+            let vis = if matches!(
+                method.vis,
+                Visibility::Inherited | Visibility::Restricted(_)
+            ) {
+                quote! { #[doc(hidden)] }
+            } else {
+                quote! {}
+            };
+
             variants.extend(quote! {
                 #(#docs)*
-                #variant {
+                #vis #variant {
                     #response: #auditeur::tokio::sync::oneshot::Sender<#return_type>,
                     #(#ident: #ty),*
                 },
@@ -197,6 +228,7 @@ impl Respond {
 
         quote! {
             #[non_exhaustive]
+            #hidden
             pub enum #ident {
                 #variants
             }
@@ -275,6 +307,7 @@ impl Respond {
         item_ident: &Ident,
         config: &Config<'_>,
         methods: &[Method],
+        hidden: Option<&proc_macro2::TokenStream>,
     ) -> proc_macro2::TokenStream {
         let auditeur = &*crate::AUDITEUR;
 
@@ -299,10 +332,11 @@ impl Respond {
             let ty = method.args.iter().map(|arg| arg.ty);
             let return_type = method.return_type_to_token_stream();
             let docs = &method.docs;
+            let vis = &method.vis;
 
             methods_out.extend(quote! {
                 #(#docs)*
-                pub async fn #method_ident(&self, #(#arg0: #ty),*) -> #return_type {
+                #vis async fn #method_ident(&self, #(#arg0: #ty),*) -> #return_type {
                     let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
                     let query = #message_ident::#variant { #response, #(#arg1),* };
                     self.giver.give(query).await;
@@ -323,8 +357,14 @@ impl Respond {
                 transactions: #auditeur::resource::listener::Giver::new(registry),
             });
 
+            let vis = if hidden.is_some() {
+                quote! { pub(crate) }
+            } else {
+                quote! { pub }
+            };
+
             methods_out.extend(quote! {
-                pub async fn run_transaction<T: Send + Sync + 'static>(
+                #vis async fn run_transaction<T: Send + Sync + 'static>(
                     &self,
                     transaction: impl for<'a> FnOnce(#transaction_ref<'a>) -> T + Send + Sync + 'static,
                 ) -> T {
@@ -337,7 +377,7 @@ impl Respond {
                     receiver.await.expect(concat!(stringify!(#item_ident), " transaction panicked"))
                 }
 
-                pub async fn spawn_transaction(
+                #vis async fn spawn_transaction(
                     &self,
                     transaction: impl for<'a> FnOnce(#transaction_ref<'a>) + Send + Sync + 'static,
                 ) {
@@ -351,6 +391,7 @@ impl Respond {
         let ref_ident = &config.query.ref_ident;
 
         quote! {
+            #hidden
             #[derive(Clone)]
             pub struct #ref_ident { #fields }
 
@@ -375,7 +416,10 @@ impl Respond {
         }
     }
 
-    fn define_transaction_struct(config: &TakeConfig) -> proc_macro2::TokenStream {
+    fn define_transaction_struct(
+        config: &TakeConfig,
+        hidden: Option<&proc_macro2::TokenStream>,
+    ) -> proc_macro2::TokenStream {
         let TakeConfig {
             message_ident,
             message_id,
@@ -386,6 +430,7 @@ impl Respond {
             super::derive_message(message_ident, message_id, &CustomGenerics::default());
 
         quote! {
+            #hidden
             pub struct #message_ident {
                 func: Box<dyn for<'a> FnOnce(#ref_ident<'a>) + Send + Sync>,
             }
@@ -445,6 +490,7 @@ impl Respond {
         config: &TakeConfig,
         methods: &[Method],
         input_list: &InputList,
+        hidden: Option<&proc_macro2::TokenStream>,
     ) -> proc_macro2::TokenStream {
         let TakeConfig { ref_ident, .. } = config;
 
@@ -457,6 +503,7 @@ impl Respond {
             let return_type = method.return_type_to_token_stream();
             let mutability = method.mutability;
             let docs = &method.docs;
+            let vis = &method.vis;
 
             let input = method
                 .combination
@@ -469,7 +516,7 @@ impl Respond {
             methods_out.extend(quote! {
                 #(#docs)*
                 #[must_use]
-                pub fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
+                #vis fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
                     self.deref.#method_ident(#(#arg1),*, (#(#input),*))
                 }
             });
@@ -478,6 +525,7 @@ impl Respond {
         let input_list = input_list.clone().into_reference_list().with_lifetime("'a");
 
         quote! {
+            #hidden
             pub struct #ref_ident<'a> {
                 deref: &'a mut #item_ident,
                 #[allow(dead_code)]
@@ -568,6 +616,7 @@ struct Method<'a> {
     return_type: Option<&'a Type>,
     asyncness: Option<Token![async]>,
     mutability: Option<Token![mut]>,
+    vis: Visibility,
     docs: Vec<&'a Attribute>,
     // timeout: Option<Expr>,
     // on_error: MethodOnError,
@@ -585,7 +634,18 @@ struct Arg<'a> {
 // }
 
 impl<'a> Method<'a> {
-    pub fn new(item: &'a ImplItemFn, all_inputs: &mut InputList) -> syn::Result<Self> {
+    pub fn new(
+        item: &'a ImplItemFn,
+        vis: Visibility,
+        all_inputs: &mut InputList,
+    ) -> syn::Result<Self> {
+        if !item.sig.generics.params.is_empty() || item.sig.generics.where_clause.is_some() {
+            return Err(syn::Error::new_spanned(
+                &item.sig.generics,
+                "method cannot have generics",
+            ));
+        }
+
         let snake_case_ident = &item.sig.ident;
         let camel_case_ident = Ident::new(
             &snake_to_upper_camel_case(&snake_case_ident.to_string()),
@@ -652,6 +712,7 @@ impl<'a> Method<'a> {
             return_type,
             asyncness,
             mutability,
+            vis,
             docs,
             // TODO: read below config from attributes:
             // #[auditeur(timeout = Duration::from_secs(2), on_error = panic)]
