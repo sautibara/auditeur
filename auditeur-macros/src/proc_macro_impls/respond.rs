@@ -3,13 +3,13 @@ use std::borrow::Cow;
 use proc_macro2::Span;
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
-    parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned, token, Attribute, FnArg,
-    Ident, ImplItem, ImplItemFn, ItemImpl, LitStr, Pat, ReturnType, Token, Type, Visibility,
+    parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned, token, Attribute, Expr,
+    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, LitStr, Pat, ReturnType, Token, Type, Visibility,
 };
 
 use crate::{
     custom_generics::CustomGenerics,
-    field::{Comma, List, NameValue},
+    field::{Comma, List, NameValue, Parenthesized},
     input_list::{Combination, InputList, InputReferenceList},
     namespaced_id::NamespacedId,
 };
@@ -30,6 +30,13 @@ pub fn macro_ident(item_ident: &Ident) -> Ident {
 //         message_id = "core:library_transaction",
 //         ref_ident = LibraryRef,
 //     ),
+// )]
+
+// #[respond(
+//     connection_fn,
+//     ref_fn,
+//     timeout = Duration::from_secs(2),
+//     on_error = panic,
 // )]
 
 const RESPONSE: &str = "response";
@@ -67,20 +74,20 @@ impl Respond {
     pub fn expand(&mut self) -> syn::Result<proc_macro2::TokenStream> {
         self.check_impl_signature()?;
 
-        let visibilities = self.check_methods()?;
+        let (visibilities, raw_fns) = self.mutate_methods()?;
         let (methods, inputs) = self.gather_methods_and_inputs(visibilities)?;
 
         let ident = self.ident()?;
         let config = self.meta.to_config(ident)?;
 
-        let hidden = Self::hidden(&methods);
+        let hidden = Self::hidden(&methods, &raw_fns);
 
         let macro_def = Self::define_macro(ident, &config, &inputs);
 
         let query_enum = Self::define_query_enum(&config, &methods, hidden.as_ref());
         let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs)?;
         let connection_struct =
-            Self::define_connection_struct(ident, &config, &methods, hidden.as_ref());
+            Self::define_connection_struct(ident, &config, &methods, &raw_fns, hidden.as_ref());
 
         let mut message_impls = quote! {
             #query_enum
@@ -90,8 +97,14 @@ impl Respond {
 
         if let Some(config) = &config.transaction {
             let transaction_struct = Self::define_transaction_struct(config, hidden.as_ref());
-            let ref_struct =
-                Self::define_ref_struct(ident, config, &methods, &inputs, hidden.as_ref());
+            let ref_struct = Self::define_ref_struct(
+                ident,
+                config,
+                &methods,
+                &inputs,
+                &raw_fns,
+                hidden.as_ref(),
+            );
             let take_transaction_impl = Self::impl_take_transaction(ident, config, inputs)?;
 
             message_impls.extend(quote! {
@@ -145,18 +158,51 @@ impl Respond {
         }
     }
 
-    fn check_methods(&mut self) -> syn::Result<Vec<Visibility>> {
-        self.item_impl
+    fn mutate_methods(&mut self) -> syn::Result<(Vec<Visibility>, RawFns)> {
+        let mut raw_fns = Vec::new();
+        let iter = self
+            .item_impl
             .items
-            .iter_mut()
-            .map(|item| match item {
-                ImplItem::Fn(method) => Ok(std::mem::replace(
-                    &mut method.vis,
-                    Visibility::Public(Token![pub](Span::call_site())),
-                )),
-                _ => Err(syn::Error::new_spanned(item, "expected a function")),
-            })
-            .collect::<syn::Result<_>>()
+            .drain(..)
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) => Self::mutate_method(method, &mut raw_fns).transpose(),
+                _ => Some(Err(syn::Error::new_spanned(item, "expected a function"))),
+            });
+        let (items, visibilities) = iter.collect::<syn::Result<_>>()?;
+        self.item_impl.items = items;
+        Ok((visibilities, RawFns { raw_fns }))
+    }
+
+    fn mutate_method(
+        mut method: ImplItemFn,
+        raw_fns: &mut Vec<(ImplItemFn, RawFnType)>,
+    ) -> syn::Result<Option<(ImplItem, Visibility)>> {
+        let (attrs, config) = method.attrs.drain(..).try_fold(
+            (Vec::new(), MethodAttributes::default()),
+            |(mut attrs, mut config), attr| {
+                if attr.path().is_ident("respond") {
+                    let args: MethodAttributes = attr.parse_args()?;
+                    config.attributes.extend(args.attributes.into_pairs());
+                } else {
+                    attrs.push(attr);
+                }
+                syn::Result::Ok((attrs, config))
+            },
+        )?;
+        method.attrs = attrs;
+        match config.into_config()? {
+            MethodAttributeConfig::RawFn(raw_fn) => {
+                raw_fns.push((method, raw_fn));
+                Ok(None)
+            }
+            MethodAttributeConfig::Method { timeout, on_error } => {
+                if timeout.is_some() || !on_error.is_default() {
+                    todo!("timeout and on_error support");
+                }
+                let vis = std::mem::replace(&mut method.vis, Visibility::Inherited);
+                Ok(Some((ImplItem::Fn(method), vis)))
+            }
+        }
     }
 
     fn gather_methods_and_inputs(
@@ -174,13 +220,11 @@ impl Respond {
         Ok((methods, inputs))
     }
 
-    fn hidden(methods: &[Method]) -> Option<proc_macro2::TokenStream> {
-        if methods.iter().all(|method| {
-            matches!(
-                method.vis,
-                Visibility::Inherited | Visibility::Restricted(_)
-            )
-        }) {
+    fn hidden(methods: &[Method], raw_fns: &RawFns) -> Option<proc_macro2::TokenStream> {
+        if (methods.iter().map(|method| &method.vis))
+            .chain(raw_fns.iter().map(|method| &method.vis))
+            .all(|vis| matches!(vis, Visibility::Inherited | Visibility::Restricted(_)))
+        {
             Some(quote! { #[doc(hidden)] })
         } else {
             None
@@ -307,6 +351,7 @@ impl Respond {
         item_ident: &Ident,
         config: &Config<'_>,
         methods: &[Method],
+        raw_fns: &RawFns,
         hidden: Option<&proc_macro2::TokenStream>,
     ) -> proc_macro2::TokenStream {
         let auditeur = &*crate::AUDITEUR;
@@ -343,6 +388,10 @@ impl Respond {
                     auditeur_receiver.await.expect(concat!(stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
                 }
             });
+        }
+
+        for method in raw_fns.connection_fns() {
+            method.to_tokens(&mut methods_out);
         }
 
         if let Some(transaction) = config.transaction.as_ref() {
@@ -390,6 +439,11 @@ impl Respond {
 
         let ref_ident = &config.query.ref_ident;
 
+        let new_docs = format!(
+            "Create a new [`{ref_ident}`] using a [`Registry`]({}::app::Registry).",
+            auditeur.to_token_stream().to_string().replace(' ', "")
+        );
+
         quote! {
             #hidden
             #[derive(Clone)]
@@ -407,7 +461,8 @@ impl Respond {
 
             #[allow(clippy::missing_panics_doc)]
             impl #ref_ident {
-                fn new(registry: &#auditeur::app::Registry) -> Self {
+                #[doc = #new_docs]
+                pub fn new(registry: &#auditeur::app::Registry) -> Self {
                     Self { #create_fields }
                 }
 
@@ -490,6 +545,7 @@ impl Respond {
         config: &TakeConfig,
         methods: &[Method],
         input_list: &InputList,
+        raw_fns: &RawFns,
         hidden: Option<&proc_macro2::TokenStream>,
     ) -> proc_macro2::TokenStream {
         let TakeConfig { ref_ident, .. } = config;
@@ -504,6 +560,8 @@ impl Respond {
             let mutability = method.mutability;
             let docs = &method.docs;
             let vis = &method.vis;
+            let asyncness = &method.asyncness;
+            let maybe_await = method.maybe_await();
 
             let input = method
                 .combination
@@ -515,11 +573,14 @@ impl Respond {
 
             methods_out.extend(quote! {
                 #(#docs)*
-                #[must_use]
-                #vis fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
-                    self.deref.#method_ident(#(#arg1),*, (#(#input),*))
+                #vis #asyncness fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
+                    self.deref.#method_ident(#(#arg1),*, (#(#input),*)) #maybe_await
                 }
             });
+        }
+
+        for method in raw_fns.ref_fns() {
+            method.to_tokens(&mut methods_out);
         }
 
         let input_list = input_list.clone().into_reference_list().with_lifetime("'a");
@@ -608,6 +669,242 @@ impl Respond {
     }
 }
 
+struct RawFns {
+    raw_fns: Vec<(ImplItemFn, RawFnType)>,
+}
+
+impl RawFns {
+    fn connection_fns(&self) -> impl Iterator<Item = &ImplItemFn> {
+        self.raw_fns
+            .iter()
+            .filter(|(_, typ)| typ.connection_fn())
+            .map(|(func, _)| func)
+    }
+
+    fn ref_fns(&self) -> impl Iterator<Item = &ImplItemFn> {
+        self.raw_fns
+            .iter()
+            .filter(|(_, typ)| typ.ref_fn())
+            .map(|(func, _)| func)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &ImplItemFn> {
+        self.raw_fns.iter().map(|(func, _)| func)
+    }
+}
+
+#[derive(Default)]
+struct MethodAttributes {
+    attributes: Punctuated<MethodAttribute, Token![,]>,
+}
+
+impl Parse for MethodAttributes {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            attributes: input.parse_terminated(MethodAttribute::parse, Token![,])?,
+        })
+    }
+}
+
+impl MethodAttributes {
+    fn into_config(self) -> syn::Result<MethodAttributeConfig> {
+        let span = self.attributes.span();
+
+        let (is_connection_fn, is_ref_fn, timeout, on_error) = self.attributes.into_iter().fold(
+            Default::default(),
+            |(mut is_connection_fn, mut is_ref_fn, mut timeout, mut on_error), attr| {
+                match attr {
+                    MethodAttribute::ConnectionFn(_) => is_connection_fn = true,
+                    MethodAttribute::RefFn(_) => is_ref_fn = true,
+                    MethodAttribute::Timeout(nv) => timeout = Some(Box::new(nv.value)),
+                    MethodAttribute::OnError(nv) => on_error = Some(nv.value.into_type()),
+                }
+                (is_connection_fn, is_ref_fn, timeout, on_error)
+            },
+        );
+
+        let raw_fn_attr = if is_connection_fn {
+            Some("connection_fn")
+        } else if is_ref_fn {
+            Some("ref_fn")
+        } else {
+            None
+        };
+
+        let method_attr = if timeout.is_some() {
+            Some("timeout")
+        } else if on_error.is_some() {
+            Some("on_error")
+        } else {
+            None
+        };
+
+        if let (Some(raw_fn_attr), Some(method_attr)) = (raw_fn_attr, method_attr) {
+            return Err(syn::Error::new(
+                span,
+                format!("{raw_fn_attr} and {method_attr} are mutually exclusive"),
+            ));
+        }
+
+        match (is_connection_fn, is_ref_fn) {
+            (false, false) => Ok(MethodAttributeConfig::Method {
+                timeout,
+                on_error: on_error.unwrap_or_default(),
+            }),
+            (false, true) => Ok(MethodAttributeConfig::RawFn(RawFnType::Ref)),
+            (true, false) => Ok(MethodAttributeConfig::RawFn(RawFnType::Connection)),
+            (true, true) => Ok(MethodAttributeConfig::RawFn(RawFnType::Both)),
+        }
+    }
+}
+
+enum MethodAttributeConfig {
+    RawFn(RawFnType),
+    Method {
+        timeout: Option<Box<Expr>>,
+        on_error: OnErrorType,
+    },
+}
+
+enum MethodAttribute {
+    ConnectionFn(Ident),
+    RefFn(Ident),
+    Timeout(NameValue<Expr>),
+    OnError(NameValue<OnError>),
+}
+
+impl Parse for MethodAttribute {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        match &*ident.to_string() {
+            "connection_fn" => Ok(Self::ConnectionFn(ident)),
+            "ref_fn" => Ok(Self::RefFn(ident)),
+            "timeout" => NameValue::parse_after(ident, input).map(Self::Timeout),
+            "on_error" => NameValue::parse_after(ident, input).map(Self::OnError),
+            other => Err(input.error(format!(
+                "expected 'connection_fn', 'ref_fn, 'timeout', or 'on_error', found {other}"
+            ))),
+        }
+    }
+}
+
+impl ToTokens for MethodAttribute {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            Self::ConnectionFn(ident) | Self::RefFn(ident) => ident.to_tokens(tokens),
+            Self::Timeout(name_value) => name_value.to_tokens(tokens),
+            Self::OnError(name_value) => name_value.to_tokens(tokens),
+        }
+    }
+}
+
+enum OnError {
+    Panic(Ident),
+    WrapInResult(Ident),
+    ReturnErr(Ident, Option<Parenthesized<NameValue<Box<Type>>>>),
+    WrapInOption(Ident),
+    ReturnNone(Ident),
+    Return(NameValue<Box<Expr>>),
+}
+
+impl OnError {
+    fn into_type(self) -> OnErrorType {
+        match self {
+            Self::Panic(_) => OnErrorType::Panic,
+            Self::WrapInResult(_) => OnErrorType::WrapInResult,
+            Self::ReturnErr(_, option) => {
+                OnErrorType::ReturnErr(option.map(|parenthesized| parenthesized.value.value))
+            }
+            Self::WrapInOption(_) => OnErrorType::WrapInOption,
+            Self::ReturnNone(_) => OnErrorType::ReturnNone,
+            Self::Return(name_value) => OnErrorType::Return(name_value.value),
+        }
+    }
+}
+
+impl Parse for OnError {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        match &*ident.to_string() {
+            "panic" => Ok(Self::Panic(ident)),
+            "wrap_in_result" => Ok(Self::WrapInResult(ident)),
+            "return_err" => Ok(Self::ReturnErr(ident, {
+                if input.peek(token::Paren) {
+                    Some(Parenthesized::parse_with(input, |input| {
+                        NameValue::parse(input, "type")
+                    })?)
+                } else {
+                    None
+                }
+            })),
+            "wrap_in_option" => Ok(Self::WrapInOption(ident)),
+            "return_none" => Ok(Self::ReturnNone(ident)),
+            "return" => NameValue::parse_after(ident, input).map(Self::Return),
+            other => Err(input.error(format!(
+                "expected 'panic', 'wrap_in_result', 'return_err', 'wrap_in_option', 'return_none', or 'return', found {other}"
+            ))),
+        }
+    }
+}
+
+impl ToTokens for OnError {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            Self::Panic(ident)
+            | Self::WrapInResult(ident)
+            | Self::WrapInOption(ident)
+            | Self::ReturnNone(ident) => ident.to_tokens(tokens),
+            Self::ReturnErr(ident, parenthesized) => {
+                ident.to_tokens(tokens);
+                parenthesized.to_tokens(tokens);
+            }
+            Self::Return(name_value) => name_value.to_tokens(tokens),
+        }
+    }
+}
+
+#[derive(Default)]
+#[expect(dead_code)] // currently unimplemented
+enum OnErrorType {
+    #[default]
+    Default,
+    Panic,
+    WrapInResult,
+    ReturnErr(Option<Box<Type>>),
+    WrapInOption,
+    ReturnNone,
+    Return(Box<Expr>),
+}
+
+impl OnErrorType {
+    /// Returns `true` if the on error type is [`Default`].
+    ///
+    /// [`Default`]: OnErrorType::Default
+    #[must_use]
+    const fn is_default(&self) -> bool {
+        matches!(self, Self::Default)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RawFnType {
+    Connection,
+    Ref,
+    Both,
+}
+
+impl RawFnType {
+    #[must_use]
+    const fn connection_fn(self) -> bool {
+        matches!(self, Self::Connection | Self::Both)
+    }
+
+    #[must_use]
+    const fn ref_fn(self) -> bool {
+        matches!(self, Self::Ref | Self::Both)
+    }
+}
+
 struct Method<'a> {
     snake_case_ident: &'a Ident,
     camel_case_ident: Ident,
@@ -626,12 +923,6 @@ struct Arg<'a> {
     ident: &'a Ident,
     ty: &'a Type,
 }
-
-// enum MethodOnError {
-//     Panic,
-//     Func(Expr),
-//     Propagate,
-// }
 
 impl<'a> Method<'a> {
     pub fn new(
@@ -725,6 +1016,14 @@ impl<'a> Method<'a> {
     fn return_type_to_token_stream(&self) -> proc_macro2::TokenStream {
         self.return_type
             .map_or_else(|| quote! { () }, ToTokens::to_token_stream)
+    }
+
+    fn maybe_await(&self) -> Option<proc_macro2::TokenStream> {
+        if self.asyncness.is_some() {
+            Some(quote! { .await })
+        } else {
+            None
+        }
     }
 }
 

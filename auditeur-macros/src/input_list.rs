@@ -263,7 +263,9 @@ impl From<InputReference> for Type {
 impl Parse for InputReference {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         Ok(Self {
-            and_token: input.parse()?,
+            and_token: input.parse().map_err(|err| {
+                syn::Error::new(err.span(), format!("{err}. Are you missing an input list?"))
+            })?,
             lifetime: input
                 .peek(syn::Lifetime)
                 .then(|| input.parse())

@@ -744,6 +744,117 @@ pub use auditeur_macros::PathAny;
 /// }
 /// ```
 ///
+/// # Method Attributes
+///
+/// ## `connection_fn`
+///
+/// Indicates that this method should be put directly in the `Connection` struct. Thus, the method
+/// will only be able to call the other methods in `Connection` and can't use inputs, but may use
+/// things that the other methods may not accept - like generics.
+///
+// /// <div class="warning">
+// /// This works with `ref_fn`, but is exclusive with `timeout` and `on_error`.
+// /// </div>
+// ///
+/// ## `ref_fn`
+///
+/// Indicates that this method should be put directly in the `Ref` struct. Thus, the method will
+/// only be able to call the other methods in `Ref` and can't use inputs, but may use things that
+/// the other methods may not accept - like generics.
+///
+// /// <div class="warning">
+// /// This works with `connection_fn`, but is exclusive with `timeout` and `on_error`.
+// /// </div>
+// ///
+/// ### Examples
+///
+/// ```
+/// use auditeur::prelude::*;
+/// use auditeur::resource::Identifiable;
+/// # use auditeur::*;
+///
+/// #[derive(Default, Create, Runnable)]
+/// #[listener("test:attribute_example", respond)]
+/// pub struct IdentList {
+///     idents: Vec<NamespacedId>,
+/// }
+///
+/// #[respond("test:attribute_example", get_ref, transaction)]
+/// impl IdentList {
+///     pub fn push_ident(&mut self, ident: NamespacedId, (): ()) {
+///         self.idents.push(ident);
+///     }
+///
+///     // These use generics, which other methods can't.
+///     #[respond(ref_fn)]
+///     pub fn push_ident_of<I: Identifiable>(&mut self) {
+///         self.push_ident(I::const_ident().to_owned())
+///     }
+///
+///     #[respond(connection_fn)]
+///     pub async fn push_ident_of<I: Identifiable>(&self) {
+///         self.push_ident(I::const_ident().to_owned()).await
+///     }
+///
+///     pub fn index(&self, index: usize, (): ()) -> NamespacedId {
+///         self.idents[index].clone()
+///     }
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), auditeur::Error> {
+///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<IdentList>(()));
+///     app.run_with(1024, |conn: Get<IdentList>| async move {
+///         #[identifiable("test:identifiable1")]
+///         struct TestIdentifiable1;
+///         #[identifiable("test:identifiable2")]
+///         struct TestIdentifiable2;
+///
+///         conn.push_ident(ident!("test:ident1").to_owned()).await;
+///         conn.push_ident_of::<TestIdentifiable1>().await;
+///         conn.run_transaction(|mut reference| {
+///             reference.push_ident_of::<TestIdentifiable2>();
+///         }).await;
+///
+///         assert_eq!(*ident!("test:ident1"), conn.index(0).await);
+///         assert_eq!(*ident!("test:identifiable1"), conn.index(1).await);
+///         assert_eq!(*ident!("test:identifiable2"), conn.index(2).await);
+///     }).await
+/// }
+/// ```
+// /// ## `timeout = <expr>`
+// ///
+// /// Allows putting a timeout on the `Connection` side of this method, after which it will
+// /// automatically error (see `on_error` below). The default is to not have a timeout.
+// ///
+// /// <div class="warning">
+// /// This works with `on_error`, but is exclusive with `connection_fn` and `ref_fn`.
+// /// </div>
+// ///
+// /// ## `on_error = <variant>`
+// ///
+// /// All methods in `Connection` may end up erroring if they time out (see `timeout` above) or the
+// /// listener has unloaded (for example, if there was a panic or it willingly
+// /// [stopped](crate::app::Stopper). This allows setting an action for when errors happen.
+// ///
+// /// <div class="warning">
+// /// This works with `timeout`, but is exclusive with `connection_fn` and `ref_fn`.
+// /// </div>
+// ///
+// /// ### Variants
+// ///
+// /// - `panic` - Panic when an error happens. This is the default.
+// /// - `wrap_in_result` - Wrap the method in a [`Result`], with [`RespondError`](std::todo) as the
+// ///   error variant.
+// /// - `return_err` - Propagate the error (as a [`RespondError`](std::todo)) using the try operator
+// ///   (`?`). This assumes the return type is already wrapped in a [`Result`].
+// ///     - `return_err(type = <error>)` - Propagate the error as above, but use a different error
+// ///       type for the `Connection` method than the other methods.
+// /// - `wrap_in_option` - Wrap the method in an [`Option`], with [`None`] as the error.
+// /// - `return_none` - Return [`None`] on error, assuming the return type is already wrapped in an
+// ///   [`Option`].
+// /// - `return = <expr>` - Return the value of `expr` when an error happens.
+// ///
 /// # Syntax
 ///
 /// ```text

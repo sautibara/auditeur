@@ -100,7 +100,7 @@ impl Display for &NamespacedIdRef {
     }
 }
 
-impl Debug for &NamespacedIdRef {
+impl Debug for NamespacedIdRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "NamespacedIdRef({})", self.as_str())
     }
