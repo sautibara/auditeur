@@ -574,7 +574,7 @@ impl Respond {
             methods_out.extend(quote! {
                 #(#docs)*
                 #vis #asyncness fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
-                    self.deref.#method_ident(#(#arg1),*, (#(#input),*)) #maybe_await
+                    self.deref.#method_ident(#(#arg1,)* (#(#input),*)) #maybe_await
                 }
             });
         }
