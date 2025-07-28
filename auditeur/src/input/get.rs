@@ -120,7 +120,7 @@ impl<T: Clone + crate::Any + Send + Sync> CloneAny for T {
         Box::new(self.clone())
     }
 
-    fn as_any(self: Box<Self>) -> Box<dyn crate::path_any::PathAny> {
+    fn as_any(self: Box<Self>) -> Box<dyn crate::Any> {
         self
     }
 }
