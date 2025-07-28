@@ -165,11 +165,11 @@ pub trait Take<M: Message>: Listener {
 }
 
 pub trait OnLoad<R: Resource>: Listener {
-    type OnInput<'s>: Send;
+    type OnLoadInput<'s>: Send;
 
-    fn on(
+    fn on_load(
         &mut self,
-        input: <Self as OnLoad<R>>::OnInput<'_>,
+        input: <Self as OnLoad<R>>::OnLoadInput<'_>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
@@ -197,7 +197,7 @@ impl<L: OnLoad<R>, R: Resource> Input for OnLoadComponent<L, R> {
 
 impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
     type Value = Option<RegistryEvent>;
-    type UserInput<'s> = <L as OnLoad<R>>::OnInput<'s>;
+    type UserInput<'s> = <L as OnLoad<R>>::OnLoadInput<'s>;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         if self.should_init {
@@ -221,7 +221,7 @@ impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
         if message.is_none()
             || matches!(&message, Some(RegistryEvent::Running(id)) if *id == *R::const_ident())
         {
-            listener.on(input).send().await?;
+            listener.on_load(input).send().await?;
         }
         Ok(ControlFlow::Continue(()))
     }

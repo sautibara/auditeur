@@ -41,17 +41,6 @@ pub fn macro_ident(item_ident: &Ident) -> Ident {
 
 const RESPONSE: &str = "response";
 
-fn snake_to_upper_camel_case(snake: &str) -> String {
-    snake.split('_').fold(String::new(), |mut string, slice| {
-        let mut chars = slice.chars();
-        if let Some(first) = chars.next() {
-            string.extend(first.to_uppercase());
-        }
-        string.extend(chars);
-        string
-    })
-}
-
 fn input_idents() -> impl Iterator<Item = String> {
     let mut index = 0;
     std::iter::from_fn(move || {
@@ -939,7 +928,7 @@ impl<'a> Method<'a> {
 
         let snake_case_ident = &item.sig.ident;
         let camel_case_ident = Ident::new(
-            &snake_to_upper_camel_case(&snake_case_ident.to_string()),
+            &crate::snake_to_upper_camel_case(&snake_case_ident.to_string()),
             snake_case_ident.span(),
         );
 

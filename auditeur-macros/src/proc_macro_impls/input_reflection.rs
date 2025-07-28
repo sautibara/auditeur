@@ -165,13 +165,6 @@ pub struct HasInput {
     args: HasInputArgs,
 }
 
-fn uppercase_first_letter(string: &str) -> String {
-    let mut chars = string.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
 impl HasInput {
     pub fn parse_entire(
         item: proc_macro::TokenStream,
@@ -199,7 +192,7 @@ impl HasInput {
 
     fn type_ident_of(method_ident: &Ident) -> Ident {
         let const_ident = method_ident.to_string();
-        let const_ident = uppercase_first_letter(&const_ident);
+        let const_ident = crate::snake_to_upper_camel_case(&const_ident);
         let const_ident = const_ident + "Input";
         syn::Ident::new(&const_ident, method_ident.span())
     }

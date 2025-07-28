@@ -18,6 +18,17 @@ mod field;
 mod input_list;
 mod namespaced_id;
 
+fn snake_to_upper_camel_case(snake: &str) -> String {
+    snake.split('_').fold(String::new(), |mut string, slice| {
+        let mut chars = slice.chars();
+        if let Some(first) = chars.next() {
+            string.extend(first.to_uppercase());
+        }
+        string.extend(chars);
+        string
+    })
+}
+
 mod proc_macro_impls {
     mod resource;
     pub use resource::{resource, resource_impls_with_generics};
