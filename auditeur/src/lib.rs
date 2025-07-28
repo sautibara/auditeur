@@ -47,7 +47,7 @@ pub mod prelude {
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
-            listener::{Listen, ListenToRegistry, Listener, Take},
+            listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
             Create, Runnable, Watcher,
         },
     };

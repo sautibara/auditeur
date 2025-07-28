@@ -508,6 +508,7 @@ impl ToTokens for Listener {
 enum Parameter {
     Listen(List<BuiltinComponent>),
     Take(List<BuiltinComponent>),
+    OnLoad(List<BuiltinComponent>),
     RegistryComponent(NameValue<LitBool>),
     Components(List<Component>),
     RespondFlag(Ident),
@@ -542,7 +543,7 @@ impl Parameter {
 
     fn as_builtins(&self) -> impl Iterator<Item = &BuiltinComponent> {
         let (list, single) = match self {
-            Self::Listen(list) | Self::Take(list) => (Some(list.iter()), None),
+            Self::Listen(list) | Self::Take(list) | Self::OnLoad(list) => (Some(list.iter()), None),
             Self::ListenToRegistry(single) => (None, Some(single)),
             _ => (None, None),
         };
@@ -551,7 +552,9 @@ impl Parameter {
 
     fn as_builtins_mut(&mut self) -> impl Iterator<Item = &mut BuiltinComponent> {
         let (list, single) = match self {
-            Self::Listen(list) | Self::Take(list) => (Some(list.iter_mut()), None),
+            Self::Listen(list) | Self::Take(list) | Self::OnLoad(list) => {
+                (Some(list.iter_mut()), None)
+            }
             Self::ListenToRegistry(single) => (None, Some(single)),
             _ => (None, None),
         };
@@ -570,6 +573,9 @@ impl Parse for Parameter {
             )?)),
             "take" => Ok(Self::Take(List::parse_after_with(ident, input, |input| {
                 BuiltinComponent::parse(input, BuiltinComponentType::Take)
+            })?)),
+            "on_load" => Ok(Self::OnLoad(List::parse_after_with(ident, input, |input| {
+                BuiltinComponent::parse(input, BuiltinComponentType::OnLoad)
             })?)),
             "registry_component" => Ok(Self::RegistryComponent(NameValue::parse_after(
                 ident, input,
@@ -597,7 +603,7 @@ impl Parse for Parameter {
             )),
             _ => Err(syn::Error::new_spanned(
                 ident,
-                "expected one of 'listen', 'take', 'respond', 'registry_component', 'listen_to_registry', or 'components'",
+                "expected one of 'listen', 'take', 'respond', 'on_load', 'registry_component', 'listen_to_registry', or 'components'",
             )),
         }
     }
@@ -606,7 +612,7 @@ impl Parse for Parameter {
 impl ToTokens for Parameter {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            Self::Listen(list) | Self::Take(list) => list.to_tokens(tokens),
+            Self::Listen(list) | Self::Take(list) | Self::OnLoad(list) => list.to_tokens(tokens),
             Self::RegistryComponent(name_value) => name_value.to_tokens(tokens),
             Self::Components(list) => list.to_tokens(tokens),
             Self::RespondFlag(ident) => ident.to_tokens(tokens),
@@ -633,6 +639,7 @@ struct BuiltinComponent {
 enum BuiltinComponentType {
     Listen,
     Take,
+    OnLoad,
     ListenToRegistry,
 }
 
@@ -647,6 +654,10 @@ impl BuiltinComponent {
             BuiltinComponentType::Take => (
                 parse_quote!( Take<#message> ),
                 parse_quote!( #auditeur::resource::listener::TakeComponent<Self, #message> ),
+            ),
+            BuiltinComponentType::OnLoad => (
+                parse_quote!( OnLoad<#message> ),
+                parse_quote!( #auditeur::resource::listener::OnLoadComponent<Self, #message> ),
             ),
             BuiltinComponentType::ListenToRegistry => (
                 parse_quote!(ListenToRegistry),

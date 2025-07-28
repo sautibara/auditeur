@@ -164,6 +164,69 @@ pub trait Take<M: Message>: Listener {
     ) -> impl Future<Output = ()> + Send;
 }
 
+pub trait OnLoad<R: Resource>: Listener {
+    type OnInput<'s>: Send;
+
+    fn on(
+        &mut self,
+        input: <Self as OnLoad<R>>::OnInput<'_>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+#[component((<$_:ty, $message:ty>) => (implementation = OnLoad<$message>))]
+pub struct OnLoadComponent<L: OnLoad<R>, R: Resource> {
+    receiver: EventReceiver,
+    should_init: bool,
+    listener: PhantomData<(L, R)>,
+}
+
+impl<L: OnLoad<R>, R: Resource> Input for OnLoadComponent<L, R> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+        let mut receiver = registry.event_receiver();
+        receiver.mark_seen();
+
+        let should_init = registry.loaded_resources().contains(R::const_ident());
+
+        Ok(Self {
+            receiver,
+            should_init,
+            listener: PhantomData,
+        })
+    }
+}
+
+impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
+    type Value = Option<RegistryEvent>;
+    type UserInput<'s> = <L as OnLoad<R>>::OnInput<'s>;
+
+    async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        if self.should_init {
+            self.should_init = false;
+            return Ok(ControlFlow::Continue(None));
+        }
+
+        #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
+        match self.receiver.recv().await {
+            Some(message) => Ok(ControlFlow::Continue(Some(message))),
+            None => Ok(ControlFlow::Break(())),
+        }
+    }
+
+    async fn handle(
+        &mut self,
+        message: Self::Value,
+        listener: &mut L,
+        input: Self::UserInput<'_>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        if message.is_none()
+            || matches!(&message, Some(RegistryEvent::Running(id)) if *id == *R::const_ident())
+        {
+            listener.on(input).send().await?;
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+}
+
 #[component((<$_:ty, $message:ty>) => (implementation = Take<$message>))]
 pub struct TakeComponent<R: Take<M>, M: Message> {
     receiver: TakeReceiver<M>,

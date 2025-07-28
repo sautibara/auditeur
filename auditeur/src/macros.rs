@@ -232,6 +232,12 @@ pub use auditeur_macros::expand_listener;
 /// them wrapped by `take(<message>,*)`. To manually provide inputs for a message, use
 /// `take(<message>(input = <inputs>))`.
 ///
+/// ## `OnLoad`
+///
+/// Like [`Listen`] and [`Take`], to run a function when a resource loads with [`OnLoad`], provide
+/// the list of them wrapped by `on_load(<message>,*)`. To manually provide inputs for a message,
+/// use `on_load(<message>(input = <inputs>))`.
+///
 /// ## `ListenToRegistry`
 ///
 /// To listen to the [registry message stream](crate::app::EventReceiver), use the flag
