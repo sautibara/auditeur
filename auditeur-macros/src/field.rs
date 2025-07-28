@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use quote::ToTokens;
 use syn::{
@@ -117,6 +117,12 @@ impl<T> Deref for List<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.values
+    }
+}
+
+impl<T> DerefMut for List<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.values
     }
 }
 

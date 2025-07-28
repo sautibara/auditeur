@@ -15,6 +15,8 @@
 
 // TODO: allow specifying inputs for Runnable
 
+use std::ops::{Deref, DerefMut};
+
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
@@ -442,17 +444,13 @@ impl Listener {
     }
 
     fn builtin_components(&self) -> impl Iterator<Item = &BuiltinComponent> {
-        self.parameters
-            .iter()
-            .filter_map(|param| param.as_builtin())
-            .flat_map(|builtins| builtins.values.iter())
+        self.parameters.iter().flat_map(Parameter::as_builtins)
     }
 
     fn builtin_components_mut(&mut self) -> impl Iterator<Item = &mut BuiltinComponent> {
         self.parameters
             .iter_mut()
-            .filter_map(|param| param.as_builtin_mut())
-            .flat_map(|builtins| builtins.values.iter_mut())
+            .flat_map(Parameter::as_builtins_mut)
     }
 
     fn custom_components(&self) -> impl Iterator<Item = &Component> {
@@ -514,6 +512,7 @@ enum Parameter {
     Components(List<Component>),
     RespondFlag(Ident),
     Respond(Ident, Parenthesized<super::RespondMeta>),
+    ListenToRegistry(Box<BuiltinComponent>),
 }
 
 impl Parameter {
@@ -541,18 +540,22 @@ impl Parameter {
         }
     }
 
-    const fn as_builtin(&self) -> Option<&List<BuiltinComponent>> {
-        match self {
-            Self::Listen(list) | Self::Take(list) => Some(list),
-            _ => None,
-        }
+    fn as_builtins(&self) -> impl Iterator<Item = &BuiltinComponent> {
+        let (list, single) = match self {
+            Self::Listen(list) | Self::Take(list) => (Some(list.iter()), None),
+            Self::ListenToRegistry(single) => (None, Some(single)),
+            _ => (None, None),
+        };
+        (list.into_iter().flatten()).chain(single.into_iter().map(Deref::deref))
     }
 
-    const fn as_builtin_mut(&mut self) -> Option<&mut List<BuiltinComponent>> {
-        match self {
-            Self::Listen(list) | Self::Take(list) => Some(list),
-            _ => None,
-        }
+    fn as_builtins_mut(&mut self) -> impl Iterator<Item = &mut BuiltinComponent> {
+        let (list, single) = match self {
+            Self::Listen(list) | Self::Take(list) => (Some(list.iter_mut()), None),
+            Self::ListenToRegistry(single) => (None, Some(single)),
+            _ => (None, None),
+        };
+        (list.into_iter().flatten()).chain(single.into_iter().map(DerefMut::deref_mut))
     }
 }
 
@@ -581,13 +584,20 @@ impl Parse for Parameter {
                     Ok(Self::RespondFlag(ident))
                 }
             }
+            "listen_to_registry" => BuiltinComponent::parse_after_ident(
+                type_from_ident(ident),
+                input,
+                BuiltinComponentType::ListenToRegistry,
+            )
+            .map(Box::new)
+            .map(Self::ListenToRegistry),
             "id" => Err(syn::Error::new_spanned(
                 ident,
                 "'id' is only accepted as the first parameter",
             )),
             _ => Err(syn::Error::new_spanned(
                 ident,
-                "expected one of 'listen', 'registry_component' or 'components'",
+                "expected one of 'listen', 'take', 'respond', 'registry_component', 'listen_to_registry', or 'components'",
             )),
         }
     }
@@ -603,6 +613,9 @@ impl ToTokens for Parameter {
             Self::Respond(ident, parenthesized) => {
                 ident.to_tokens(tokens);
                 parenthesized.to_tokens(tokens);
+            }
+            Self::ListenToRegistry(component) => {
+                component.to_tokens(tokens);
             }
         }
     }
@@ -620,6 +633,7 @@ struct BuiltinComponent {
 enum BuiltinComponentType {
     Listen,
     Take,
+    ListenToRegistry,
 }
 
 impl BuiltinComponent {
@@ -634,6 +648,10 @@ impl BuiltinComponent {
                 parse_quote!( Take<#message> ),
                 parse_quote!( #auditeur::resource::listener::TakeComponent<Self, #message> ),
             ),
+            BuiltinComponentType::ListenToRegistry => (
+                parse_quote!(ListenToRegistry),
+                parse_quote!( #auditeur::resource::listener::ListenToRegistryComponent<Self> ),
+            ),
         };
         Self {
             implementation_type,
@@ -645,6 +663,14 @@ impl BuiltinComponent {
 
     fn parse(input: syn::parse::ParseStream, typ: BuiltinComponentType) -> syn::Result<Self> {
         let message_type = input.parse()?;
+        Self::parse_after_ident(message_type, input, typ)
+    }
+
+    fn parse_after_ident(
+        message_type: Type,
+        input: syn::parse::ParseStream,
+        typ: BuiltinComponentType,
+    ) -> syn::Result<Self> {
         let opts = input.peek(Paren).then(|| input.parse()).transpose()?;
         Ok(Self::new(message_type, opts, typ))
     }

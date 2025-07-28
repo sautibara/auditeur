@@ -105,6 +105,56 @@ impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
     }
 }
 
+pub trait ListenToRegistry: Listener {
+    type OnInput<'s>: Send;
+
+    fn on(
+        &mut self,
+        message: RegistryEvent,
+        input: <Self as ListenToRegistry>::OnInput<'_>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+#[component((<$_:ty>) => (implementation = ListenToRegistry))]
+pub struct ListenToRegistryComponent<L: ListenToRegistry> {
+    receiver: EventReceiver,
+    listener: PhantomData<L>,
+}
+
+impl<L: ListenToRegistry> Input for ListenToRegistryComponent<L> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+        let mut receiver = registry.event_receiver();
+        receiver.mark_seen();
+        Ok(Self {
+            receiver,
+            listener: PhantomData,
+        })
+    }
+}
+
+impl<L: ListenToRegistry> Component<L> for ListenToRegistryComponent<L> {
+    type Value = RegistryEvent;
+    type UserInput<'s> = <L as ListenToRegistry>::OnInput<'s>;
+
+    async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
+        match self.receiver.recv().await {
+            Some(message) => Ok(ControlFlow::Continue(message)),
+            None => Ok(ControlFlow::Break(())),
+        }
+    }
+
+    async fn handle(
+        &mut self,
+        message: Self::Value,
+        listener: &mut L,
+        input: Self::UserInput<'_>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        listener.on(message, input).send().await?;
+        Ok(ControlFlow::Continue(()))
+    }
+}
+
 pub trait Take<M: Message>: Listener {
     type OnInput<'s>: Send;
     fn on(
@@ -196,8 +246,10 @@ pub struct RegistryComponent {
 impl Input for RegistryComponent {
     #[cfg_attr(not(feature = "runtime-loading"), expect(unused_variables))]
     async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
+        let mut receiver = registry.event_receiver();
+        receiver.mark_seen();
         Ok(Self {
-            receiver: registry.event_receiver(),
+            receiver,
             #[cfg(feature = "runtime-loading")]
             registry: registry.handle(as_resource)?,
         })

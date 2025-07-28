@@ -176,7 +176,7 @@ pub use auditeur_macros::expand_listener;
 ///
 /// # Parameters
 ///
-/// ## Listen
+/// ## `Listen`
 ///
 /// To listen to messages using [`Listen`](crate::resource::listener::Listen), provide the list of
 /// them wrapped by `listen(<message>,*)`. To manually provide inputs for a message, use
@@ -226,11 +226,16 @@ pub use auditeur_macros::expand_listener;
 /// {}
 /// ```
 ///
-/// ## Take
+/// ## `Take`
 ///
 /// Much like [`Listen`], to take messages with [`Take`], provide the list of
 /// them wrapped by `take(<message>,*)`. To manually provide inputs for a message, use
 /// `take(<message>(input = <inputs>))`.
+///
+/// ## `ListenToRegistry`
+///
+/// To listen to the [registry message stream](crate::app::EventReceiver), use the flag
+/// `listen_to_registry`. To manually provide inputs, use `listen_to_registry(input = <inputs>)`.
 ///
 /// ## Components
 ///
