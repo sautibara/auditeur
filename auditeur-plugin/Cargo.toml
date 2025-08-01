@@ -17,7 +17,7 @@ stabby-macros = { version = "6.2.2" }
 tokio = { version = "1.41.1", features = ["full"] }
 # for loading
 thiserror = { version = "1.0.58", optional = true }
-stabby = { version = "5.1.0", features = ["libloading"], optional = true }
+stabby = { version = "72.1.1", features = ["libloading"], optional = true }
 libloading = "0.8.3"
 
 [features]

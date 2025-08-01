@@ -467,7 +467,7 @@ impl Listener {
             .flat_map(|list| list.values.iter_mut())
     }
 
-    fn components(&self) -> impl Iterator<Item = ComponentRef> {
+    fn components(&self) -> impl Iterator<Item = ComponentRef<'_>> {
         (self
             .builtin_components()
             .map(|builtin| builtin.as_component_ref()))
@@ -686,7 +686,7 @@ impl BuiltinComponent {
         Ok(Self::new(message_type, opts, typ))
     }
 
-    fn as_component_ref(&self) -> ComponentRef {
+    fn as_component_ref(&self) -> ComponentRef<'_> {
         ComponentRef {
             component: &self.component_type,
             specifier: self.opts.as_ref().map_or_else(
@@ -747,7 +747,7 @@ struct Component {
 }
 
 impl Component {
-    const fn reference(&self) -> ComponentRef {
+    const fn reference(&self) -> ComponentRef<'_> {
         ComponentRef {
             component: &self.component.value.value,
             specifier: self.specifier.value.reference(),

@@ -62,6 +62,7 @@ use tracing::Instrument;
 use crate::bundle;
 use crate::input::get::GetRef;
 use crate::prelude::*;
+use crate::resource::listener::Giver;
 use crate::resource::listener::Take;
 use crate::Message;
 
@@ -978,12 +979,19 @@ impl Registry {
         self.channels.receiver()
     }
 
+    #[must_use]
     pub(crate) fn respond_sender<R: Take<M>, M: Message>(&self) -> mpsc::Sender<M> {
         self.channels.respond_sender::<R, M>()
     }
 
+    #[must_use]
     pub(crate) async fn respond_receiver<R: Take<M>, M: Message>(&self) -> TakeReceiver<M> {
         self.channels.respond_receiver::<R, M>().await
+    }
+
+    #[must_use]
+    pub fn giver<R: Take<M>, M: Message>(&self) -> Giver<R, M> {
+        Giver::new(self)
     }
 
     #[must_use]

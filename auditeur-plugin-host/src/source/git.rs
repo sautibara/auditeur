@@ -58,7 +58,7 @@ impl Shorthand {
     }
 
     #[must_use]
-    pub const fn with_host(&self, host: Host) -> HostedShorthandRef {
+    pub const fn with_host(&self, host: Host) -> HostedShorthandRef<'_> {
         HostedShorthandRef {
             host,
             shorthand: self,
@@ -347,7 +347,7 @@ impl HostedShorthand {
     }
 
     #[must_use]
-    pub const fn to_ref(&self) -> HostedShorthandRef {
+    pub const fn to_ref(&self) -> HostedShorthandRef<'_> {
         HostedShorthandRef {
             host: self.host,
             shorthand: &self.shorthand,

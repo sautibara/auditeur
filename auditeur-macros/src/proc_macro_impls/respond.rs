@@ -3,8 +3,14 @@ use std::borrow::Cow;
 use proc_macro2::Span;
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
-    parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned, token, Attribute, Expr,
-    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, LitStr, Pat, ReturnType, Token, Type, Visibility,
+    braced,
+    parse::Parse,
+    parse_quote,
+    punctuated::Punctuated,
+    spanned::Spanned,
+    token::{self, Brace},
+    Attribute, Expr, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, LitStr, Pat, ReturnType, Token,
+    Type, Visibility,
 };
 
 use crate::{
@@ -30,6 +36,9 @@ pub fn macro_ident(item_ident: &Ident) -> Ident {
 //         message_id = "core:library_transaction",
 //         ref_ident = LibraryRef,
 //     ),
+//     fields = |registry| {
+//         field_name: field_type = field_constructor,
+//     }
 // )]
 
 // #[respond(
@@ -189,6 +198,9 @@ impl Respond {
                     todo!("timeout and on_error support");
                 }
                 let vis = std::mem::replace(&mut method.vis, Visibility::Inherited);
+                method.attrs.push(parse_quote!(
+                    #[allow(clippy::needless_pass_by_ref_mut)]
+                ));
                 Ok(Some((ImplItem::Fn(method), vis)))
             }
         }
@@ -197,7 +209,7 @@ impl Respond {
     fn gather_methods_and_inputs(
         &self,
         visibilities: Vec<Visibility>,
-    ) -> syn::Result<(Vec<Method>, InputList)> {
+    ) -> syn::Result<(Vec<Method<'_>>, InputList)> {
         let mut inputs = InputList::default();
         let methods = (self.item_impl.items.iter())
             .zip(visibilities)
@@ -209,15 +221,22 @@ impl Respond {
         Ok((methods, inputs))
     }
 
-    fn hidden(methods: &[Method], raw_fns: &RawFns) -> Option<proc_macro2::TokenStream> {
-        if (methods.iter().map(|method| &method.vis))
-            .chain(raw_fns.iter().map(|method| &method.vis))
-            .all(|vis| matches!(vis, Visibility::Inherited | Visibility::Restricted(_)))
-        {
-            Some(quote! { #[doc(hidden)] })
+    fn private_vis(private: bool) -> Option<proc_macro2::TokenStream> {
+        if private {
+            Some(quote! {
+                #[doc(hidden)]
+                #[allow(private_interfaces)]
+            })
         } else {
             None
         }
+    }
+
+    fn hidden(methods: &[Method], raw_fns: &RawFns) -> Option<proc_macro2::TokenStream> {
+        let all_private = (methods.iter().map(|method| &method.vis))
+            .chain(raw_fns.iter().map(|method| &method.vis))
+            .all(|vis| matches!(vis, Visibility::Inherited | Visibility::Restricted(_)));
+        Self::private_vis(all_private)
     }
 
     fn define_query_enum(
@@ -236,14 +255,10 @@ impl Respond {
             let response = format_ident!("{RESPONSE}");
             let docs = &method.docs;
 
-            let vis = if matches!(
+            let vis = Self::private_vis(matches!(
                 method.vis,
                 Visibility::Inherited | Visibility::Restricted(_)
-            ) {
-                quote! { #[doc(hidden)] }
-            } else {
-                quote! {}
-            };
+            ));
 
             variants.extend(quote! {
                 #(#docs)*
@@ -277,6 +292,7 @@ impl Respond {
         input_list: &InputList,
     ) -> syn::Result<proc_macro2::TokenStream> {
         let auditeur = &*crate::AUDITEUR;
+        let anyhow = auditeur.anyhow();
 
         let message_ident = &config.query.message_ident;
 
@@ -327,15 +343,17 @@ impl Respond {
             impl #auditeur::resource::listener::Take<#message_ident> for #item_ident {
                 type OnInput<'a> = #input_reference_list;
 
-                async fn on(&mut self, query: #message_ident, (#(#inputs),*): Self::OnInput<'_>) {
+                async fn on(&mut self, query: #message_ident, (#(#inputs),*): Self::OnInput<'_>) -> #anyhow::Result<()> {
                     match query {
                         #variants
                     }
+                    Ok(())
                 }
             }
         })
     }
 
+    #[allow(clippy::too_many_lines)] // anyways
     fn define_connection_struct(
         item_ident: &Ident,
         config: &Config<'_>,
@@ -426,6 +444,21 @@ impl Respond {
             });
         }
 
+        for field in &config.fields {
+            let FieldRef {
+                ident,
+                ty,
+                registry_ident,
+                init,
+            } = field;
+            fields.extend(quote! {
+                #ident: #ty,
+            });
+            create_fields.extend(quote! {
+                #ident: { let #registry_ident = registry; #init },
+            });
+        }
+
         let ref_ident = &config.query.ref_ident;
 
         let new_docs = format!(
@@ -511,17 +544,19 @@ impl Respond {
         let input_reference_list = input_list.into_reference_list().with_lifetime("'a");
 
         let auditeur = &*crate::AUDITEUR;
+        let anyhow = auditeur.anyhow();
 
         Ok(quote! {
             impl #auditeur::resource::listener::Take<#message_ident> for #item_ident {
                 type OnInput<'a> = #input_reference_list;
 
-                async fn on(&mut self, transaction: #message_ident, input: Self::OnInput<'_>) {
+                async fn on(&mut self, transaction: #message_ident, input: Self::OnInput<'_>) -> #anyhow::Result<()> {
                     let reference = #ref_ident {
                         deref: self,
                         input,
                     };
                     (transaction.func)(reference);
+                    Ok(())
                 }
             }
 
@@ -1020,6 +1055,7 @@ pub struct Config<'a> {
     pub query: TakeConfig<'a>,
     pub transaction: Option<TakeConfig<'a>>,
     pub get_ref: bool,
+    pub fields: Vec<FieldRef<'a>>,
 }
 
 pub struct TakeConfig<'a> {
@@ -1056,7 +1092,7 @@ pub struct Meta {
 }
 
 impl Meta {
-    pub fn to_config(&self, item_ident: &Ident) -> syn::Result<Config> {
+    pub fn to_config(&self, item_ident: &Ident) -> syn::Result<Config<'_>> {
         let query = self.to_take_config(
             self.params.iter().filter_map(MetaParam::as_query).flatten(),
             item_ident,
@@ -1083,10 +1119,18 @@ impl Meta {
 
         let get_ref = self.params.iter().any(MetaParam::is_get_ref);
 
+        let fields = self
+            .params
+            .iter()
+            .filter_map(MetaParam::as_fields)
+            .flat_map(|fields| fields.refs())
+            .collect();
+
         Ok(Config {
             query,
             transaction,
             get_ref,
+            fields,
         })
     }
 
@@ -1181,6 +1225,7 @@ enum MetaParam {
     Transaction(List<TakeTypesParam>),
     TransactionAutoFlag(Ident),
     GetRefFlag(Ident),
+    Fields(NameValue<Fields>),
 }
 
 impl MetaParam {
@@ -1211,6 +1256,14 @@ impl MetaParam {
     const fn is_get_ref(&self) -> bool {
         matches!(self, Self::GetRefFlag(..))
     }
+
+    const fn as_fields(&self) -> Option<&NameValue<Fields>> {
+        if let Self::Fields(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 impl Parse for MetaParam {
@@ -1226,7 +1279,10 @@ impl Parse for MetaParam {
                 }
             }
             "get_ref" => Ok(Self::GetRefFlag(ident)),
-            other => Err(input.error(format!("expected 'query' or 'transaction', found {other}"))),
+            "fields" => NameValue::parse_after(ident, input).map(Self::Fields),
+            other => Err(input.error(format!(
+                "expected 'query', 'transaction', 'get_ref', or 'fields', found {other}"
+            ))),
         }
     }
 }
@@ -1236,6 +1292,7 @@ impl ToTokens for MetaParam {
         match self {
             Self::Query(list) | Self::Transaction(list) => list.to_tokens(tokens),
             Self::TransactionAutoFlag(ident) | Self::GetRefFlag(ident) => ident.to_tokens(tokens),
+            Self::Fields(fields) => fields.to_tokens(tokens),
         }
     }
 }
@@ -1293,4 +1350,87 @@ impl ToTokens for TakeTypesParam {
             }
         }
     }
+}
+
+#[derive(Debug)]
+struct Fields {
+    lbar: Token![|],
+    registry_ident: Ident,
+    rbar: Token![|],
+    brace: Brace,
+    list: Punctuated<Field, Token![,]>,
+}
+
+impl Fields {
+    fn refs(&self) -> impl Iterator<Item = FieldRef<'_>> {
+        let registry_ident = &self.registry_ident;
+        self.list.iter().map(|field| FieldRef {
+            ident: &field.ident,
+            ty: &field.ty,
+            registry_ident,
+            init: &field.init,
+        })
+    }
+}
+
+impl Parse for Fields {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            lbar: input.parse()?,
+            registry_ident: input.parse()?,
+            rbar: input.parse()?,
+            brace: braced!(content in input),
+            list: content.parse_terminated(Field::parse, Token![,])?,
+        })
+    }
+}
+
+impl ToTokens for Fields {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.lbar.to_tokens(tokens);
+        self.registry_ident.to_tokens(tokens);
+        self.rbar.to_tokens(tokens);
+        self.brace.surround(tokens, |tokens| {
+            self.list.to_tokens(tokens);
+        });
+    }
+}
+
+#[derive(Debug)]
+struct Field {
+    ident: Ident,
+    colon: Token![:],
+    ty: Box<Type>,
+    eq: Token![=],
+    init: Box<Expr>,
+}
+
+impl Parse for Field {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            ident: input.parse()?,
+            colon: input.parse()?,
+            ty: input.parse()?,
+            eq: input.parse()?,
+            init: input.parse()?,
+        })
+    }
+}
+
+impl ToTokens for Field {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.ident.to_tokens(tokens);
+        self.colon.to_tokens(tokens);
+        self.ty.to_tokens(tokens);
+        self.eq.to_tokens(tokens);
+        self.init.to_tokens(tokens);
+    }
+}
+
+pub struct FieldRef<'a> {
+    ident: &'a Ident,
+    ty: &'a Type,
+    registry_ident: &'a Ident,
+    init: &'a Expr,
 }

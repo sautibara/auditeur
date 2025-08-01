@@ -155,15 +155,6 @@ impl<L: ListenToRegistry> Component<L> for ListenToRegistryComponent<L> {
     }
 }
 
-pub trait Take<M: Message>: Listener {
-    type OnInput<'s>: Send;
-    fn on(
-        &mut self,
-        message: M,
-        input: <Self as Take<M>>::OnInput<'_>,
-    ) -> impl Future<Output = ()> + Send;
-}
-
 pub trait OnLoad<R: Resource>: Listener {
     type OnLoadInput<'s>: Send;
 
@@ -242,6 +233,15 @@ impl<R: Take<M>, M: Message> Input for TakeComponent<R, M> {
     }
 }
 
+pub trait Take<M: Message>: Listener {
+    type OnInput<'s>: Send;
+    fn on(
+        &mut self,
+        message: M,
+        input: <Self as Take<M>>::OnInput<'_>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
 impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
     type Value = M;
     type UserInput<'s> = <R as Take<M>>::OnInput<'s>;
@@ -260,7 +260,7 @@ impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
         responder: &mut R,
         input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        responder.on(message, input).send().await;
+        responder.on(message, input).send().await?;
         Ok(ControlFlow::Continue(()))
     }
 }
