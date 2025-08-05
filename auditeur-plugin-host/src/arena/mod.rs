@@ -316,7 +316,6 @@ impl Arena {
     }
 }
 
-#[async_trait]
 impl Watcher for Arena {
     type Input = EventSender;
 

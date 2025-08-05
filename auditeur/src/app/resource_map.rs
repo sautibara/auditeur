@@ -76,7 +76,7 @@ impl Drop for LoadedBundle {
 ///
 /// Similarly, bundles only unload when all of its child resources and bundles also unload
 ///
-/// This listener is automatically loaded to every [`App`](crate::app::App) that is constructed
+/// This listener is automatically loaded to every [`App`] that is constructed
 /// when the `resource-map` feature is specified.
 // The way that the map works is that each resource and bundle is stored in an Arc. When resources
 // or bundles are dropped, they send messages to the Registry that they get unloaded, so that their

@@ -262,6 +262,7 @@ impl Respond {
 
             variants.extend(quote! {
                 #(#docs)*
+                #[allow(rustdoc::broken_intra_doc_links)]
                 #vis #variant {
                     #response: #auditeur::tokio::sync::oneshot::Sender<#return_type>,
                     #(#ident: #ty),*

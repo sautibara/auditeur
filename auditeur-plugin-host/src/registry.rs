@@ -127,7 +127,6 @@ impl Drop for PluginRegistry {
     }
 }
 
-#[async_trait]
 impl Watcher for PluginRegistry {
     type Input = (EventReceiver, Registry, Stopper);
 

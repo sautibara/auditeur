@@ -53,15 +53,16 @@ pub trait Runnable {
 /// A [`Resource`] that runs its own method in the main async loop
 ///
 /// The main use of `Watcher`s is that they can ask for [`Input`]s from the rest of the [`App`]
-#[async_trait]
 pub trait Watcher: Resource + Send {
     type Input: Input;
 
-    async fn run(&mut self, input: &mut Self::Input) -> anyhow::Result<()>;
+    fn run(&mut self, input: &mut Self::Input) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    async fn exit(&mut self, input: &mut Self::Input) -> anyhow::Result<()> {
-        let _ = input;
-        Ok(())
+    fn exit(&mut self, input: &mut Self::Input) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async {
+            let _ = input;
+            Ok(())
+        }
     }
 
     fn constraints(&self) -> Constraints {
