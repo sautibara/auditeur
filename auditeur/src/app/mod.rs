@@ -389,6 +389,7 @@ impl Debug for App {
 ///
 /// The "main underlying functionality" is in practice [adding resources](Self::add_boxed) and
 /// [getting handles to already-added resources](Self::get_as)
+#[derive(Debug)]
 enum RegistryState {
     Building(BuildingRegistry),
     #[cfg(feature = "runtime-loading")]
@@ -470,6 +471,27 @@ struct BuildingRegistry {
     resource_receiver: mpsc::Receiver<Box<dyn LoadedResource>>,
 }
 
+impl Debug for BuildingRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_struct = f.debug_struct("BuildingRegistry");
+        debug_struct.field("resources", &DebugMapAsSet(&self.resources));
+        debug_struct.field("bundles", &self.bundles);
+        #[cfg(feature = "runtime-loading")]
+        debug_struct.field("resource_sender", &self.resource_sender);
+        #[cfg(feature = "runtime-loading")]
+        debug_struct.field("resource_receiver", &self.resource_receiver);
+        debug_struct.finish()
+    }
+}
+
+struct DebugMapAsSet<'a>(&'a HashMap<NamespacedId, Box<dyn LoadedResource>>);
+
+impl Debug for DebugMapAsSet<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
 impl BuildingRegistry {
     fn new() -> Self {
         #[cfg(feature = "runtime-loading")]
@@ -529,6 +551,7 @@ impl BuildingRegistry {
 }
 
 #[cfg(feature = "runtime-loading")]
+#[derive(Debug)]
 struct RunningRegistry {
     resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
     map: resource_map::Handle,
@@ -593,6 +616,26 @@ struct Channels {
     // TODO: these probably don't have to be [`DashMap`]s - profile this or something
     listen_map: DashMap<NamespacedId, Box<dyn crate::Any + Send + Sync>>,
     respond_map: DashMap<(NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>>,
+}
+
+impl Debug for Channels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Channels")
+            .field("capacity", &self.capacity)
+            .field("listen_map", &DebugDashMapAsSet(&self.listen_map))
+            .field("respond_map", &DebugDashMapAsSet(&self.respond_map))
+            .finish()
+    }
+}
+
+struct DebugDashMapAsSet<'a, T>(&'a DashMap<T, Box<dyn crate::Any + Send + Sync>>);
+
+impl<T: Hash + Eq + Debug + Clone> Debug for DebugDashMapAsSet<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set()
+            .entries(self.0.iter().map(|entry| entry.key().clone()))
+            .finish()
+    }
 }
 
 type RespondChannels<M> = (mpsc::Sender<M>, Arc<Mutex<Option<mpsc::Receiver<M>>>>);
@@ -713,6 +756,7 @@ impl<M: Send + 'static> DerefMut for TakeReceiver<M> {
 /// - To tell only one resource or the entire program to stop, use a [`Stopper`] through [`Self::stopper`]
 /// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
 /// - To listen to messages, use [`Self::message_receiver`]
+#[derive(Debug)]
 pub struct Registry {
     channels: Arc<Channels>,
     event_sender: EventSender,

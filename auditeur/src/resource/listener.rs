@@ -1,6 +1,6 @@
 #![doc = include_str!("listener_docs.md")]
 
-use std::marker::PhantomData;
+use std::{fmt::Debug, marker::PhantomData};
 
 use crate::{
     app::{EventReceiver, EventSender, LoadedResource, Loader, Runner, TakeReceiver},
@@ -268,6 +268,14 @@ impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
 pub struct Giver<R: Take<M>, M: Message> {
     sender: tokio::sync::mpsc::Sender<M>,
     pd: PhantomData<R>,
+}
+
+impl<R: Take<M>, M: Message> Debug for Giver<R, M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Giver")
+            .field("sender", &self.sender)
+            .finish()
+    }
 }
 
 impl<R: Take<M>, M: Message> Input for Giver<R, M> {

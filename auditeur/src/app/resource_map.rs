@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Debug,
     sync::{Arc, Weak},
 };
 
@@ -24,6 +25,28 @@ struct LoadedResource {
     // and strong references to all of its dependencies for the same reason
     dependencies: Vec<Arc<LoadedResource>>,
     sender: EventSender,
+}
+
+#[allow(clippy::used_underscore_binding)]
+impl Debug for LoadedResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_struct = f.debug_struct("LoadedResource");
+        debug_struct.field("id", &self.id);
+        #[cfg(feature = "runtime-loading")]
+        debug_struct.field(
+            "resource",
+            &if self.resource.blocking_read().is_some() {
+                "<present>"
+            } else {
+                "<empty>"
+            },
+        );
+        debug_struct
+            .field("_bundle", &self._bundle)
+            .field("dependencies", &self.dependencies)
+            .field("sender", &self.sender)
+            .finish()
+    }
 }
 
 impl Drop for LoadedResource {
@@ -52,6 +75,7 @@ impl LoadedResource {
     }
 }
 
+#[derive(Debug)]
 struct LoadedBundle {
     id: NamespacedId,
     sender: EventSender,
@@ -108,6 +132,7 @@ pub struct ResourceMap {
     bundle_queue: HashMap<NamespacedId, LoadedBundle>,
 }
 
+#[derive(Debug)]
 struct Shared {
     /// A map of all of the currently running resources
     ///
@@ -337,7 +362,7 @@ impl listener::Component<ResourceMap> for MainComponent {
 
 /// A synchronized reference to a [`ResourceMap`] that allows querying the current state of the
 /// parent [`Registry`]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "path-any", derive(PathAny))]
 pub struct Handle {
     shared: Arc<Shared>,

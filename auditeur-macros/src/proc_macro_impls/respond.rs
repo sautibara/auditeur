@@ -469,7 +469,7 @@ impl Respond {
 
         quote! {
             #hidden
-            #[derive(Clone)]
+            #[derive(Clone, Debug)]
             pub struct #ref_ident { #fields }
 
             impl #auditeur::input::Input for #ref_ident {
