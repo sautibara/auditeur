@@ -22,6 +22,15 @@ impl ConfigHandler {
         self.config.plugins.get(id)
     }
 
+    pub fn source_type(&self, id: &SourceId) -> Option<SourceType<'_>> {
+        (self.config.plugins.get(id).map(SourceType::Plugin)).or_else(|| {
+            self.config
+                .static_dependencies
+                .get(id)
+                .map(SourceType::Static)
+        })
+    }
+
     pub fn goal_state(&self) -> State {
         State::from_config(&self.config)
     }
@@ -30,4 +39,10 @@ impl ConfigHandler {
         func(&mut self.config);
         // TODO: save the new config
     }
+}
+
+pub enum SourceType<'a> {
+    #[expect(dead_code)] // the api would feel unfinished
+    Static(&'a Source),
+    Plugin(&'a PluginGroup),
 }

@@ -209,7 +209,13 @@ impl Arena {
                 let plugin_names: Vec<&PluginName> = self
                     .state
                     .to_compile()
-                    .filter(|plugin| self.plugin_enabled(plugin).is_some_and(|enabled| enabled))
+                    .filter(|plugin| {
+                        self.source_list
+                            .get_plugin(plugin)
+                            // only compile plugin groups (no static sources)
+                            .and_then(|info| self.config.plugin_group(&info.source))
+                            .is_some_and(|group| group.enabled.get(plugin))
+                    })
                     .collect();
 
                 debug!("compiling {plugin_names:?}, this may take a while...");
@@ -301,18 +307,20 @@ impl Arena {
     #[must_use]
     pub fn plugin_enabled(&self, plugin: &PluginName) -> Option<bool> {
         let source_id = self.source_list.get_plugin(plugin)?.id();
-        let group = self.config.plugin_group(source_id)?;
-        let enabled = group.enabled.get(plugin);
-        Some(enabled)
+        match self.config.source_type(source_id)? {
+            config_handler::SourceType::Static(_) => Some(true),
+            config_handler::SourceType::Plugin(group) => Some(group.enabled.get(plugin)),
+        }
     }
 
     /// Returns `Some(true)` if the source is [all enabled](config::host::Enabled::all_enabled),
     /// `Some(false)` if it was found and not enabled, and `None` if it was not found
     #[must_use]
     pub fn source_enabled(&self, source: &SourceId) -> Option<bool> {
-        let group = self.config.plugin_group(source)?;
-        let enabled = group.enabled.all_enabled();
-        Some(enabled)
+        match self.config.source_type(source)? {
+            config_handler::SourceType::Static(_) => Some(true),
+            config_handler::SourceType::Plugin(group) => Some(group.enabled.all_enabled()),
+        }
     }
 
     pub fn binaries(&self) -> impl Iterator<Item = &Binary> + '_ {
@@ -513,7 +521,8 @@ impl State {
 
 struct SourceTracker<'a> {
     arena: &'a Arena,
-    already_added: HashSet<PluginName>,
+    // value is if the plugin was enabled
+    already_added: HashMap<PluginName, bool>,
     errors: Vec<Error>,
     sources_to_add: Vec<Source>,
     actions: Vec<Action>,
@@ -523,7 +532,7 @@ impl<'a> SourceTracker<'a> {
     fn new(arena: &'a Arena) -> Self {
         Self {
             arena,
-            already_added: HashSet::new(),
+            already_added: HashMap::new(),
             errors: Vec::new(),
             sources_to_add: Vec::new(),
             actions: Vec::new(),
@@ -531,8 +540,8 @@ impl<'a> SourceTracker<'a> {
     }
 
     fn load(&mut self, plugin: &PluginName) -> PluginLoadResult {
-        if self.already_added.contains(plugin) {
-            return PluginLoadResult::Success;
+        if let Some(enabled) = self.already_added.get(plugin).copied() {
+            return PluginLoadResult::Success { enabled };
         }
 
         let mut had_error = false;
@@ -541,9 +550,26 @@ impl<'a> SourceTracker<'a> {
             return PluginLoadResult::NotFound;
         };
 
+        let Some(source) = self.arena.config.source_type(info.id()) else {
+            // this may happen if the plugin was once in the config but was later removed
+            return PluginLoadResult::NotFound;
+        };
+
+        let this_enabled = match source {
+            config_handler::SourceType::Static(_) => true,
+            config_handler::SourceType::Plugin(group) => group.enabled.get(plugin),
+        };
+
         for (dependency, dep_info) in &info.config.dependencies {
             match self.load(dependency) {
-                PluginLoadResult::Success => (),
+                PluginLoadResult::Success { enabled } => {
+                    if this_enabled && !enabled {
+                        self.errors.push(Error::PluginDependencyNotEnabled {
+                            plugin: plugin.clone(),
+                            dependency: dependency.clone(),
+                        });
+                    }
+                }
                 PluginLoadResult::NotFound => {
                     if self.arena.config.goal().arena.auto_add_dependencies
                         && let Some(source) = dep_info.source.as_ref()
@@ -563,67 +589,21 @@ impl<'a> SourceTracker<'a> {
             }
         }
 
-        self.already_added.insert(plugin.clone());
+        self.already_added.insert(plugin.clone(), this_enabled);
 
         if had_error {
             PluginLoadResult::HadError
         } else {
             self.actions.push(Action::AddToWorkspace(plugin.clone()));
-            PluginLoadResult::Success
+            PluginLoadResult::Success {
+                enabled: this_enabled,
+            }
         }
     }
 }
 
 enum PluginLoadResult {
-    Success,
+    Success { enabled: bool },
     NotFound,
     HadError,
 }
-
-// struct SourceTracker<'sd> {
-//     source_is_loaded: HashMap<SourceId, bool>,
-//     sources: &'sd HashMap<SourceId, SourceDefinition>,
-//     statics: &'sd HashSet<SourceId>,
-// }
-//
-// impl<'sd> SourceTracker<'sd> {
-//     fn new(
-//         sources: &'sd HashMap<SourceId, SourceDefinition>,
-//         statics: &'sd HashSet<SourceId>,
-//     ) -> Self {
-//         let source_is_loaded = sources.keys().map(|key| (key.clone(), false)).collect();
-//         Self {
-//             source_is_loaded,
-//             sources,
-//             statics,
-//         }
-//     }
-//
-//     fn insert(&mut self, source: SourceId, loaded: bool) {
-//         self.source_is_loaded.insert(source, loaded);
-//     }
-//
-//     fn load_all<CB: FnMut(&SourceId)>(mut self, mut callback: CB) {
-//         // static sources are given priority
-//         for source in self.statics {
-//             self.load_source(source, &mut callback);
-//         }
-//         for source in self.sources.keys() {
-//             self.load_source(source, &mut callback);
-//         }
-//     }
-//
-//     fn load_source<CB: FnMut(&SourceId)>(&mut self, source: &SourceId, callback: &mut CB) {
-//         if self.source_is_loaded[source] {
-//             return;
-//         }
-//         let definition = &self.sources[source];
-//         for dependency in &definition.dependencies {
-//             // NOTE: we don't need to check if the dependency is loaded here, because
-//             // if a dependency is specified, it's always added to the list
-//             self.load_source(dependency, callback);
-//         }
-//         (callback)(source);
-//         *self.source_is_loaded.get_mut(source).unwrap() = true;
-//     }
-// }

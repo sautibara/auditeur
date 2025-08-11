@@ -161,16 +161,15 @@ impl Workspace {
         let profile = Self::PROFILE;
         let workspace_toml = format!(
             r#"
-[workspace]
+            [workspace]
 
-members = [{path_list}]
-resolver = "2"
+            members = [{path_list}]
+            resolver = "2"
 
-[profile.{profile}]
-inherits = "release"
-opt-level = {opt_level}
-debug = {debug}
-"#
+            [profile.{profile}]
+            inherits = "release"
+            opt-level = {opt_level}
+            debug = {debug}"#
         );
         tokio::fs::File::create(self.path.join("Cargo.toml"))
             .await?
@@ -242,6 +241,8 @@ debug = {debug}
                 plugin: from.clone(),
                 dependency: to.clone(),
             })?;
+        // the previous dependency specification might include features which we want to keep,
+        // so we read it from the manifest
         let prev_dependency = manifest
             .dependencies
             .get(&crt.package_name.0)
@@ -250,12 +251,14 @@ debug = {debug}
             .unwrap_or_default();
         let dependency = Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
             path: Some(crt.mirror.to_string_lossy().into_owned()),
+            // ensure that no other sources exist
             registry: None,
             registry_index: None,
             git: None,
             branch: None,
             tag: None,
             rev: None,
+            // then keep the rest of the config
             ..prev_dependency
         }));
         Ok((crt.package_name.clone(), dependency))

@@ -34,10 +34,9 @@ pub mod source;
 
 mod prelude {
     pub use crate::{
-        config,
+        Error, PluginName, config,
         registry::PluginRegistry,
-        source::{self, git, Binary, OwnedId as SourceId, Source, Updated},
-        Error, PluginName,
+        source::{self, Binary, OwnedId as SourceId, Source, Updated, git},
     };
     pub use auditeur_plugin::prelude::*;
 }
@@ -212,6 +211,11 @@ pub enum Error {
     },
     #[error("dependency '{dependency}' for plugin '{plugin}' was not found")]
     PluginDependencyNotFound {
+        plugin: PluginName,
+        dependency: PluginName,
+    },
+    #[error("dependency '{dependency}' for plugin '{plugin}' was not enabled")]
+    PluginDependencyNotEnabled {
         plugin: PluginName,
         dependency: PluginName,
     },
