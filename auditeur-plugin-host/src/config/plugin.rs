@@ -47,7 +47,7 @@ pub struct Workspace {
 pub struct Single {
     pub plugin: PluginInfo,
     #[serde(default)]
-    pub dependencies: HashMap<PluginName, semver::VersionReq>,
+    pub dependencies: HashMap<PluginName, Dependency>,
 }
 
 impl Single {
@@ -62,4 +62,54 @@ impl Single {
 pub struct PluginInfo {
     pub name: PluginName,
     pub version: semver::Version,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(from = "DependencySerialized", into = "DependencySerialized")]
+pub struct Dependency {
+    pub version: semver::VersionReq,
+    pub source: Option<Source>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(untagged)]
+#[serde(
+    expecting = r#"expected dependency options in the form of "<version>" or { version = "<version", ... } "#
+)]
+enum DependencySerialized {
+    VersionOnly(semver::VersionReq),
+    Full {
+        version: semver::VersionReq,
+        #[serde(default, skip_serializing_if = "is_default")]
+        source: Option<Source>,
+    },
+}
+
+impl From<Dependency> for DependencySerialized {
+    fn from(value: Dependency) -> Self {
+        if value.source.is_some() {
+            Self::Full {
+                version: value.version,
+                source: value.source,
+            }
+        } else {
+            Self::VersionOnly(value.version)
+        }
+    }
+}
+
+impl From<DependencySerialized> for Dependency {
+    fn from(value: DependencySerialized) -> Self {
+        match value {
+            DependencySerialized::VersionOnly(version) => Self {
+                version,
+                source: None,
+            },
+            DependencySerialized::Full { version, source } => Self { version, source },
+        }
+    }
+}
+
+fn is_default<T: Default + PartialEq>(val: &T) -> bool {
+    val == &T::default()
 }

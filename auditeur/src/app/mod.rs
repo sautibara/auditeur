@@ -982,20 +982,18 @@ impl Registry {
     ///
     /// Note: Under the feature, [`Registry`] also implements [`Input`] by calling this function
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// - If [`ResourceMap`] hasn't been loaded yet
-    pub fn handle(&self, reference_holder: &NamespacedIdRef) -> Result<Self, Error> {
+    /// - If this method is called on an app built from [`Self::new_app`].
+    #[must_use]
+    pub fn handle(&self, reference_holder: &NamespacedIdRef) -> Self {
         let map = match &self.state {
             RegistryState::Running(running) => running.map.clone(),
             RegistryState::Building(building) => building
                 .get_as::<ResourceMap>(reference_holder, self, &self.event_sender)
-                .ok_or_else(|| Error::LoaderNotFound {
-                    id: ResourceMap::const_ident().to_owned(),
-                })?,
+                .expect("cannot obtain a handle to an empty App"),
         };
-        let handle = PartialHandle::new(self).supply_map_handle(map);
-        Ok(handle)
+        PartialHandle::new(self).supply_map_handle(map)
     }
 
     /// Returns `true` if this [`Registry`] instance is a [handle](Self::handle) to an
@@ -1006,6 +1004,8 @@ impl Registry {
     }
 
     /// Creates a new [`App`] that can eventually be added to this registry
+    ///
+    /// Note: If this app is built without adding it to this registry, [`Self::handle`] will panic.
     pub fn new_app(&self) -> App {
         App::new_empty()
     }
@@ -1080,7 +1080,7 @@ impl Registry {
 impl Input for Registry {
     /// Use a registry [handle](Self::handle) as an input to a running resource
     async fn create(registry: &Self, reference_holder: &NamespacedIdRef) -> Result<Self, Error> {
-        registry.handle(reference_holder)
+        Ok(registry.handle(reference_holder))
     }
 
     fn constraints() -> Constraints {
@@ -1183,9 +1183,11 @@ impl RegistryEvent {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Error)]
+#[error("resource '{source}' had an error: {error}")]
 pub struct ErrorEvent {
     source: NamespacedId,
+    #[source]
     error: Arc<anyhow::Error>,
 }
 
@@ -1454,7 +1456,9 @@ impl EventSender {
     }
 
     pub fn send_error(&self, ident: impl Into<NamespacedId>, error: anyhow::Error) {
-        self.send(RegistryEvent::Error(ErrorEvent::new(ident.into(), error)));
+        let error = ErrorEvent::new(ident.into(), error);
+        error!("{error}");
+        self.send(RegistryEvent::Error(error));
     }
 
     pub fn handle_error<T>(&self, res: anyhow::Result<T>, id: &NamespacedIdRef) -> Option<T> {
@@ -1469,7 +1473,9 @@ impl EventSender {
         let ident = ident.into();
         let events = errors
             .into_iter()
-            .map(|err| RegistryEvent::Error(ErrorEvent::new(ident.clone(), err.into())));
+            .map(|err| ErrorEvent::new(ident.clone(), err.into()))
+            .inspect(|val| error!("{val}"))
+            .map(RegistryEvent::Error);
         self.extend(events);
     }
 

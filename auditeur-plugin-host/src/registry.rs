@@ -10,8 +10,8 @@ use auditeur_plugin::auditeur::{
 use tokio::select;
 use tracing::{debug, trace};
 
-use crate::{source::Binary, Error, PluginName};
-use auditeur_plugin::{loading::Plugin, LibraryHandle};
+use crate::{Error, PluginName, source::Binary};
+use auditeur_plugin::{LibraryHandle, loading::Plugin};
 
 // FIXME: Let a, b, and c be resources within separate libraries.
 // Then, let a depend on b, and c own a reference and LibraryHandle to a.
@@ -97,7 +97,8 @@ impl PluginRegistry {
         app: &mut App,
     ) -> Result<NamespacedId, Error> {
         trace!("loading binary at '{}' to app", library.path.display());
-        let plugin = Plugin::load_from_file_unchecked(&library.path, app)?;
+        // SAFETY: upheld by caller
+        let plugin = unsafe { Plugin::load_from_file_unchecked(&library.path, app) }?;
         {
             let mut shared = self.shared_mut();
             shared

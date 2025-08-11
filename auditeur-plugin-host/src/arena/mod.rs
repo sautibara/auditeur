@@ -1,13 +1,10 @@
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use auditeur_plugin::auditeur::app::{App, EventSender};
 use tokio::try_join;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
-use crate::{prelude::*, registry};
+use crate::{arena::config_handler::ConfigHandler, prelude::*, registry};
 
 use self::{
     binaries::Binaries,
@@ -16,9 +13,40 @@ use self::{
 };
 
 mod binaries;
+mod config_handler;
 mod manifest;
 mod source_list;
 mod workspace;
+
+// How does this all work??
+//
+// The Arena attempts to allow the user to declaratively describe plugins to add. Following this
+// config, it runs separate actions imperatively to get to that target state (unsurprisingly, this
+// philosophy is modeled after cargo, we (I) love cargo). The pipeline is generally separated into
+// three areas: loading plugin sources, combining plugins into a cargo workspace, and storing the
+// resulting shared libraries. These are handled by the [`SourceList`], the [`Workspace`], and the
+// [`Binaries`] types respectively. These each also have their own directory, the path of which is
+// also customizeable in the config.
+//
+// The Arena has an internal state and attempts to make that state align with the config. To do
+// this, it takes little steps (defined by [`Action`]) one by one. These actions are separated,
+// since the config can be changed at any time; for example, if the user wants to cancel downloading
+// a package. When config is changed, the action queue is flushed and the state is "diffed" to
+// figure out the actions to perform from now on (which becomes the new action queue). Notably, this
+// requires the state to be updated **only after an action finishes** so that it is always an
+// accurate representation of what has been done.
+//
+// State is held in multiple locations, and state "diff"ing happens at different times. This is
+// because we may not have all the information to know how to arrive at a future state until we
+// finish some of the beginnning actions. Specifically, state that comes from loading sources is
+// held in [`State`], and each of the sections of the Arena (such as the source list or workspace)
+// has their own state. Diffing happens once when changing config in [`State::diff`], and again
+// after loading all sources in [`Action::AddPlugins`] (which inspects source config that's kept in
+// [`State`] once it's loaded...). This is because we may have to add the plugins to the workspace
+// in a specific order because of dependencies.
+//
+// (sorry for writing so much, I wrote it so I would understand it better and figured I'd leave it
+// in for the one or two people that will ever read this code).
 
 // TODO: serialize and deserialize all current state (State, SourceList, Binaries, etc.)
 // TODO: confirm deserialized state with file system
@@ -30,42 +58,12 @@ mod workspace;
 // when config changes, delete all upcoming actions and replace them with the new config
 
 enum Action {
-    LoadSource(SourceId),
-    RemoveSource(SourceId),
+    Load(SourceId),
+    Remove(SourceId),
+    AddPlugins,
     AddToWorkspace(PluginName),
-    Compile(HashSet<PluginName>),
-    Load(Vec<Binary>),
-}
-
-impl Action {
-    /// Returns `true` if the action is [`LoadSource`](Action::LoadSource) and the source is a
-    /// [`Builtin`](source::Variant::Builtin).
-    fn is_load_binary(&self, state: &State) -> bool {
-        if let Self::LoadSource(source) = self {
-            if let Some(source::Variant::Builtin(_)) =
-                state.sources.get(source).map(|src| src.source.variant())
-            {
-                return true;
-            }
-        }
-        false
-    }
-
-    const fn as_compile_mut(&mut self) -> Option<&mut HashSet<PluginName>> {
-        if let Self::Compile(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    const fn as_load_mut(&mut self) -> Option<&mut Vec<Binary>> {
-        if let Self::Load(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
+    CompileAll,
+    LoadAll,
 }
 
 #[resource("plugin_host:arena")]
@@ -76,6 +74,7 @@ pub struct Arena {
     binaries: Binaries,
     actions: VecDeque<Action>,
     state: State,
+    config: ConfigHandler,
 }
 
 #[create]
@@ -109,8 +108,11 @@ impl Arena {
                 Binaries::try_deserialize_from(config.directories().binary_dir())
             )?;
 
-            let state = State::from_config(config);
-            let actions = state.diff(&state.as_empty());
+            let config = ConfigHandler::new(config);
+
+            let goal_state = config.goal_state();
+            let state = goal_state.as_empty();
+            let actions = state.diff(&goal_state);
 
             Ok(Arena {
                 plugin_registry,
@@ -119,6 +121,7 @@ impl Arena {
                 binaries,
                 actions,
                 state,
+                config,
             })
         }
 
@@ -133,10 +136,19 @@ impl Arena {
     }
 
     async fn load_binaries(&mut self) -> Result<(), Vec<Error>> {
-        // TODO: replace with Vec::extract_if once it's stabilized
-        let (load_binary_actions, rest) = std::mem::take(&mut self.actions)
-            .into_iter()
-            .partition(|action| action.is_load_binary(&self.state));
+        let (load_binary_actions, rest) =
+            std::mem::take(&mut self.actions)
+                .into_iter()
+                .partition(|action| {
+                    if let Action::Load(id) = action
+                        && let Some(source) = self.config.source(id)
+                        && let source::Variant::Builtin(_) = source.variant()
+                    {
+                        true
+                    } else {
+                        false
+                    }
+                });
         self.actions = rest;
 
         for load_binary in load_binary_actions {
@@ -147,12 +159,38 @@ impl Arena {
 
     async fn run_action(&mut self, action: Action) -> Result<(), Vec<Error>> {
         match action {
-            Action::LoadSource(source) => self.load_source(&source).await?,
-            Action::RemoveSource(source) => {
+            Action::Load(source) => self.load_source(source).await?,
+            Action::Remove(source) => {
                 let removed = self.source_list.remove_source(&source).await?;
                 debug!("removed source '{removed:?}'");
                 if let Some(LoadedSource::Plugins { names, .. }) = removed {
                     self.binaries.remove_plugins(names.iter()).await?;
+                }
+            }
+            Action::AddPlugins => {
+                let mut tracker = SourceTracker::new(self);
+
+                for plugin in self.state.to_add() {
+                    tracker.load(plugin);
+                }
+
+                let SourceTracker {
+                    sources_to_add,
+                    actions,
+                    errors,
+                    ..
+                } = tracker;
+
+                if sources_to_add.is_empty() {
+                    self.actions.extend(actions);
+                    self.actions.push_back(Action::CompileAll);
+                    self.actions.push_back(Action::LoadAll);
+                } else {
+                    self.add_sources(sources_to_add);
+                }
+
+                if !errors.is_empty() {
+                    return Err(errors);
                 }
             }
             Action::AddToWorkspace(plugin_name) => {
@@ -163,92 +201,99 @@ impl Arena {
                     self.workspace
                         .add(plugin.path.clone(), &dependencies, plugin_name.clone())
                         .await?;
-                    self.queue_compile(plugin_name);
+                    self.state.mark_added(&plugin.source, &plugin_name);
+                    self.state.queue_compile(&plugin.source, plugin_name);
                 }
             }
-            Action::Compile(plugin_names) => {
-                // TODO: some sort of arena messaging thing for this kind of thing
+            Action::CompileAll => {
+                let plugin_names: Vec<&PluginName> = self
+                    .state
+                    .to_compile()
+                    .filter(|plugin| self.plugin_enabled(plugin).is_some_and(|enabled| enabled))
+                    .collect();
+
                 debug!("compiling {plugin_names:?}, this may take a while...");
+
+                let plugin_names = || plugin_names.iter().copied();
                 let BuildArtifacts { artifacts, errors } =
-                    self.workspace.compile(&plugin_names).await?;
-                // queue loading each new plugin
-                let paths = self.binaries.insert_copies(artifacts.into_iter()).await?;
-                self.queue_loads(paths);
+                    self.workspace.compile(plugin_names).await?;
+
+                let binaries = self.binaries.insert_copies(artifacts.into_iter()).await?;
+                for binary in binaries {
+                    if let Some(plugin) = self.source_list.get_plugin(&binary.name) {
+                        self.state.mark_compiled(&plugin.source, &binary.name);
+                        self.state.queue_load(&plugin.source, binary);
+                    } else {
+                        warn!(
+                            concat!(
+                                "compiled binary for plugin '{}', ",
+                                "but that plugin wasn't registered in the source list"
+                            ),
+                            binary.name
+                        );
+                    }
+                }
+
                 if !errors.is_empty() {
                     return Err(errors.into_iter().map(Into::into).collect());
                 }
             }
-            Action::Load(paths) => {
-                // debug!("loading {paths:?} into the registry");
+            Action::LoadAll => {
+                // we can update state now because this load can't be cancelled
+                let binaries = self
+                    .state
+                    .extract_to_load_if(|binary| {
+                        self.source_list
+                            .get_plugin(&binary.name)
+                            .is_some_and(|info| {
+                                self.config
+                                    .plugin_group(&info.source)
+                                    .is_some_and(|group| group.enabled.get(&binary.name))
+                            })
+                    })
+                    .collect();
+
+                debug!("loading {binaries:?} into the registry");
                 // SAFETY: See Self::add_to_plugin_registry for justification
-                unsafe { self.plugin_registry.send(paths) };
+                unsafe { self.plugin_registry.send(binaries) };
             }
         }
         // TODO: serialize
         Ok(())
     }
 
-    async fn load_source(&mut self, source: &SourceId) -> Result<(), Error> {
-        let Some(source) = self.state.sources.get(source) else {
+    async fn load_source(&mut self, source_id: SourceId) -> Result<(), Error> {
+        let Some(source) = self.config.source(&source_id) else {
+            // TODO: return an error here
             return Ok(());
         };
 
-        debug!("loading source '{}'", source.source);
-        let (loaded_source, updated) = self.source_list.add_source(&source.source).await?;
+        debug!("loading source '{}'", source);
+        let (loaded_source, updated) = self.source_list.add_source(source).await?;
+
+        let queue = self.state.add_source(source_id);
 
         // we don't care about loaded binaries, since we still check them in
         // enabled_binaries
         if let LoadedSource::Plugins { names, .. } = loaded_source {
             if updated.has_updated() {
                 // if the source has updated, we have to reload everything
-                let actions = names
-                    .iter()
-                    .map(|name| Action::AddToWorkspace(name.clone()));
-                self.actions.extend(actions);
+                queue.add.extend(names.iter().cloned());
             } else {
-                // otherwise, we can reuse stuff
-                for name in names.clone() {
-                    if let Some(binary) = self.binaries.get(&name) {
-                        self.queue_load(binary.clone());
-                    } else if self.workspace.contains(&name) {
-                        self.queue_compile(name);
+                // otherwise, we may be able to reuse stuff
+                for name in names {
+                    if let Some(binary) = self.binaries.get(name) {
+                        queue.load.insert(binary.clone());
+                    } else if self.workspace.contains(name) {
+                        queue.compile.insert(name.clone());
                     } else {
-                        self.actions.push_back(Action::AddToWorkspace(name));
+                        queue.add.insert(name.clone());
                     }
                 }
             }
         }
+
         Ok(())
-    }
-
-    fn queue_compile(&mut self, plugin: PluginName) {
-        if let Some(action) = self.actions.iter_mut().find_map(Action::as_compile_mut) {
-            action.insert(plugin);
-        } else {
-            let mut set = HashSet::new();
-            set.insert(plugin);
-            self.actions.push_back(Action::Compile(set));
-        }
-    }
-
-    fn queue_loads(&mut self, paths: impl IntoIterator<Item = Binary>) {
-        if let Some(action) = self.actions.iter_mut().find_map(Action::as_load_mut) {
-            action.extend(paths);
-        } else {
-            let vec: Vec<_> = paths.into_iter().collect();
-            if !vec.is_empty() {
-                self.actions.push_back(Action::Load(vec));
-            }
-        }
-    }
-
-    fn queue_load(&mut self, path: Binary) {
-        if let Some(action) = self.actions.iter_mut().find_map(Action::as_load_mut) {
-            action.push(path);
-        } else {
-            let vec: Vec<_> = vec![path];
-            self.actions.push_back(Action::Load(vec));
-        }
     }
 
     /// Returns `Some(true)` if the plugin is enabled, `Some(false)` if it was found and not
@@ -256,8 +301,8 @@ impl Arena {
     #[must_use]
     pub fn plugin_enabled(&self, plugin: &PluginName) -> Option<bool> {
         let source_id = self.source_list.get_plugin(plugin)?.id();
-        let source = self.state.sources.get(source_id)?;
-        let enabled = source.enabled.get(plugin);
+        let group = self.config.plugin_group(source_id)?;
+        let enabled = group.enabled.get(plugin);
         Some(enabled)
     }
 
@@ -265,8 +310,8 @@ impl Arena {
     /// `Some(false)` if it was found and not enabled, and `None` if it was not found
     #[must_use]
     pub fn source_enabled(&self, source: &SourceId) -> Option<bool> {
-        let source = self.state.sources.get(source)?;
-        let enabled = source.enabled.all_enabled();
+        let group = self.config.plugin_group(source)?;
+        let enabled = group.enabled.all_enabled();
         Some(enabled)
     }
 
@@ -287,6 +332,28 @@ impl Arena {
                 .filter(|(source_id, _)| self.source_enabled(source_id).unwrap_or_default())
                 .map(|(_, binary)| binary),
         )
+    }
+
+    fn mutate_config(&mut self, func: impl FnOnce(&mut config::Host)) {
+        self.config.mutate(func);
+        self.actions.clear();
+        let goal_state = self.config.goal_state();
+        let actions = self.state.diff(&goal_state);
+        self.actions.extend(actions);
+    }
+
+    fn add_sources(&mut self, sources: impl IntoIterator<Item = Source>) {
+        self.mutate_config(|config| {
+            config.plugins.extend(sources.into_iter().map(|source| {
+                (
+                    source.id().clone(),
+                    config::host::PluginGroup {
+                        source,
+                        enabled: config::host::Enabled::All(false),
+                    },
+                )
+            }));
+        });
     }
 
     /// # Safety
@@ -331,79 +398,55 @@ impl Watcher for Arena {
     }
 }
 
+#[derive(Default)]
+struct SourceQueue {
+    pub add: HashSet<PluginName>,
+    pub compile: HashSet<PluginName>,
+    pub load: HashSet<Binary>,
+}
+
 // TODO: serialize and deserialize this
 struct State {
+    // basic config
     pub directories: config::host::Directories,
-    pub arena: config::host::Arena,
-    pub statics: HashSet<SourceId>,
-    pub sources: HashMap<SourceId, SourceDefinition>,
+    // loading sources
+    pub sources: HashMap<SourceId, SourceQueue>,
 }
 
 impl State {
     #[must_use]
-    fn from_config(config: config::Host) -> Self {
+    fn from_config(config: &config::Host) -> Self {
         let mut state = Self {
-            directories: config.directories,
-            arena: config.arena,
+            directories: config.directories.clone(),
             sources: HashMap::new(),
-            statics: HashSet::new(),
         };
-        for source in config.plugins {
-            state.add_plugin(source);
-        }
-        for source in config.static_dependencies {
-            state.add_static_source(source);
+        for source in (config.plugins.keys()).chain(config.static_dependencies.keys()) {
+            state.add_source(source.clone());
         }
         state
     }
 
-    fn add_plugin(&mut self, plugin: config::host::Plugin) -> &SourceId {
-        let dependencies = plugin
-            .dependencies
-            .into_iter()
-            .map(|dep| self.add_plugin(dep).clone())
-            .collect();
-        let definition = self
-            .sources
-            .entry(plugin.source.id().clone())
-            .or_insert_with(move || SourceDefinition {
-                enabled: plugin.enabled,
-                source: Arc::new(plugin.source),
-                dependencies,
-            });
-        // TODO: merge sources, if necessary
-        definition.source.id()
+    fn add_source(&mut self, source: SourceId) -> &mut SourceQueue {
+        self.sources.entry(source).or_default()
     }
 
-    fn add_static_source(&mut self, source: Source) {
-        self.statics.insert(source.id().clone());
-        self.sources.insert(
-            source.id().clone(),
-            SourceDefinition {
-                enabled: config::host::Enabled::All(true),
-                source: Arc::new(source),
-                dependencies: Vec::new(),
-            },
-        );
-    }
-
-    // TODO: replace with generator once they get stabilized
     // TODO: handle directory changes
-    fn diff(&self, prev: &Self) -> VecDeque<Action> {
+    fn diff(&self, next: &Self) -> VecDeque<Action> {
         let mut actions = VecDeque::new();
 
-        for source in prev.sources.keys() {
-            if !self.sources.contains_key(source) {
-                actions.push_back(Action::RemoveSource(source.clone()));
+        for source in self.sources.keys() {
+            if !next.sources.contains_key(source) {
+                actions.push_back(Action::Remove(source.clone()));
             }
         }
 
-        // this makes sure that all dependencies are loaded in the correct order
-        let mut tracker = SourceTracker::new(&self.sources, &self.statics);
-        for source in self.sources.keys() {
-            tracker.insert(source.clone(), prev.sources.contains_key(source));
+        for source in next.sources.keys() {
+            if !self.sources.contains_key(source) {
+                actions.push_back(Action::Load(source.clone()));
+            }
         }
-        tracker.load(|source| actions.push_back(Action::LoadSource(source.clone())));
+
+        actions.push_back(Action::AddPlugins);
 
         actions
     }
@@ -411,63 +454,176 @@ impl State {
     fn as_empty(&self) -> Self {
         Self {
             directories: self.directories.clone(),
-            arena: self.arena.clone(),
             sources: HashMap::new(),
-            statics: HashSet::new(),
+        }
+    }
+
+    fn source_queues(&self) -> impl Iterator<Item = &SourceQueue> {
+        self.sources.values()
+    }
+
+    fn source_queues_mut(&mut self) -> impl Iterator<Item = &mut SourceQueue> {
+        self.sources.values_mut()
+    }
+
+    fn source_queue_mut(&mut self, source: &SourceId) -> Option<&mut SourceQueue> {
+        self.sources.get_mut(source)
+    }
+
+    fn to_add(&self) -> impl Iterator<Item = &PluginName> {
+        self.source_queues().flat_map(|queue| &queue.add)
+    }
+
+    fn to_compile(&self) -> impl Iterator<Item = &PluginName> {
+        self.source_queues().flat_map(|queue| &queue.compile)
+    }
+
+    fn extract_to_load_if<F>(&mut self, func: F) -> impl Iterator<Item = Binary> + use<'_, F>
+    where
+        F: Fn(&Binary) -> bool + Clone + Copy,
+    {
+        self.source_queues_mut()
+            .flat_map(move |queue| queue.load.extract_if(func))
+    }
+
+    fn mark_added(&mut self, source: &SourceId, plugin: &PluginName) {
+        if let Some(queue) = self.source_queue_mut(source) {
+            queue.add.remove(plugin);
+        }
+    }
+
+    fn mark_compiled(&mut self, source: &SourceId, plugin: &PluginName) {
+        if let Some(queue) = self.source_queue_mut(source) {
+            queue.compile.remove(plugin);
+        }
+    }
+
+    fn queue_compile(&mut self, source: &SourceId, plugin: PluginName) {
+        if let Some(queue) = self.source_queue_mut(source) {
+            queue.compile.insert(plugin);
+        }
+    }
+
+    fn queue_load(&mut self, source: &SourceId, binary: Binary) {
+        if let Some(queue) = self.source_queue_mut(source) {
+            queue.load.insert(binary);
         }
     }
 }
 
-struct SourceTracker<'sd> {
-    source_is_loaded: HashMap<SourceId, bool>,
-    sources: &'sd HashMap<SourceId, SourceDefinition>,
-    statics: &'sd HashSet<SourceId>,
+struct SourceTracker<'a> {
+    arena: &'a Arena,
+    already_added: HashSet<PluginName>,
+    errors: Vec<Error>,
+    sources_to_add: Vec<Source>,
+    actions: Vec<Action>,
 }
 
-impl<'sd> SourceTracker<'sd> {
-    fn new(
-        sources: &'sd HashMap<SourceId, SourceDefinition>,
-        statics: &'sd HashSet<SourceId>,
-    ) -> Self {
-        let source_is_loaded = sources.keys().map(|key| (key.clone(), false)).collect();
+impl<'a> SourceTracker<'a> {
+    fn new(arena: &'a Arena) -> Self {
         Self {
-            source_is_loaded,
-            sources,
-            statics,
+            arena,
+            already_added: HashSet::new(),
+            errors: Vec::new(),
+            sources_to_add: Vec::new(),
+            actions: Vec::new(),
         }
     }
 
-    fn insert(&mut self, source: SourceId, loaded: bool) {
-        self.source_is_loaded.insert(source, loaded);
-    }
+    fn load(&mut self, plugin: &PluginName) -> PluginLoadResult {
+        if self.already_added.contains(plugin) {
+            return PluginLoadResult::Success;
+        }
 
-    fn load<CB: FnMut(&SourceId)>(mut self, mut callback: CB) {
-        // static sources are given priority
-        for source in self.statics {
-            self.load_source(source, &mut callback);
-        }
-        for source in self.sources.keys() {
-            self.load_source(source, &mut callback);
-        }
-    }
+        let mut had_error = false;
 
-    fn load_source<CB: FnMut(&SourceId)>(&mut self, source: &SourceId, callback: &mut CB) {
-        if self.source_is_loaded[source] {
-            return;
+        let Some(info) = self.arena.source_list.get_plugin(plugin) else {
+            return PluginLoadResult::NotFound;
+        };
+
+        for (dependency, dep_info) in &info.config.dependencies {
+            match self.load(dependency) {
+                PluginLoadResult::Success => (),
+                PluginLoadResult::NotFound => {
+                    if self.arena.config.goal().arena.auto_add_dependencies
+                        && let Some(source) = dep_info.source.as_ref()
+                    {
+                        self.sources_to_add.push(source.clone());
+                    } else {
+                        self.errors.push(Error::PluginDependencyNotFound {
+                            plugin: plugin.clone(),
+                            dependency: dependency.clone(),
+                        });
+                    }
+                    had_error = true;
+                }
+                PluginLoadResult::HadError => {
+                    had_error = true;
+                }
+            }
         }
-        let definition = &self.sources[source];
-        for dependency in &definition.dependencies {
-            // NOTE: we don't need to check if the dependency is loaded here, because
-            // if a dependency is specified, it's always added to the list
-            self.load_source(dependency, callback);
+
+        self.already_added.insert(plugin.clone());
+
+        if had_error {
+            PluginLoadResult::HadError
+        } else {
+            self.actions.push(Action::AddToWorkspace(plugin.clone()));
+            PluginLoadResult::Success
         }
-        (callback)(source);
-        *self.source_is_loaded.get_mut(source).unwrap() = true;
     }
 }
 
-struct SourceDefinition {
-    pub enabled: config::host::Enabled,
-    pub source: Arc<Source>,
-    pub dependencies: Vec<SourceId>,
+enum PluginLoadResult {
+    Success,
+    NotFound,
+    HadError,
 }
+
+// struct SourceTracker<'sd> {
+//     source_is_loaded: HashMap<SourceId, bool>,
+//     sources: &'sd HashMap<SourceId, SourceDefinition>,
+//     statics: &'sd HashSet<SourceId>,
+// }
+//
+// impl<'sd> SourceTracker<'sd> {
+//     fn new(
+//         sources: &'sd HashMap<SourceId, SourceDefinition>,
+//         statics: &'sd HashSet<SourceId>,
+//     ) -> Self {
+//         let source_is_loaded = sources.keys().map(|key| (key.clone(), false)).collect();
+//         Self {
+//             source_is_loaded,
+//             sources,
+//             statics,
+//         }
+//     }
+//
+//     fn insert(&mut self, source: SourceId, loaded: bool) {
+//         self.source_is_loaded.insert(source, loaded);
+//     }
+//
+//     fn load_all<CB: FnMut(&SourceId)>(mut self, mut callback: CB) {
+//         // static sources are given priority
+//         for source in self.statics {
+//             self.load_source(source, &mut callback);
+//         }
+//         for source in self.sources.keys() {
+//             self.load_source(source, &mut callback);
+//         }
+//     }
+//
+//     fn load_source<CB: FnMut(&SourceId)>(&mut self, source: &SourceId, callback: &mut CB) {
+//         if self.source_is_loaded[source] {
+//             return;
+//         }
+//         let definition = &self.sources[source];
+//         for dependency in &definition.dependencies {
+//             // NOTE: we don't need to check if the dependency is loaded here, because
+//             // if a dependency is specified, it's always added to the list
+//             self.load_source(dependency, callback);
+//         }
+//         (callback)(source);
+//         *self.source_is_loaded.get_mut(source).unwrap() = true;
+//     }
+// }

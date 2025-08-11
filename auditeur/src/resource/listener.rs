@@ -322,7 +322,7 @@ impl Input for RegistryComponent {
         Ok(Self {
             receiver,
             #[cfg(feature = "runtime-loading")]
-            registry: registry.handle(as_resource)?,
+            registry: registry.handle(as_resource),
         })
     }
 

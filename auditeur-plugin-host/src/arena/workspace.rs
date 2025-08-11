@@ -211,7 +211,8 @@ debug = {debug}
         let mut manifest = manifest.copy_to_path(&mirror_path);
         for dependency in dependencies {
             trace!("linking dependency '{dependency}' for '{plugin_name}'");
-            let (package, dependency) = self.create_dependency_link(&plugin_name, dependency)?;
+            let (package, dependency) =
+                self.create_dependency_link(&plugin_name, dependency, &manifest)?;
             manifest.dependencies.insert(package.0, dependency);
         }
         manifest.save().await?;
@@ -232,6 +233,7 @@ debug = {debug}
         &self,
         from: &PluginName,
         to: &PluginName,
+        manifest: &Manifest,
     ) -> Result<(PackageName, Dependency), Error> {
         let crt = self
             .crates
@@ -240,15 +242,31 @@ debug = {debug}
                 plugin: from.clone(),
                 dependency: to.clone(),
             })?;
+        let prev_dependency = manifest
+            .dependencies
+            .get(&crt.package_name.0)
+            .and_then(|dependency| dependency.detail())
+            .cloned()
+            .unwrap_or_default();
         let dependency = Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
             path: Some(crt.mirror.to_string_lossy().into_owned()),
-            ..Default::default()
+            registry: None,
+            registry_index: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            ..prev_dependency
         }));
         Ok((crt.package_name.clone(), dependency))
     }
 
-    pub async fn compile(&self, plugins: &HashSet<PluginName>) -> Result<BuildArtifacts, Error> {
-        if plugins.is_empty() {
+    pub async fn compile<'a, F, I>(&'a self, plugins_iter: F) -> Result<BuildArtifacts, Error>
+    where
+        F: Fn() -> I,
+        I: Iterator<Item = &'a PluginName>,
+    {
+        if plugins_iter().next().is_none() {
             return Ok(BuildArtifacts::default());
         }
 
@@ -256,8 +274,7 @@ debug = {debug}
         self.init_workspace_manifest().await?;
 
         // only build the plugins that haven't been built yet by specifing their crate names
-        let package_specifiers = plugins
-            .iter()
+        let package_specifiers = plugins_iter()
             .filter_map(|plugin| self.crates.get(plugin))
             .flat_map(|package| ["--package", package.package_name.borrow()])
             .map(ToOwned::to_owned);
@@ -286,8 +303,7 @@ debug = {debug}
         // collect the names out here so it can be given to the other thread without references
         // these are used to filter the cargo messages so that they only contain plugin artifacts
         // parse the messages in another thread since cargo_metadata doesn't work with async
-        let libraries = plugins
-            .iter()
+        let libraries = plugins_iter()
             .filter_map(|package| self.crates.get(package))
             .map(|crt| crt.library_name.clone())
             .collect();
@@ -296,8 +312,7 @@ debug = {debug}
         // wait for the process to finish
         let _exit_code = crate::spawn_blocking(move || build_command.wait()).await?;
 
-        let name_map: HashMap<_, _> = plugins
-            .iter()
+        let name_map: HashMap<_, _> = plugins_iter()
             .filter_map(|plugin| self.crates.get(plugin))
             .map(|crt| (&crt.library_name, &crt.plugin_name))
             .collect();

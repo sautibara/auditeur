@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
 
@@ -41,9 +42,9 @@ pub struct Config {
     #[serde(default)]
     pub arena: Arena,
     #[serde(default)]
-    pub plugins: Vec<Plugin>,
+    pub plugins: PluginGroupMap,
     #[serde(skip)]
-    pub static_dependencies: Vec<Source>,
+    pub static_dependencies: HashMap<SourceId, Source>,
 }
 
 impl Config {
@@ -52,8 +53,8 @@ impl Config {
         Self {
             directories: Directories::defaults(project_dirs),
             arena: Arena::default(),
-            plugins: vec![],
-            static_dependencies: vec![],
+            plugins: PluginGroupMap::default(),
+            static_dependencies: HashMap::new(),
         }
     }
 
@@ -64,7 +65,8 @@ impl Config {
 
     #[must_use]
     pub fn with_static_dependency(mut self, dependency: Source) -> Self {
-        self.static_dependencies.push(dependency);
+        self.static_dependencies
+            .insert(dependency.id().clone(), dependency);
         self
     }
 }
@@ -134,15 +136,62 @@ impl Directories {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct Arena {
+    #[serde(default)]
     pub retain_build_artifacts: bool,
+    #[serde(default)]
+    pub auto_add_dependencies: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(from = "PluginGroupMapSerialized", into = "PluginGroupMapSerialized")]
+pub struct PluginGroupMap {
+    map: HashMap<SourceId, PluginGroup>,
+}
+
+impl Deref for PluginGroupMap {
+    type Target = HashMap<SourceId, PluginGroup>;
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl DerefMut for PluginGroupMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(from = "PluginSerialized", into = "PluginSerialized")]
-pub struct Plugin {
+#[serde(transparent)]
+struct PluginGroupMapSerialized {
+    list: Vec<PluginGroup>,
+}
+
+impl From<PluginGroupMap> for PluginGroupMapSerialized {
+    fn from(value: PluginGroupMap) -> Self {
+        Self {
+            list: value.map.into_values().collect(),
+        }
+    }
+}
+
+impl From<PluginGroupMapSerialized> for PluginGroupMap {
+    fn from(value: PluginGroupMapSerialized) -> Self {
+        Self {
+            map: value
+                .list
+                .into_iter()
+                .map(|group| (group.source.id().clone(), group))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(from = "PluginGroupSerialized", into = "PluginGroupSerialized")]
+pub struct PluginGroup {
     pub source: Source,
     pub enabled: Enabled,
-    pub dependencies: Vec<Plugin>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -150,7 +199,7 @@ pub struct Plugin {
 #[serde(
     expecting = r#"expected a git shorthand in the form of "{user}/{repo}" or a struct containing a valid source"#
 )]
-enum PluginSerialized {
+enum PluginGroupSerialized {
     // only a string - default to an enabled github source
     // ex: "sautibara/sautibara-rpc"
     UrlOnly(git::Shorthand),
@@ -160,11 +209,8 @@ enum PluginSerialized {
         // ex: ( github: "sautibara/sautibara-rpc" )
         #[serde(flatten)]
         source: Source,
-        // skip serializing or deserializing if it's already the default value
         #[serde(default, skip_serializing_if = "is_default")]
         enabled: Enabled,
-        #[serde(default, skip_serializing_if = "is_default")]
-        dependencies: Vec<Plugin>,
     },
 }
 
@@ -204,39 +250,30 @@ fn is_default<T: Default + PartialEq>(val: &T) -> bool {
     val == &T::default()
 }
 
-impl From<Plugin> for PluginSerialized {
-    fn from(plugin: Plugin) -> Self {
+impl From<PluginGroup> for PluginGroupSerialized {
+    fn from(plugin: PluginGroup) -> Self {
         let variant = plugin.source.into();
-        if is_default(&plugin.enabled) {
-            if let source::Variant::Github(url) = variant {
-                return Self::UrlOnly(url);
+        if is_default(&plugin.enabled)
+            && let source::Variant::Github(url) = variant
+        {
+            Self::UrlOnly(url)
+        } else {
+            Self::Full {
+                source: variant.into(),
+                enabled: plugin.enabled,
             }
-        }
-        Self::Full {
-            source: variant.into(),
-            enabled: plugin.enabled,
-            dependencies: plugin.dependencies,
         }
     }
 }
 
-impl From<PluginSerialized> for Plugin {
-    fn from(plugin: PluginSerialized) -> Self {
+impl From<PluginGroupSerialized> for PluginGroup {
+    fn from(plugin: PluginGroupSerialized) -> Self {
         match plugin {
-            PluginSerialized::UrlOnly(url) => Self {
+            PluginGroupSerialized::UrlOnly(url) => Self {
                 source: source::Variant::Github(url).into(),
                 enabled: Enabled::default(),
-                dependencies: vec![],
             },
-            PluginSerialized::Full {
-                source,
-                enabled,
-                dependencies,
-            } => Self {
-                source,
-                enabled,
-                dependencies,
-            },
+            PluginGroupSerialized::Full { source, enabled } => Self { source, enabled },
         }
     }
 }
