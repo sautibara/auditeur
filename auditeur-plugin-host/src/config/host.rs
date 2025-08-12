@@ -24,6 +24,8 @@ pub struct PluginManager;
 ///   ),
 ///   arena: (
 ///     retain_build_artifacts: false,
+///     auto_add_dependencies: true,
+///     developer_mode: false,
 ///   ),
 ///   plugins: [
 ///     "sautibara/sautibara-rpc",
@@ -134,12 +136,22 @@ impl Directories {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
 pub struct Arena {
-    #[serde(default)]
     pub retain_build_artifacts: bool,
-    #[serde(default)]
     pub auto_add_dependencies: bool,
+    pub developer_mode: bool,
+}
+
+impl Default for Arena {
+    fn default() -> Self {
+        Self {
+            auto_add_dependencies: true,
+            retain_build_artifacts: false,
+            developer_mode: false,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]

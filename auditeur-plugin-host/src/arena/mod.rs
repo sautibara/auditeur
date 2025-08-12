@@ -105,7 +105,14 @@ impl Arena {
                     config.directories().workspace_dir(),
                     config.arena.retain_build_artifacts,
                 ),
-                Binaries::try_deserialize_from(config.directories().binary_dir())
+                async {
+                    let dir = config.directories().binary_dir();
+                    if config.arena.developer_mode {
+                        Binaries::new(dir).await
+                    } else {
+                        Binaries::try_deserialize_from(dir).await
+                    }
+                }
             )?;
 
             let config = ConfigHandler::new(config);
@@ -282,7 +289,7 @@ impl Arena {
         // we don't care about loaded binaries, since we still check them in
         // enabled_binaries
         if let LoadedSource::Plugins { names, .. } = loaded_source {
-            if updated.has_updated() {
+            if updated.has_updated() || self.config.goal().arena.developer_mode {
                 // if the source has updated, we have to reload everything
                 queue.add.extend(names.iter().cloned());
             } else {
