@@ -42,6 +42,8 @@ pub struct Bundle {
     loaders: Vec<Box<dyn Loader>>,
     bundles: Vec<Self>,
     constraints: Constraints,
+    #[cfg(feature = "runtime-loading")]
+    init: Option<Box<dyn Fn() -> Bundle>>,
 }
 
 impl Bundle {
@@ -54,6 +56,8 @@ impl Bundle {
             loaders: Vec::new(),
             bundles: Vec::new(),
             constraints: Constraints::empty(),
+            #[cfg(feature = "runtime-loading")]
+            init: None,
         }
     }
 
@@ -162,7 +166,23 @@ impl Bundle {
 
     /// Only load the items within this bundle once the specified `constraint` has been satisfied
     pub fn add_constraint(mut self, constraint: Constraint) -> Self {
-        self.constraints = std::mem::take(&mut self.constraints).insert(constraint);
+        self.constraints = self.constraints.insert(constraint);
+        self
+    }
+}
+
+/// These methods allow reloading the bundle when the `runtime-loading` feature is enabled.
+impl Bundle {
+    /// Provide a method, `func`, to reload the bundle if asked. If the method consuming the bundle
+    /// accepts any [`Supplier`], this will automatically be set if a function is passed in. Also,
+    /// if you use `auditeur-plugin`, plugins will also automatically set this.
+    ///
+    /// This method is a no-op if the `runtime-loading` feature is disabled.
+    pub fn reload_with<F: Fn() -> Self + 'static>(mut self, func: F) -> Self {
+        #[cfg(feature = "runtime-loading")]
+        {
+            self.init = Some(Box::new(func));
+        }
         self
     }
 }
@@ -199,9 +219,9 @@ pub trait Supplier {
     fn build(self) -> Bundle;
 }
 
-impl<F: FnOnce() -> Bundle> Supplier for F {
+impl<F: Fn() -> Bundle + 'static> Supplier for F {
     fn build(self) -> Bundle {
-        self()
+        self().reload_with(self)
     }
 }
 

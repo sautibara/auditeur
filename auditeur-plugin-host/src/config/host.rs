@@ -46,6 +46,8 @@ pub struct Config {
     #[serde(default)]
     pub plugins: PluginGroupMap,
     #[serde(skip)]
+    // TODO: store init fns in here too,
+    // so that things can be restarted
     pub static_dependencies: HashMap<SourceId, Source>,
 }
 
