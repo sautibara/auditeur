@@ -97,7 +97,7 @@ impl<W: WatcherTrait> Watcher<W> {
     pub async fn build(watcher: W, registry: &Registry) -> Result<Self, Error> {
         Ok(Self {
             #[cfg(feature = "runtime-loading")]
-            registry: registry.handle(watcher.ident()),
+            registry: registry.handle(),
             event_receiver: registry.event_receiver(),
             event_sender: registry.event_sender(),
             input: <W::Input as Input>::create(registry, watcher.ident()).await?,

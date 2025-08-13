@@ -59,6 +59,8 @@ use tracing::trace;
 use tracing::warn;
 use tracing::Instrument;
 
+#[cfg(feature = "runtime-loading")]
+use crate::app::resource_map::ResourceMapConnection;
 use crate::bundle;
 use crate::input::get::GetRef;
 use crate::prelude::*;
@@ -236,7 +238,7 @@ impl App {
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
     pub async fn add_to_registry(mut self, registry: &mut Registry) -> Result<(), (Self, Error)> {
-        trace!("{self:?}");
+        trace!("adding App to registry: {self:?}");
         self.add_to_registry_fallible(registry)
             .await
             .map_err(|err| (self, err))
@@ -246,16 +248,29 @@ impl App {
         // add the loaders and bundles that have already been loaded in the registry to our list
         // this is necessary so that constraints can know that their dependencies have already been
         // loaded
-        self.loaders
-            .extend(registry.loaded_resources().into_iter().map(|id| (id, None)));
-        self.bundles
-            .extend(registry.loaded_bundles().into_iter().map(|id| (id, None)));
+        trace!("a");
+        self.loaders.extend(
+            registry
+                .loaded_resources()
+                .await
+                .into_iter()
+                .map(|id| (id, None)),
+        );
+        self.bundles.extend(
+            registry
+                .loaded_bundles()
+                .await
+                .into_iter()
+                .map(|id| (id, None)),
+        );
+        trace!("b");
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
             self.resolve_loader(registry, &loader).await?;
         }
+        trace!("c");
         // free events :)
         registry.event_sender_ref().extend(self.events.drain(..));
         Ok(())
@@ -444,20 +459,20 @@ impl RegistryState {
     }
 
     #[inline]
-    fn loaded_resources(&self) -> HashSet<NamespacedId> {
+    async fn loaded_resources(&self) -> HashSet<NamespacedId> {
         match self {
             Self::Building(registry) => registry.loaded_resources(),
             #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.loaded_resources(),
+            Self::Running(registry) => registry.loaded_resources().await,
         }
     }
 
     #[inline]
-    fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+    async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
         match self {
             Self::Building(registry) => registry.loaded_bundles(),
             #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.loaded_bundles(),
+            Self::Running(registry) => registry.loaded_bundles().await,
         }
     }
 }
@@ -554,7 +569,7 @@ impl BuildingRegistry {
 #[derive(Debug)]
 struct RunningRegistry {
     resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
-    map: resource_map::Handle,
+    map: ResourceMapConnection,
 }
 
 #[cfg(feature = "runtime-loading")]
@@ -602,12 +617,12 @@ impl RunningRegistry {
         Some(*reference)
     }
 
-    fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        self.map.loaded_resources()
+    async fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        self.map.loaded_resources().await
     }
 
-    fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        self.map.loaded_bundles()
+    async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        self.map.loaded_bundles().await
     }
 }
 
@@ -930,44 +945,6 @@ impl Registry {
     }
 }
 
-#[cfg(feature = "runtime-loading")]
-pub(crate) struct PartialHandle {
-    channels: Arc<Channels>,
-    event_sender: EventSender,
-    resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl PartialHandle {
-    pub(crate) fn new(registry: &Registry) -> Self {
-        let resource_sender = match &registry.state {
-            RegistryState::Running(running) => running.resource_sender.clone(),
-            RegistryState::Building(building) => building.resource_sender.clone(),
-        };
-        Self {
-            channels: registry.channels.clone(),
-            event_sender: registry.event_sender.clone(),
-            resource_sender,
-        }
-    }
-
-    pub(crate) fn supply_map_handle(self, handle: resource_map::Handle) -> Registry {
-        let Self {
-            channels,
-            event_sender,
-            resource_sender,
-        } = self;
-        Registry {
-            channels,
-            event_sender,
-            state: RegistryState::Running(RunningRegistry {
-                resource_sender,
-                map: handle,
-            }),
-        }
-    }
-}
-
 /// Utilities for managing an already-running [`Registry`]
 ///
 /// Notice that these are only accessable through the `runtime-loading` feature
@@ -986,14 +963,20 @@ impl Registry {
     ///
     /// - If this method is called on an app built from [`Self::new_app`].
     #[must_use]
-    pub fn handle(&self, reference_holder: &NamespacedIdRef) -> Self {
-        let map = match &self.state {
-            RegistryState::Running(running) => running.map.clone(),
-            RegistryState::Building(building) => building
-                .get_as::<ResourceMap>(reference_holder, self, &self.event_sender)
-                .expect("cannot obtain a handle to an empty App"),
+    pub fn handle(&self) -> Self {
+        let resource_sender = match &self.state {
+            RegistryState::Running(running) => running.resource_sender.clone(),
+            RegistryState::Building(building) => building.resource_sender.clone(),
         };
-        PartialHandle::new(self).supply_map_handle(map)
+
+        Self {
+            channels: self.channels.clone(),
+            event_sender: self.event_sender.clone(),
+            state: RegistryState::Running(RunningRegistry {
+                resource_sender,
+                map: ResourceMapConnection::new(self),
+            }),
+        }
     }
 
     /// Returns `true` if this [`Registry`] instance is a [handle](Self::handle) to an
@@ -1065,26 +1048,22 @@ impl Registry {
 impl Registry {
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] that is currently loaded
     #[must_use]
-    pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        self.state.loaded_resources()
+    pub async fn loaded_resources(&self) -> HashSet<NamespacedId> {
+        self.state.loaded_resources().await
     }
 
     /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] that is currently loaded
     #[must_use]
-    pub fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        self.state.loaded_bundles()
+    pub async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
+        self.state.loaded_bundles().await
     }
 }
 
 #[cfg(feature = "runtime-loading")]
 impl Input for Registry {
     /// Use a registry [handle](Self::handle) as an input to a running resource
-    async fn create(registry: &Self, reference_holder: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(registry.handle(reference_holder))
-    }
-
-    fn constraints() -> Constraints {
-        Constraints::empty().after_resource(ResourceMap::const_ident())
+    async fn create(registry: &Self, _: &NamespacedIdRef) -> Result<Self, Error> {
+        Ok(registry.handle())
     }
 }
 

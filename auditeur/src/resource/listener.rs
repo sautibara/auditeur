@@ -176,7 +176,7 @@ impl<L: OnLoad<R>, R: Resource> Input for OnLoadComponent<L, R> {
         let mut receiver = registry.event_receiver();
         receiver.mark_seen();
 
-        let should_init = registry.loaded_resources().contains(R::const_ident());
+        let should_init = registry.loaded_resources().await.contains(R::const_ident());
 
         Ok(Self {
             receiver,
@@ -316,13 +316,13 @@ pub struct RegistryComponent {
 
 impl Input for RegistryComponent {
     #[cfg_attr(not(feature = "runtime-loading"), expect(unused_variables))]
-    async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
         let mut receiver = registry.event_receiver();
         receiver.mark_seen();
         Ok(Self {
             receiver,
             #[cfg(feature = "runtime-loading")]
-            registry: registry.handle(as_resource),
+            registry: registry.handle(),
         })
     }
 

@@ -8,13 +8,12 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use dashmap::DashMap;
 
 use crate::{app::EventSender, prelude::*, resource::listener};
 
 use super::EventReceiver;
 #[cfg(feature = "runtime-loading")]
-use super::{GetRequest, PartialHandle};
+use super::GetRequest;
 
 struct LoadedResource {
     id: NamespacedId,
@@ -116,12 +115,11 @@ impl Drop for LoadedBundle {
 #[listener(
     "auditeur:resource_map",
     registry_component = false,
+    respond,
     components((component = MainComponent, input = ())),
 )]
 pub struct ResourceMap {
     sender: EventSender,
-    /// This contains all of the shared information
-    shared: Arc<Shared>,
     /// The resources that either aren't loaded or have no references yet
     ///
     /// These can't be put in the main resources map, as they'd need a reference to keep them alive
@@ -130,23 +128,19 @@ pub struct ResourceMap {
     ///
     /// These can't be put in the main bundles map, as they'd need a reference to keep them alive
     bundle_queue: HashMap<NamespacedId, LoadedBundle>,
-}
-
-#[derive(Debug)]
-struct Shared {
     /// A map of all of the currently running resources
     ///
     /// These resources are the roots of what stays loaded, and as such, are stored as strong
     /// references
-    runners: DashMap<NamespacedId, Arc<LoadedResource>>,
+    runners: HashMap<NamespacedId, Arc<LoadedResource>>,
     /// A map of all of the resources that have ever been loaded
     ///
     /// If the underlying Arc unloads (no strong references point to it anymore), that means that
     /// the resource also must be unloaded. As such, this map holds no strong references to any of
     /// these resources, allowing them to unload if necessary.
-    resources: DashMap<NamespacedId, Weak<LoadedResource>>,
+    resources: HashMap<NamespacedId, Weak<LoadedResource>>,
     /// A map of all of the bundles that have ever been loaded
-    bundles: DashMap<NamespacedId, Weak<LoadedBundle>>,
+    bundles: HashMap<NamespacedId, Weak<LoadedBundle>>,
 }
 
 #[create]
@@ -154,26 +148,16 @@ impl Create for ResourceMap {
     async fn create(sender: EventSender) -> Result<Self> {
         Ok(Self {
             sender,
-            shared: Arc::new(Shared {
-                runners: DashMap::new(),
-                resources: DashMap::new(),
-                bundles: DashMap::new(),
-            }),
             resource_queue: HashMap::new(),
             bundle_queue: HashMap::new(),
+            runners: HashMap::new(),
+            resources: HashMap::new(),
+            bundles: HashMap::new(),
         })
     }
 }
 
 impl ResourceMap {
-    /// Obtain a [`Handle`] to the map
-    #[must_use]
-    pub fn handle(&self) -> Handle {
-        Handle {
-            shared: self.shared.clone(),
-        }
-    }
-
     fn add_resource(&mut self, id: NamespacedId, parent: &NamespacedIdRef) -> Result<()> {
         let parent = self.clone_bundle(parent)?;
         self.resource_queue.insert(
@@ -206,7 +190,7 @@ impl ResourceMap {
     fn clone_resource(&mut self, id: &NamespacedIdRef) -> Result<Arc<LoadedResource>> {
         if let Some((id, resource)) = self.resource_queue.remove_entry(id) {
             let resource = Arc::new(resource);
-            self.shared.resources.insert(id, Arc::downgrade(&resource));
+            self.resources.insert(id, Arc::downgrade(&resource));
             Ok(resource)
         } else if let Some(resource) = self.get_resource(id) {
             Ok(resource)
@@ -218,7 +202,7 @@ impl ResourceMap {
     fn clone_bundle(&mut self, id: &NamespacedIdRef) -> Result<Arc<LoadedBundle>> {
         if let Some((id, bundle)) = self.bundle_queue.remove_entry(id) {
             let bundle = Arc::new(bundle);
-            self.shared.bundles.insert(id, Arc::downgrade(&bundle));
+            self.bundles.insert(id, Arc::downgrade(&bundle));
             Ok(bundle)
         } else if let Some(bundle) = self.get_bundle(id) {
             Ok(bundle)
@@ -238,44 +222,11 @@ impl ResourceMap {
     }
 
     fn get_resource(&self, id: &NamespacedIdRef) -> Option<Arc<LoadedResource>> {
-        self.shared
-            .resources
-            .get(id)
-            .and_then(|resource| resource.upgrade())
+        self.resources.get(id).and_then(Weak::upgrade)
     }
 
     fn get_bundle(&self, id: &NamespacedIdRef) -> Option<Arc<LoadedBundle>> {
-        self.shared
-            .bundles
-            .get(id)
-            .and_then(|resource| resource.upgrade())
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-enum RegistryInput {
-    Partial(Option<PartialHandle>),
-    Full(Registry),
-}
-
-#[cfg(feature = "runtime-loading")]
-impl RegistryInput {
-    fn supply<'a>(&'a mut self, map: &ResourceMap) -> &'a Registry {
-        match self {
-            Self::Partial(partial) => {
-                let partial = partial.take().unwrap_or_else(|| {
-                    unreachable!("RegistryInput::Partial(None) is never constructed")
-                });
-                let registry_handle = partial.supply_map_handle(map.handle());
-
-                *self = Self::Full(registry_handle);
-                match self {
-                    Self::Full(registry) => registry,
-                    Self::Partial(_) => unreachable!(),
-                }
-            }
-            Self::Full(registry) => registry,
-        }
+        self.bundles.get(id).and_then(Weak::upgrade)
     }
 }
 
@@ -283,7 +234,7 @@ impl RegistryInput {
 pub struct MainComponent {
     receiver: EventReceiver,
     #[cfg(feature = "runtime-loading")]
-    registry: RegistryInput,
+    registry: Registry,
     should_exit: bool,
 }
 
@@ -292,7 +243,7 @@ impl Input for MainComponent {
         Ok(Self {
             receiver: registry.event_receiver(),
             #[cfg(feature = "runtime-loading")]
-            registry: RegistryInput::Partial(Some(PartialHandle::new(registry))),
+            registry: registry.handle(),
             should_exit: false,
         })
     }
@@ -325,12 +276,12 @@ impl listener::Component<ResourceMap> for MainComponent {
             }
             RegistryEvent::Running(id) => {
                 let resource = map.clone_resource(&id)?;
-                map.shared.runners.insert(id, resource);
+                map.runners.insert(id, resource);
             }
             RegistryEvent::Stopped(id) => {
-                map.shared.runners.remove(&id);
+                map.runners.remove(&id);
                 // this should be the last runner
-                if self.should_exit && map.shared.runners.len() <= 1 {
+                if self.should_exit && map.runners.len() <= 1 {
                     return Ok(ControlFlow::Break(()));
                 }
             }
@@ -345,9 +296,8 @@ impl listener::Component<ResourceMap> for MainComponent {
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(get_request) => {
                 if let Some(resource_info) = map.get_resource(get_request.id()) {
-                    let registry = self.registry.supply(map);
                     resource_info
-                        .check_get_request(&get_request, registry)
+                        .check_get_request(&get_request, &self.registry)
                         .await;
                 }
             }
@@ -360,51 +310,31 @@ impl listener::Component<ResourceMap> for MainComponent {
     }
 }
 
-/// A synchronized reference to a [`ResourceMap`] that allows querying the current state of the
-/// parent [`Registry`]
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "path-any", derive(PathAny))]
-pub struct Handle {
-    shared: Arc<Shared>,
-}
-
-impl crate::input::get::GetRef for ResourceMap {
-    type Ref = Handle;
-    fn get_ref(&self, _: &Registry) -> Self::Ref {
-        self.handle()
-    }
-}
-
-impl Handle {
+#[respond("auditeur:resource_map", get_ref)]
+impl ResourceMap {
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] loaded in the [`Registry`]
     #[must_use]
-    pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        self.shared
-            .resources
+    pub fn loaded_resources(&self, (): ()) -> HashSet<NamespacedId> {
+        self.resources
             .iter()
-            .filter(|resource| resource.value().strong_count() != 0)
-            .map(|resource| resource.key().clone())
+            .filter(|(_, resource)| resource.strong_count() != 0)
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
     /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] loaded in the [`Registry`]
     #[must_use]
-    pub fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        self.shared
-            .bundles
+    pub fn loaded_bundles(&self, (): ()) -> HashSet<NamespacedId> {
+        self.bundles
             .iter()
-            .filter(|bundle| bundle.value().strong_count() != 0)
-            .map(|bundle| bundle.key().clone())
+            .filter(|(_, bundle)| bundle.strong_count() != 0)
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] running in the main loop
     #[must_use]
-    pub fn running_resources(&self) -> HashSet<NamespacedId> {
-        self.shared
-            .runners
-            .iter()
-            .map(|runner| runner.key().clone())
-            .collect()
+    pub fn running_resources(&self, (): ()) -> HashSet<NamespacedId> {
+        self.runners.keys().cloned().collect()
     }
 }
