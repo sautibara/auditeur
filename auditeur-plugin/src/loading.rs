@@ -1,6 +1,10 @@
-use std::ffi::OsStr;
+use std::{ffi::OsStr, path::PathBuf};
 
-use auditeur::{app::App, bundle::Bundle, namespaced_id::NamespacedId};
+use auditeur::{
+    app::App,
+    bundle::{self, Bundle},
+    namespaced_id::NamespacedId,
+};
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
 
@@ -12,6 +16,7 @@ type PluginFn = fn(PluginContext) -> Bundle;
 pub struct Plugin {
     pub library: LibraryHandle,
     pub bundle: NamespacedId,
+    pub init: bundle::SharedInitFn,
 }
 
 impl Plugin {
@@ -32,23 +37,33 @@ impl Plugin {
         app: &mut App,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
+
         let library = libloading::Library::new(path)?;
-        let handle = LibraryHandle::from_library(library);
-        let main: libloading::Symbol<PluginFn> =
-            handle
+        let info = super::LibraryInfo {
+            library,
+            path: PathBuf::from(path),
+        };
+        let handle = LibraryHandle::from_library_info(info);
+        let main: PluginFn =
+            *handle
                 .library()
-                .get_canaried(b"init")
+                .get_canaried::<PluginFn>(b"init")
                 .map_err(|err| Error::CantLoadInitFunction {
                     path: path.to_string_lossy().to_string(),
                     additional_info: err.to_string(),
                 })?;
+
         let context = PluginContext::new(handle.clone());
-        let bundle = main(context);
+        let init = bundle::SharedInitFn::new(move || main(context.clone()));
+
+        let bundle = init.call();
         let bundle_id = bundle.id().to_owned();
         app.add_bundle(bundle);
+
         Ok(Self {
             library: handle,
             bundle: bundle_id,
+            init,
         })
     }
 }

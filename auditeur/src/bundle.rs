@@ -43,7 +43,7 @@ pub struct Bundle {
     bundles: Vec<Self>,
     constraints: Constraints,
     #[cfg(feature = "runtime-loading")]
-    init: Option<Box<dyn Fn() -> Bundle>>,
+    init: Option<SharedInitFn>,
 }
 
 impl Bundle {
@@ -81,6 +81,8 @@ impl Bundle {
                 bundles,
                 resources,
                 parent: parent.map(NamespacedIdRef::to_owned),
+                #[cfg(feature = "runtime-loading")]
+                init: self.init.clone(),
             },
         );
         self.id
@@ -178,11 +180,18 @@ impl Bundle {
     /// if you use `auditeur-plugin`, plugins will also automatically set this.
     ///
     /// This method is a no-op if the `runtime-loading` feature is disabled.
-    pub fn reload_with<F: Fn() -> Self + 'static>(mut self, func: F) -> Self {
+    pub fn reload_with<F: Fn() -> Self + Send + Sync + 'static>(mut self, func: F) -> Self {
         #[cfg(feature = "runtime-loading")]
         {
-            self.init = Some(Box::new(func));
+            self.init = Some(SharedInitFn::new(func));
         }
+        self
+    }
+
+    /// Provides a shared method, `func`, to [reload with](Self::reload_with).
+    #[cfg(feature = "runtime-loading")]
+    pub fn reload_with_shared(mut self, func: SharedInitFn) -> Self {
+        self.init = Some(func);
         self
     }
 }
@@ -219,7 +228,7 @@ pub trait Supplier {
     fn build(self) -> Bundle;
 }
 
-impl<F: Fn() -> Bundle + 'static> Supplier for F {
+impl<F: Fn() -> Bundle + Send + Sync + 'static> Supplier for F {
     fn build(self) -> Bundle {
         self().reload_with(self)
     }
@@ -228,5 +237,60 @@ impl<F: Fn() -> Bundle + 'static> Supplier for F {
 impl Supplier for Bundle {
     fn build(self) -> Self {
         self
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl Supplier for SharedInitFn {
+    fn build(self) -> Bundle {
+        self.call()
+    }
+}
+
+/// A shared, boxed function that can initialize a [`Bundle`].
+#[derive(Clone)]
+#[cfg(feature = "runtime-loading")]
+pub struct SharedInitFn(Arc<dyn Fn() -> Bundle + Send + Sync + 'static>);
+
+#[cfg(feature = "runtime-loading")]
+mod shared_init_fn {
+    use super::{Bundle, SharedInitFn};
+    use std::hash::Hash;
+    use std::sync::Arc;
+
+    impl SharedInitFn {
+        pub fn new<F: Fn() -> Bundle + Send + Sync + 'static>(func: F) -> Self {
+            Self(Arc::new(func))
+        }
+
+        pub fn call(&self) -> Bundle {
+            (self.0)().reload_with_shared(self.clone())
+        }
+    }
+
+    impl std::fmt::Debug for SharedInitFn {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "fn() -> Bundle ({:?})",
+                Arc::as_ptr(&self.0).cast::<()>()
+            )
+        }
+    }
+
+    // implement PartialEq, Eq, and Hash through the pointer of the Arc
+
+    impl PartialEq for SharedInitFn {
+        fn eq(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.0, &other.0)
+        }
+    }
+
+    impl Eq for SharedInitFn {}
+
+    impl Hash for SharedInitFn {
+        fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+            Arc::as_ptr(&self.0).hash(hasher);
+        }
     }
 }

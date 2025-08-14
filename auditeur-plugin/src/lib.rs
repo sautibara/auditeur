@@ -1,5 +1,6 @@
 use libloading::Library;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
+use tracing::warn;
 
 pub use auditeur;
 pub use auditeur_plugin_macros::export;
@@ -83,18 +84,28 @@ impl PluginContext {
 /// libraries being freed too early.
 // TODO: example here
 #[derive(Clone)]
-pub struct LibraryHandle(Arc<Library>);
+#[cfg_attr(not(feature = "loading"), allow(dead_code))]
+pub struct LibraryHandle(Arc<LibraryInfo>);
 
+#[cfg_attr(not(feature = "loading"), allow(dead_code))]
 impl LibraryHandle {
-    #[doc(hidden)]
-    #[must_use]
-    pub fn library(&self) -> &Library {
-        &self.0
+    fn library(&self) -> &Library {
+        &self.0.library
     }
 
-    #[doc(hidden)]
-    #[must_use]
-    pub fn from_library(library: Library) -> Self {
+    fn from_library_info(library: LibraryInfo) -> Self {
         Self(Arc::new(library))
+    }
+}
+
+#[cfg_attr(not(feature = "loading"), allow(dead_code))]
+struct LibraryInfo {
+    library: Library,
+    path: PathBuf,
+}
+
+impl Drop for LibraryInfo {
+    fn drop(&mut self) {
+        warn!("unloading library at '{}'...", self.path.display());
     }
 }

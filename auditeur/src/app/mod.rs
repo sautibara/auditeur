@@ -96,6 +96,8 @@ pub(crate) struct BuiltBundle {
     pub parent: Option<NamespacedId>,
     pub resources: Arc<[NamespacedId]>,
     pub bundles: Arc<[NamespacedId]>,
+    #[cfg(feature = "runtime-loading")]
+    pub init: Option<bundle::SharedInitFn>,
 }
 
 /// The main entry-point for the application: the thing that runs resources
@@ -248,7 +250,6 @@ impl App {
         // add the loaders and bundles that have already been loaded in the registry to our list
         // this is necessary so that constraints can know that their dependencies have already been
         // loaded
-        trace!("a");
         self.loaders.extend(
             registry
                 .loaded_resources()
@@ -263,14 +264,12 @@ impl App {
                 .into_iter()
                 .map(|id| (id, None)),
         );
-        trace!("b");
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
             self.resolve_loader(registry, &loader).await?;
         }
-        trace!("c");
         // free events :)
         registry.event_sender_ref().extend(self.events.drain(..));
         Ok(())
@@ -922,6 +921,7 @@ impl Registry {
             parent: bundle.parent,
             resources: bundle.resources,
             bundles: bundle.bundles,
+            init: bundle.init,
         });
         self
     }
@@ -1131,6 +1131,7 @@ pub enum RegistryEvent {
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
+        init: Option<bundle::SharedInitFn>,
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///

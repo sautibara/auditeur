@@ -4,12 +4,13 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
+    ops::Deref,
     sync::{Arc, Weak},
 };
 
 use anyhow::{anyhow, bail};
 
-use crate::{app::EventSender, prelude::*, resource::listener};
+use crate::{app::EventSender, bundle, prelude::*, resource::listener};
 
 use super::EventReceiver;
 #[cfg(feature = "runtime-loading")]
@@ -20,9 +21,11 @@ struct LoadedResource {
     #[cfg(feature = "runtime-loading")]
     resource: tokio::sync::RwLock<Option<Box<dyn super::LoadedResource>>>,
     // hold a strong reference to the parent bundle to keep it alive
-    _bundle: Arc<LoadedBundle>,
+    bundle: Arc<LoadedBundle>,
     // and strong references to all of its dependencies for the same reason
     dependencies: Vec<Arc<LoadedResource>>,
+    // and no strong references to our dependents - we don't want to make reference loops!
+    dependents: std::sync::RwLock<HashSet<NamespacedId>>,
     sender: EventSender,
 }
 
@@ -41,8 +44,9 @@ impl Debug for LoadedResource {
             },
         );
         debug_struct
-            .field("_bundle", &self._bundle)
+            .field("_bundle", &self.bundle)
             .field("dependencies", &self.dependencies)
+            .field("dependents", &self.dependents)
             .field("sender", &self.sender)
             .finish()
     }
@@ -79,7 +83,11 @@ struct LoadedBundle {
     id: NamespacedId,
     sender: EventSender,
     // hold a strong reference to a potential parent bundle to keep it alive
-    _parent: Option<Arc<LoadedBundle>>,
+    parent: Option<Arc<LoadedBundle>>,
+    resources: std::sync::RwLock<HashSet<NamespacedId>>,
+    bundles: std::sync::RwLock<HashSet<NamespacedId>>,
+    #[cfg(feature = "runtime-loading")]
+    init: Option<bundle::SharedInitFn>,
 }
 
 impl Drop for LoadedBundle {
@@ -166,24 +174,52 @@ impl ResourceMap {
                 id,
                 #[cfg(feature = "runtime-loading")]
                 resource: tokio::sync::RwLock::new(None),
-                _bundle: parent,
+                bundle: parent,
                 dependencies: Vec::new(),
+                dependents: std::sync::RwLock::new(HashSet::new()),
                 sender: self.sender.clone(),
             },
         );
         Ok(())
     }
 
-    fn add_bundle(&mut self, id: NamespacedId, parent: Option<&NamespacedIdRef>) -> Result<()> {
+    fn add_bundle(
+        &mut self,
+        id: NamespacedId,
+        parent: Option<&NamespacedIdRef>,
+        resources: &[NamespacedId],
+        bundles: &[NamespacedId],
+        #[cfg(feature = "runtime-loading")] init: Option<bundle::SharedInitFn>,
+    ) -> Result<()> {
+        let resources = resources.iter().cloned();
+        let bundles = bundles.iter().cloned();
+
         let parent = parent.map(|parent| self.clone_bundle(parent)).transpose()?;
-        self.bundle_queue.insert(
-            id.clone(),
-            LoadedBundle {
-                id,
-                _parent: parent,
-                sender: self.sender.clone(),
-            },
-        );
+        if let Some(bundle) = self.bundles.get(&id).and_then(Weak::upgrade) {
+            bundle
+                .resources
+                .write()
+                .expect("RwLock should not be poisoned")
+                .extend(resources);
+            bundle
+                .bundles
+                .write()
+                .expect("RwLock should not be poisoned")
+                .extend(bundles);
+        } else {
+            self.bundle_queue.insert(
+                id.clone(),
+                LoadedBundle {
+                    id,
+                    parent,
+                    sender: self.sender.clone(),
+                    resources: std::sync::RwLock::new(resources.collect()),
+                    bundles: std::sync::RwLock::new(bundles.collect()),
+                    #[cfg(feature = "runtime-loading")]
+                    init,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -192,7 +228,7 @@ impl ResourceMap {
             let resource = Arc::new(resource);
             self.resources.insert(id, Arc::downgrade(&resource));
             Ok(resource)
-        } else if let Some(resource) = self.get_resource(id) {
+        } else if let Some(resource) = self.resources.get(id).and_then(Weak::upgrade) {
             Ok(resource)
         } else {
             bail!("could not find resource: {id}");
@@ -204,7 +240,7 @@ impl ResourceMap {
             let bundle = Arc::new(bundle);
             self.bundles.insert(id, Arc::downgrade(&bundle));
             Ok(bundle)
-        } else if let Some(bundle) = self.get_bundle(id) {
+        } else if let Some(bundle) = self.bundles.get(id).and_then(Weak::upgrade) {
             Ok(bundle)
         } else {
             bail!("could not find bundle: {id}");
@@ -217,16 +253,46 @@ impl ResourceMap {
             .resource_queue
             .get_mut(by)
             .ok_or_else(|| anyhow!("could not find resource: {by}"))?;
+        to.dependents
+            .write()
+            .expect("RwLock should not be poisoned")
+            .insert(by.id.clone());
         by.dependencies.push(to);
         Ok(())
     }
 
-    fn get_resource(&self, id: &NamespacedIdRef) -> Option<Arc<LoadedResource>> {
-        self.resources.get(id).and_then(Weak::upgrade)
+    fn get_resource(&self, id: &NamespacedIdRef) -> Option<GetResult<'_, LoadedResource>> {
+        (self
+            .resources
+            .get(id)
+            .and_then(Weak::upgrade)
+            .map(GetResult::Arc))
+        .or_else(|| self.resource_queue.get(id).map(GetResult::Ref))
     }
 
-    fn get_bundle(&self, id: &NamespacedIdRef) -> Option<Arc<LoadedBundle>> {
-        self.bundles.get(id).and_then(Weak::upgrade)
+    fn get_bundle(&self, id: &NamespacedIdRef) -> Option<GetResult<'_, LoadedBundle>> {
+        (self
+            .bundles
+            .get(id)
+            .and_then(Weak::upgrade)
+            .map(GetResult::Arc))
+        .or_else(|| self.bundle_queue.get(id).map(GetResult::Ref))
+    }
+}
+
+enum GetResult<'a, T> {
+    Arc(Arc<T>),
+    Ref(&'a T),
+}
+
+impl<T> Deref for GetResult<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Arc(arc) => arc,
+            Self::Ref(reference) => reference,
+        }
     }
 }
 
@@ -265,8 +331,22 @@ impl listener::Component<ResourceMap> for MainComponent {
         (): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
         match event {
-            RegistryEvent::BundleLoading { id, parent, .. } => {
-                map.add_bundle(id, parent.as_deref())?;
+            RegistryEvent::BundleLoading {
+                id,
+                parent,
+                resources,
+                bundles,
+                #[cfg(feature = "runtime-loading")]
+                init,
+            } => {
+                map.add_bundle(
+                    id,
+                    parent.as_deref(),
+                    &resources,
+                    &bundles,
+                    #[cfg(feature = "runtime-loading")]
+                    init,
+                )?;
             }
             RegistryEvent::Loading { id, bundle } => {
                 map.add_resource(id, &bundle)?;
@@ -336,5 +416,300 @@ impl ResourceMap {
     #[must_use]
     pub fn running_resources(&self, (): ()) -> HashSet<NamespacedId> {
         self.runners.keys().cloned().collect()
+    }
+
+    /// Returns a static view into the resources and bundles that fit `query`
+    pub fn query(&self, query: Query, (): ()) -> SubMap {
+        query.get(self)
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+#[non_exhaustive]
+pub struct SubMapBundle {
+    pub resources: HashSet<NamespacedId>,
+    pub bundles: HashMap<NamespacedId, SubMapBundle>,
+    #[cfg(feature = "runtime-loading")]
+    init: Option<bundle::SharedInitFn>,
+}
+
+impl SubMapBundle {
+    fn visit_bundles_mut(&mut self, func: &mut impl FnMut(&NamespacedIdRef, &mut Self)) {
+        for (key, value) in &mut self.bundles {
+            value.visit_bundles_mut(func);
+            func(key, value);
+        }
+    }
+
+    pub fn combine(&mut self, other: Self) {
+        self.resources.extend(other.resources);
+        for (key, value) in other.bundles {
+            self.bundles.entry(key).or_default().combine(value);
+        }
+        self.init = other.init.or_else(|| std::mem::take(&mut self.init));
+    }
+
+    pub fn descendent_resources(&self) -> impl Iterator<Item = &NamespacedId> {
+        DescendentResources {
+            iter: self.resources.iter().chain(self.bundles.values().flat_map(
+                (|bundles| Box::new(bundles.descendent_resources()))
+                    as fn(&Self) -> Box<DescendentResources>,
+            )),
+        }
+    }
+
+    fn from_loaded_bundle(bundle: &LoadedBundle, map: &ResourceMap) -> Self {
+        Self {
+            resources: bundle
+                .resources
+                .read()
+                .expect("RwLock should not be poisoned")
+                .clone(),
+            bundles: bundle
+                .bundles
+                .read()
+                .expect("RwLock shoult not be poisoned")
+                .iter()
+                .filter_map(|id| map.get_bundle(id))
+                .map(|bundle| (bundle.id.clone(), Self::from_loaded_bundle(&bundle, map)))
+                .collect(),
+            #[cfg(feature = "runtime-loading")]
+            init: bundle.init.clone(),
+        }
+    }
+}
+
+// rust has trouble finding out this type in [`SubMapBundle::descendent_resources`], so we have to
+// write the whole thing out ourselves ;-;
+#[allow(clippy::type_complexity)]
+struct DescendentResources<'a> {
+    iter: std::iter::Chain<
+        std::collections::hash_set::Iter<'a, NamespacedId>,
+        std::iter::FlatMap<
+            std::collections::hash_map::Values<'a, NamespacedId, SubMapBundle>,
+            Box<Self>,
+            fn(&'a SubMapBundle) -> Box<Self>,
+        >,
+    >,
+}
+
+impl<'a> Iterator for DescendentResources<'a> {
+    type Item = &'a NamespacedId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+#[non_exhaustive]
+pub struct SubMap {
+    pub root_bundles: HashMap<NamespacedId, SubMapBundle>,
+}
+
+impl SubMap {
+    fn visit_bundles_mut(&mut self, func: &mut impl FnMut(&NamespacedIdRef, &mut SubMapBundle)) {
+        for (key, value) in &mut self.root_bundles {
+            value.visit_bundles_mut(func);
+            func(key, value);
+        }
+    }
+
+    pub fn add_bundle_loader<F: Fn() -> Bundle + Send + Sync + 'static>(
+        &mut self,
+        bundle: &NamespacedIdRef,
+        func: F,
+    ) {
+        #[cfg(feature = "runtime-loading")]
+        {
+            let shared_fn = bundle::SharedInitFn::new(func);
+            self.add_bundle_loader_shared(bundle, &shared_fn);
+        }
+    }
+
+    #[cfg(feature = "runtime-loading")]
+    pub fn add_bundle_loader_shared(
+        &mut self,
+        bundle: &NamespacedIdRef,
+        shared_fn: &bundle::SharedInitFn,
+    ) {
+        self.visit_bundles_mut(&mut |id, bundle_info| {
+            if id == bundle {
+                bundle_info.init = Some(shared_fn.clone());
+            }
+        });
+    }
+
+    pub fn combine(&mut self, other: Self) {
+        for (key, value) in other.root_bundles {
+            self.root_bundles
+                .entry(key.clone())
+                .or_default()
+                .combine(value);
+        }
+    }
+
+    pub fn resources(&self) -> impl Iterator<Item = &NamespacedId> {
+        self.root_bundles
+            .values()
+            .flat_map(SubMapBundle::descendent_resources)
+    }
+
+    fn get_bundle_mut(&mut self, bundle: &LoadedBundle) -> &mut SubMapBundle {
+        let mut parent_stack = Vec::from_iter(bundle.parent.as_deref());
+
+        while let Some(parent) = parent_stack
+            .last()
+            .and_then(|bundle| bundle.parent.as_deref())
+        {
+            parent_stack.push(parent);
+        }
+
+        let mut parents = parent_stack
+            .into_iter()
+            .rev()
+            .chain(std::iter::once(bundle));
+
+        let root = parents
+            .next()
+            .expect("there should always be a root bundle");
+
+        let mut bundle = self
+            .root_bundles
+            .entry(root.id.clone())
+            .or_insert_with(|| SubMapBundle {
+                #[cfg(feature = "runtime-loading")]
+                init: root.init.clone(),
+                ..Default::default()
+            });
+
+        for parent in parents {
+            bundle = bundle
+                .bundles
+                .entry(parent.id.clone())
+                .or_insert_with(|| SubMapBundle {
+                    #[cfg(feature = "runtime-loading")]
+                    init: parent.init.clone(),
+                    ..Default::default()
+                });
+        }
+
+        bundle
+    }
+
+    fn add_resource(&mut self, resource: &NamespacedIdRef, map: &ResourceMap) {
+        let Some(resource) = map.get_resource(resource) else {
+            return;
+        };
+
+        let sub_bundle = self.get_bundle_mut(&resource.bundle);
+        sub_bundle.resources.insert(resource.id.clone());
+    }
+
+    fn add_bundle(&mut self, bundle: &NamespacedIdRef, map: &ResourceMap) {
+        let Some(bundle) = map.get_bundle(bundle) else {
+            return;
+        };
+
+        let current = self.get_bundle_mut(&bundle);
+        let to_add = SubMapBundle::from_loaded_bundle(&bundle, map);
+        current.combine(to_add);
+    }
+
+    fn add_all_dependents(&mut self, map: &ResourceMap) {
+        let dependents: HashSet<NamespacedId> = self
+            .resources()
+            .filter_map(|id| map.get_resource(id))
+            .flat_map(|resource| {
+                resource
+                    .dependents
+                    .read()
+                    .expect("RwLock should not be poisoned")
+                    .clone()
+            })
+            .collect();
+
+        for dependent in dependents {
+            self.add_resource(&dependent, map);
+        }
+    }
+}
+
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum Query {
+    Resource(NamespacedId),
+    Bundle(NamespacedId),
+    AndDependents(Box<Self>),
+    List(Vec<Self>),
+}
+
+impl Default for Query {
+    fn default() -> Self {
+        Self::List(Vec::new())
+    }
+}
+
+impl Query {
+    pub fn resource(ident: impl Into<NamespacedId>) -> Self {
+        Self::Resource(ident.into())
+    }
+
+    pub fn bundle(ident: impl Into<NamespacedId>) -> Self {
+        Self::Bundle(ident.into())
+    }
+
+    #[must_use]
+    pub fn and_dependents(self) -> Self {
+        Self::AndDependents(Box::new(self))
+    }
+
+    #[must_use]
+    pub fn and(self, item: Self) -> Self {
+        match self {
+            Self::List(mut list) => {
+                list.push(item);
+                Self::List(list)
+            }
+            other => Self::List(vec![other, item]),
+        }
+    }
+
+    fn get(self, map: &ResourceMap) -> SubMap {
+        match self {
+            Self::Resource(id) => {
+                let mut sub_map = SubMap::default();
+                sub_map.add_resource(&id, map);
+                sub_map
+            }
+            Self::Bundle(id) => {
+                let mut sub_map = SubMap::default();
+                sub_map.add_bundle(&id, map);
+                sub_map
+            }
+            Self::AndDependents(query) => {
+                let mut sub_map = query.get(map);
+                sub_map.add_all_dependents(map);
+                sub_map
+            }
+            Self::List(list) => {
+                let mut sub_map = SubMap::default();
+                for query in list {
+                    let query_map = query.get(map);
+                    sub_map.combine(query_map);
+                }
+                sub_map
+            }
+        }
+    }
+}
+
+impl FromIterator<Self> for Query {
+    fn from_iter<T: IntoIterator<Item = Self>>(iter: T) -> Self {
+        Self::List(Vec::from_iter(iter))
     }
 }
