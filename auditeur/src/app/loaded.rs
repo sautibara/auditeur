@@ -108,7 +108,7 @@ impl<W: WatcherTrait> Watcher<W> {
     #[instrument(name = "handle_registry_event", level = "debug", skip_all, fields(?message))]
     async fn handle_meta(
         message: Option<RegistryEvent>,
-        #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::get::CloneAny>,
+        #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::get::ResourceRef>,
     ) -> ControlFlow<()> {
         let Some(message) = message else {
             return ControlFlow::Break(());
@@ -123,7 +123,9 @@ impl<W: WatcherTrait> Watcher<W> {
                 if get_request.id() == W::const_ident() {
                     #[allow(clippy::option_if_let_else)] // doesn't return anything
                     if let Some(reference) = reference {
-                        get_request.send(reference.clone_any()).await;
+                        get_request
+                            .send(reference.clone_as_boxed(get_request.dependent()))
+                            .await;
                     } else {
                         warn!("id matched GetRequest, but MaybeGetRef returned None");
                         get_request.cancel().await;
@@ -157,7 +159,7 @@ impl<W: WatcherTrait> Runner for Watcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
-        let reference = self.inner.maybe_get_ref(&self.registry);
+        let reference = self.inner.maybe_get_ref(&self.registry, W::const_ident());
 
         {
             let mut meta_receiver = self.event_receiver.resubscribe();

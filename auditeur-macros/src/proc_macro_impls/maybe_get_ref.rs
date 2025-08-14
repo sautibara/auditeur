@@ -15,9 +15,13 @@ pub fn maybe_get_ref(ident: &Ident, generics: &CustomGenerics) -> proc_macro2::T
 
     quote! {
         impl #impl_generics #auditeur::input::get::MaybeGetRef for #ident #type_generics #where_clause {
-            fn maybe_get_ref(&self, registry: &#auditeur::app::Registry) -> Option<Box<dyn #auditeur::input::get::CloneAny>> {
+            fn maybe_get_ref(
+                &self,
+                registry: &#auditeur::app::Registry,
+                dependent: &#auditeur::namespaced_id::NamespacedIdRef,
+            ) -> Option<Box<dyn #auditeur::input::get::ResourceRef>> {
                 use #auditeur::input::get::maybe_get_ref::Specialization as _;
-                (&mut &*self).specialization(registry)
+                (&mut &*self).specialization(registry, dependent)
             }
         }
     }

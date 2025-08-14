@@ -204,6 +204,12 @@ impl From<&NamespacedIdRef> for NamespacedId {
     }
 }
 
+impl From<&Self> for NamespacedId {
+    fn from(value: &Self) -> Self {
+        value.clone()
+    }
+}
+
 impl Clone for NamespacedId {
     fn clone(&self) -> Self {
         NamespacedIdRef::to_owned(self)

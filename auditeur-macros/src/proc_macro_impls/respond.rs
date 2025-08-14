@@ -374,6 +374,9 @@ impl Respond {
             giver: #auditeur::resource::listener::Giver::new(registry),
         };
 
+        #[cfg(feature = "runtime-loading")]
+        let mut fields_list = vec![Ident::new("giver", Span::call_site())];
+
         let response = format_ident!("{RESPONSE}");
 
         let mut methods_out = proc_macro2::TokenStream::new();
@@ -413,6 +416,9 @@ impl Respond {
             create_fields.extend(quote! {
                 transactions: #auditeur::resource::listener::Giver::new(registry),
             });
+
+            #[cfg(feature = "runtime-loading")]
+            fields_list.push(Ident::new("transactions", Span::call_site()));
 
             let vis = if hidden.is_some() {
                 quote! { pub(crate) }
@@ -458,6 +464,7 @@ impl Respond {
             create_fields.extend(quote! {
                 #ident: { let #registry_ident = registry; #init },
             });
+            fields_list.push((*ident).clone());
         }
 
         let ref_ident = &config.query.ref_ident;
@@ -467,26 +474,60 @@ impl Respond {
             auditeur.to_token_stream().to_string().replace(' ', "")
         );
 
+        let resource_ref_impl = if cfg!(feature = "runtime-loading") {
+            #[cfg(feature = "path-any")]
+            let any_impl = super::path_any(ref_ident, &CustomGenerics::default());
+            #[cfg(not(feature = "path-any"))]
+            let any_impl = quote! {};
+
+            let resource_ref_impl =
+                super::resource_ref(ref_ident, Some(item_ident), fields_list.iter());
+
+            quote! {
+                #any_impl
+                #resource_ref_impl
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
             #hidden
-            #[derive(Clone, Debug)]
-            pub struct #ref_ident { #fields }
+            #[derive(Debug)]
+            pub struct #ref_ident {
+                event_sender: #auditeur::app::EventSender,
+                #fields
+            }
 
             impl #auditeur::input::Input for #ref_ident {
-                async fn create(registry: &#auditeur::app::Registry, _: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
-                    Ok(Self::new(registry))
+                async fn create(registry: &#auditeur::app::Registry, dependent: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
+                    Ok(Self::new(registry, dependent))
                 }
 
                 fn constraints() -> #auditeur::app::Constraints {
                     #auditeur::app::Constraints::empty()
+                        .after_resource(<#item_ident as #auditeur::resource::Identifiable>::const_ident())
                 }
             }
+
+            #resource_ref_impl
 
             #[allow(clippy::missing_panics_doc)]
             impl #ref_ident {
                 #[doc = #new_docs]
-                pub fn new(registry: &#auditeur::app::Registry) -> Self {
-                    Self { #create_fields }
+                pub fn new(
+                    registry: &#auditeur::app::Registry,
+                    dependent: &#auditeur::namespaced_id::NamespacedIdRef,
+                ) -> Self {
+                    let event_sender = registry.event_sender();
+                    event_sender.send_dependency(
+                        dependent,
+                        <#item_ident as #auditeur::resource::Identifiable>::const_ident(),
+                    );
+                    Self {
+                        event_sender,
+                        #create_fields
+                    }
                 }
 
                 #methods_out
@@ -675,19 +716,16 @@ impl Respond {
         let auditeur = &*crate::AUDITEUR;
         let connection = &config.query.ref_ident;
 
-        #[cfg(feature = "path-any")]
-        let any_impl = super::path_any(connection, &CustomGenerics::default());
-        #[cfg(not(feature = "path-any"))]
-        let any_impl = quote! {};
-
         quote! {
-            #any_impl
-
             impl #auditeur::input::get::GetRef for #item_ident {
                 type Ref = #connection;
 
-                fn get_ref(&self, registry: &#auditeur::app::Registry) -> Self::Ref {
-                    #connection::new(registry)
+                fn get_ref(
+                    &self,
+                    registry: &#auditeur::app::Registry,
+                    dependent: &#auditeur::namespaced_id::NamespacedIdRef,
+                ) -> Self::Ref {
+                    #connection::new(registry, dependent)
                 }
             }
         }

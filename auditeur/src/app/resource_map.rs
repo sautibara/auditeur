@@ -9,12 +9,15 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
+use tracing::{instrument, trace};
 
 use crate::{app::EventSender, bundle, prelude::*, resource::listener};
 
 use super::EventReceiver;
 #[cfg(feature = "runtime-loading")]
 use super::GetRequest;
+
+const RESERVED_IDENTS: &[&NamespacedIdRef] = &[ident!("auditeur:registry")];
 
 struct LoadedResource {
     id: NamespacedId,
@@ -247,17 +250,22 @@ impl ResourceMap {
         }
     }
 
-    fn add_reference(&mut self, by: &NamespacedIdRef, to: &NamespacedIdRef) -> Result<()> {
-        let to = self.clone_resource(to)?;
-        let by = self
+    fn add_reference(
+        &mut self,
+        dependent: &NamespacedIdRef,
+        dependency: &NamespacedIdRef,
+    ) -> Result<()> {
+        let dependency = self.clone_resource(dependency)?;
+        let dependent = self
             .resource_queue
-            .get_mut(by)
-            .ok_or_else(|| anyhow!("could not find resource: {by}"))?;
-        to.dependents
+            .get_mut(dependent)
+            .ok_or_else(|| anyhow!("could not find resource: {dependent}"))?;
+        dependency
+            .dependents
             .write()
             .expect("RwLock should not be poisoned")
-            .insert(by.id.clone());
-        by.dependencies.push(to);
+            .insert(dependent.id.clone());
+        dependent.dependencies.push(dependency);
         Ok(())
     }
 
@@ -324,21 +332,31 @@ impl listener::Component<ResourceMap> for MainComponent {
         Ok(res.map_or(ControlFlow::Break(()), ControlFlow::Continue))
     }
 
+    #[instrument(skip(self, map))]
     async fn handle(
         &mut self,
         event: RegistryEvent,
         map: &mut ResourceMap,
         (): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
+        trace!("handling registry event");
         match event {
-            RegistryEvent::BundleLoading {
+            RegistryEvent::BundleResolving {
                 id,
                 parent,
                 resources,
                 bundles,
                 #[cfg(feature = "runtime-loading")]
                 init,
-            } => {
+            }
+            | RegistryEvent::BundleLoading {
+                id,
+                parent,
+                resources,
+                bundles,
+                #[cfg(feature = "runtime-loading")]
+                init,
+            } if map.get_bundle(&id).is_none() => {
                 map.add_bundle(
                     id,
                     parent.as_deref(),
@@ -348,11 +366,18 @@ impl listener::Component<ResourceMap> for MainComponent {
                     init,
                 )?;
             }
-            RegistryEvent::Loading { id, bundle } => {
+            RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle }
+                if map.get_resource(&id).is_none() =>
+            {
                 map.add_resource(id, &bundle)?;
             }
-            RegistryEvent::Reference { by, to } => {
-                map.add_reference(&by, &to)?;
+            RegistryEvent::Dependency {
+                dependent,
+                dependency,
+            } => {
+                if !RESERVED_IDENTS.contains(&&*dependent) && dependency != dependent {
+                    map.add_reference(&dependent, &dependency)?;
+                }
             }
             RegistryEvent::Running(id) => {
                 let resource = map.clone_resource(&id)?;

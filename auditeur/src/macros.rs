@@ -619,6 +619,10 @@ pub use auditeur_macros::GetRef;
 #[cfg(feature = "runtime-loading")]
 pub use auditeur_macros::MaybeGetRef;
 
+/// Automatically provides an implementation of [`ResourceRef`](crate::input::get::ResourceRef).
+#[cfg(feature = "runtime-loading")]
+pub use auditeur_macros::ResourceRef;
+
 /// Automatically provides an implementation of [`PathAny`] by implementing
 /// [`PathAnyConst`](crate::path_any::PathAnyConst)
 #[cfg(feature = "path-any")]

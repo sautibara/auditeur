@@ -297,8 +297,13 @@ impl App {
         // this doesn't cause a loop because resolve_bundle already [`Option::take`]s the bundle
         // out of the list, so it can't be loaded again
         self.resolve_bundle(registry, &bundle).await?;
+        // then now that we have the parent bundle we could say that this resource is loading
+        registry.event_sender.send(RegistryEvent::Resolving {
+            id: loader.ident().into(),
+            bundle: bundle.clone(),
+        });
         // if there are constraints, we must load them first
-        self.resolve_constraints(registry, &loader.constraints())
+        self.resolve_constraints(registry, &loader.constraints(), Some(loader.ident()))
             .await?;
         // then we can finally load the loader
         registry.add_loader(loader, bundle).await?;
@@ -325,8 +330,17 @@ impl App {
         if let Some(parent) = &bundle.parent {
             self.resolve_bundle(registry, parent).await?;
         }
+        // then now that we have the parent bundle we could say that this bundle is loading
+        registry.event_sender.send(RegistryEvent::BundleResolving {
+            id: id.to_owned(),
+            parent: bundle.parent.clone(),
+            resources: bundle.resources.clone(),
+            bundles: bundle.bundles.clone(),
+            #[cfg(feature = "runtime-loading")]
+            init: bundle.init.clone(),
+        });
         // then the constraints also have to be resolved
-        self.resolve_constraints(registry, &bundle.constraints)
+        self.resolve_constraints(registry, &bundle.constraints, None)
             .await?;
         // then the bundle can finally be added to the registry
         registry.add_bundle(id.to_owned(), bundle);
@@ -337,10 +351,16 @@ impl App {
         &mut self,
         registry: &mut Registry,
         constraints: &Constraints,
+        dependent: Option<&NamespacedIdRef>,
     ) -> Result<(), Error> {
         for constraint in constraints {
             match constraint {
-                Constraint::AfterResource { id } => self.resolve_loader(registry, id).await?,
+                Constraint::AfterResource { id } => {
+                    self.resolve_loader(registry, id).await?;
+                    if let Some(dependent) = dependent {
+                        registry.event_sender.send_dependency(dependent, &**id);
+                    }
+                }
                 Constraint::AfterBundle { id } => self.resolve_bundle(registry, id).await?,
             }
         }
@@ -444,16 +464,14 @@ impl RegistryState {
     #[inline]
     async fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: &NamespacedIdRef,
+        dependent: &NamespacedIdRef,
         event_sender: &EventSender,
         parent: &Registry,
     ) -> Option<R::Ref> {
         match self {
-            Self::Building(registry) => {
-                registry.get_as::<R>(reference_holder, parent, event_sender)
-            }
+            Self::Building(registry) => registry.get_as::<R>(dependent, parent, event_sender),
             #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.get_as::<R>(reference_holder, event_sender).await,
+            Self::Running(registry) => registry.get_as::<R>(dependent, event_sender).await,
         }
     }
 
@@ -530,24 +548,24 @@ impl BuildingRegistry {
     }
 
     #[must_use]
-    #[instrument(skip_all, fields(from = %reference_holder, to = %R::const_ident()))]
+    #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
     fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: &NamespacedIdRef,
+        dependent: &NamespacedIdRef,
         parent: &Registry,
         event_sender: &EventSender,
     ) -> Option<R::Ref> {
-        let id = R::const_ident().into();
-        let loaded = self.resources.get(&id)?;
+        let id = R::const_ident();
+        let loaded = self.resources.get(id)?;
         let reference = loaded
             .resource_any()
             .downcast_ref::<R>()
-            .map(|loaded| loaded.get_ref(parent));
+            .map(|loaded| loaded.get_ref(parent, dependent));
         // only send the event if the reference actually succeeded
         if reference.is_some() {
-            event_sender.send(RegistryEvent::Reference {
-                by: reference_holder.into(),
-                to: id,
+            event_sender.send(RegistryEvent::Dependency {
+                dependent: dependent.into(),
+                dependency: id.to_owned(),
             });
         } else {
             warn!("attempt to downcast {} failed", id);
@@ -578,16 +596,17 @@ impl RunningRegistry {
     }
 
     #[must_use]
-    #[instrument(skip_all, fields(from = %reference_holder, to = %R::const_ident()))]
+    #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: &NamespacedIdRef,
+        dependent: &NamespacedIdRef,
         event_sender: &EventSender,
     ) -> Option<R::Ref> {
         let id = R::const_ident().to_owned();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let get_request = GetRequest {
             id: id.clone(),
+            dependent: dependent.to_owned(),
             sender: tokio::sync::Mutex::new(Some(sender)),
         };
         // FIXME: by using an EventSender, the requests actually never get dropped
@@ -603,15 +622,15 @@ impl RunningRegistry {
         // let reference = receiver.await.ok()?;
         trace!("succeeded getting {id}");
         // and then, the actual reference gets downcasted
-        let Ok(reference) = crate::downcast(reference.as_any()) else {
+        let Ok(reference) = crate::downcast(reference) else {
             // downcasting shouldn't ever fail, so this is an important tracing
             error!("attempt to downcast {} failed", id);
             return None;
         };
         // the reference worked! we can send the message now
-        event_sender.send(RegistryEvent::Reference {
-            by: reference_holder.into(),
-            to: id,
+        event_sender.send(RegistryEvent::Dependency {
+            dependent: dependent.into(),
+            dependency: id,
         });
         Some(*reference)
     }
@@ -921,6 +940,7 @@ impl Registry {
             parent: bundle.parent,
             resources: bundle.resources,
             bundles: bundle.bundles,
+            #[cfg(feature = "runtime-loading")]
             init: bundle.init,
         });
         self
@@ -937,10 +957,10 @@ impl Registry {
     #[must_use]
     pub async fn get_as<R: Resource + GetRef>(
         &self,
-        reference_holder: &NamespacedIdRef,
+        dependent: &NamespacedIdRef,
     ) -> Option<R::Ref> {
         self.state
-            .get_as::<R>(reference_holder, &self.event_sender, self)
+            .get_as::<R>(dependent, &self.event_sender, self)
             .await
     }
 }
@@ -974,7 +994,7 @@ impl Registry {
             event_sender: self.event_sender.clone(),
             state: RegistryState::Running(RunningRegistry {
                 resource_sender,
-                map: ResourceMapConnection::new(self),
+                map: ResourceMapConnection::new(self, ident!("auditeur:registry")),
             }),
         }
     }
@@ -1029,12 +1049,12 @@ impl Registry {
     }
 
     #[must_use]
-    pub(crate) fn event_sender(&self) -> EventSender {
+    pub fn event_sender(&self) -> EventSender {
         self.event_sender.clone()
     }
 
     #[must_use]
-    pub(crate) const fn event_sender_ref(&self) -> &EventSender {
+    pub const fn event_sender_ref(&self) -> &EventSender {
         &self.event_sender
     }
 
@@ -1091,6 +1111,14 @@ pub enum RegistryEvent {
     /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher),
     /// but custom [`Runner`]s will have to listen to this message themselves.
     Stop(NamespacedId),
+    /// `id` has begun resolving its dependencies in an [`App`]
+    ///
+    /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
+    /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
+    Resolving {
+        id: NamespacedId,
+        bundle: NamespacedId,
+    },
     /// `id` has begun being loaded into the main [`Registry`]
     ///
     /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
@@ -1125,12 +1153,22 @@ pub enum RegistryEvent {
     /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
     Unloaded(NamespacedId),
+    /// A bundle has started resolving its dependencies
+    BundleResolving {
+        id: NamespacedId,
+        parent: Option<NamespacedId>,
+        resources: Arc<[NamespacedId]>,
+        bundles: Arc<[NamespacedId]>,
+        #[cfg(feature = "runtime-loading")]
+        init: Option<bundle::SharedInitFn>,
+    },
     /// A bundle has started loading into the registry
     BundleLoading {
         id: NamespacedId,
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
+        #[cfg(feature = "runtime-loading")]
         init: Option<bundle::SharedInitFn>,
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
@@ -1138,9 +1176,22 @@ pub enum RegistryEvent {
     /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
     BundleUnloaded(NamespacedId),
-    /// The resource `from` referenced the resource `to` through a
-    /// [`Get<_>`](crate::input::get::Get) [input](crate::input::Input)
-    Reference { by: NamespacedId, to: NamespacedId },
+    /// Resource `dependent` now depends on `dependency` in some way. This should be called
+    /// whenever one resources uses another resource's code in any way. For example, this is
+    /// emitted when [get](crate::input::get::Get) requests are fulfilled and when
+    /// [respond](crate::macros::respond) connections are created. Note that this also means
+    /// that this should be emitted when resources accept trait objects or function pointers
+    /// from other resources.
+    ///
+    /// [`ResourceMap`] uses this to determine which resources to unload when another resource
+    /// unloads. Specifically, it makes sure that all dependencies of a resource are also unloaded
+    /// when it is unloaded.
+    ///
+    /// Lastly, this may be emitted multiple times for a single dependency.
+    Dependency {
+        dependent: NamespacedId,
+        dependency: NamespacedId,
+    },
     /// There is a [`Get<_>`](crate::input::get::Get) request that must be fulfilled
     ///
     /// Note: this will only ever be sent if the `runtime-loading` feature is enabled
@@ -1219,11 +1270,12 @@ impl Hash for ErrorEvent {
 #[cfg(feature = "runtime-loading")]
 pub struct GetRequest {
     id: NamespacedId,
+    dependent: NamespacedId,
     // NOTE: This must be a tokio Mutex, not a std one. Why? I'm not really sure!
     // In fact, this was the culprit of what has been the most dreadful bug I have ever encountered
     // due to insane amounts of inconsistency... Deadlocks are not my friend - they very well may be
     // my greatest enemy D:
-    sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::get::CloneAny>>>>,
+    sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::get::ResourceRef>>>>,
 }
 
 #[cfg(feature = "runtime-loading")]
@@ -1250,7 +1302,7 @@ impl GetRequest {
         }
         trace!("fulfilling get request");
         #[allow(clippy::option_if_let_else)] // not using the return type...
-        if let Some(reference) = resource.maybe_get_ref(registry) {
+        if let Some(reference) = resource.maybe_get_ref(registry, &self.dependent) {
             self.send(reference).await;
         } else {
             warn!("resource matches GetRequest, but MaybeGetRef returned None");
@@ -1269,6 +1321,11 @@ impl GetRequest {
         &self.id
     }
 
+    /// Returns the [id](NamespacedId) of the resource that is asking for this request
+    pub fn dependent(&self) -> &NamespacedIdRef {
+        &self.dependent
+    }
+
     /// Cancels the get request, instantly returning nothing
     ///
     /// This should only be used by the resource that this request is for if they are sure that
@@ -1281,7 +1338,7 @@ impl GetRequest {
     ///
     /// Note: this doesn't actually check if the reference matches the request - use
     /// [`Self::matches`] to check first
-    pub(crate) async fn send(&self, reference: Box<dyn crate::input::get::CloneAny>) {
+    pub(crate) async fn send(&self, reference: Box<dyn crate::input::get::ResourceRef>) {
         let Some(sender) = self.sender.lock().await.take() else {
             // this could only happen with a name collision
             warn!("resource matches GetRequest, but the channel was already used");
@@ -1457,6 +1514,17 @@ impl EventSender {
             .inspect(|val| error!("{val}"))
             .map(RegistryEvent::Error);
         self.extend(events);
+    }
+
+    pub fn send_dependency(
+        &self,
+        dependent: impl Into<NamespacedId>,
+        dependency: impl Into<NamespacedId>,
+    ) {
+        self.send(RegistryEvent::Dependency {
+            dependent: dependent.into(),
+            dependency: dependency.into(),
+        });
     }
 
     pub(crate) fn subscribe(&self) -> EventReceiver {

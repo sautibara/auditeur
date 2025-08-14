@@ -67,6 +67,11 @@ mod proc_macro_impls {
     #[cfg(feature = "runtime-loading")]
     pub use maybe_get_ref::maybe_get_ref;
 
+    #[cfg(feature = "runtime-loading")]
+    mod resource_ref;
+    #[cfg(feature = "runtime-loading")]
+    pub use resource_ref::resource_ref;
+
     #[cfg(feature = "path-any")]
     mod path_any;
     #[cfg(feature = "path-any")]
@@ -340,7 +345,11 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
     quote! {
         impl #auditeur::input::get::GetRef for #ident {
             type Ref = Self;
-            fn get_ref(&self, _: &#auditeur::app::Registry) -> Self {
+            fn get_ref(
+                &self,
+                _: &#auditeur::app::Registry,
+                _: &#auditeur::namespaced_id::NamespacedIdRef,
+            ) -> Self {
                 self.clone()
             }
         }
@@ -371,6 +380,16 @@ pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
     };
 
     proc_macro_impls::maybe_get_ref(&ident, &generics).into()
+}
+
+#[proc_macro_derive(ResourceRef)]
+#[cfg(feature = "runtime-loading")]
+pub fn resource_ref(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemStruct);
+
+    let fields = item.fields.iter().filter_map(|field| field.ident.as_ref());
+
+    proc_macro_impls::resource_ref(&item.ident, None, fields).into()
 }
 
 #[cfg(feature = "path-any")]
