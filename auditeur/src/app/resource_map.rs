@@ -387,8 +387,6 @@ impl listener::Component<ResourceMap> for MainComponent {
                 parent,
                 resources,
                 bundles,
-                #[cfg(feature = "runtime-loading")]
-                init,
             } => {
                 map.add_bundle(
                     id,
@@ -396,7 +394,7 @@ impl listener::Component<ResourceMap> for MainComponent {
                     &resources,
                     &bundles,
                     #[cfg(feature = "runtime-loading")]
-                    init,
+                    None,
                 )?;
             }
             RegistryEvent::BundleLoading {
@@ -413,7 +411,7 @@ impl listener::Component<ResourceMap> for MainComponent {
                     &resources,
                     &bundles,
                     #[cfg(feature = "runtime-loading")]
-                    init,
+                    init.take(),
                 )?;
             }
             RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle } => {

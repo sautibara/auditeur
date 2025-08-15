@@ -336,8 +336,6 @@ impl App {
             parent: bundle.parent.clone(),
             resources: bundle.resources.clone(),
             bundles: bundle.bundles.clone(),
-            #[cfg(feature = "runtime-loading")]
-            init: bundle.init.clone(),
         });
         // then the constraints also have to be resolved
         self.resolve_constraints(registry, &bundle.constraints, None)
@@ -936,12 +934,13 @@ impl Registry {
     pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
         self.state.add_bundle(id.clone());
         self.event_sender.send(RegistryEvent::BundleLoading {
+            #[cfg(feature = "runtime-loading")]
+            init: InitSupplier::new(id.clone(), bundle.init),
+
             id,
             parent: bundle.parent,
             resources: bundle.resources,
             bundles: bundle.bundles,
-            #[cfg(feature = "runtime-loading")]
-            init: bundle.init,
         });
         self
     }
@@ -1159,8 +1158,6 @@ pub enum RegistryEvent {
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
-        #[cfg(feature = "runtime-loading")]
-        init: Option<bundle::SharedInitFn>,
     },
     /// A bundle has started loading into the registry
     BundleLoading {
@@ -1169,7 +1166,7 @@ pub enum RegistryEvent {
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
         #[cfg(feature = "runtime-loading")]
-        init: Option<bundle::SharedInitFn>,
+        init: InitSupplier,
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///
@@ -1429,6 +1426,68 @@ impl Eq for ResourceSupplier {}
 
 #[cfg(feature = "runtime-loading")]
 impl Hash for ResourceSupplier {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.arc.id.hash(state);
+    }
+}
+
+#[derive(Clone)]
+#[cfg(feature = "runtime-loading")]
+pub struct InitSupplier {
+    arc: Arc<InitSupplierInner>,
+}
+
+#[cfg(feature = "runtime-loading")]
+struct InitSupplierInner {
+    id: NamespacedId,
+    init: std::sync::Mutex<Option<bundle::SharedInitFn>>,
+}
+
+#[cfg(feature = "runtime-loading")]
+impl InitSupplier {
+    /// Get the [`NamespacedId`] of the inner resource
+    #[must_use]
+    pub fn id(&self) -> &NamespacedIdRef {
+        &self.arc.id
+    }
+
+    fn new(id: NamespacedId, init: Option<bundle::SharedInitFn>) -> Self {
+        let arc = InitSupplierInner {
+            id,
+            init: std::sync::Mutex::new(init),
+        };
+        Self { arc: Arc::new(arc) }
+    }
+
+    pub(crate) fn take(&self) -> Option<bundle::SharedInitFn> {
+        let mut resource = self
+            .arc
+            .init
+            .lock()
+            .expect("InitSupplier lock shouldn't be poisoned");
+        resource.take()
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl Debug for InitSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InitSupplier")
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl PartialEq for InitSupplier {
+    fn eq(&self, other: &Self) -> bool {
+        self.arc.id == other.arc.id
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl Eq for InitSupplier {}
+
+#[cfg(feature = "runtime-loading")]
+impl Hash for InitSupplier {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.arc.id.hash(state);
     }

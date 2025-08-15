@@ -146,7 +146,9 @@ impl Watcher for PluginRegistry {
                     match event {
                         RegistryEvent::BundleUnloaded(id) => {
                             let libraries = &mut self.shared_mut().libraries;
-                            if libraries.remove(&id).is_some() {
+                            if let Some(library) = libraries.remove(&id) {
+                                debug!("unloading bundle `{id}`'s library...");
+                                drop(library);
                                 debug!("unloaded bundle `{id}`'s library");
                             }
                             // we only should stop if all of the libraries are unloaded first
