@@ -2,10 +2,8 @@
 //! currently loaded
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map, HashMap, HashSet},
     fmt::Debug,
-    ops::Deref,
-    sync::{Arc, Weak},
 };
 
 use anyhow::{anyhow, bail};
@@ -21,60 +19,118 @@ const RESERVED_IDENTS: &[&NamespacedIdRef] = &[ident!("auditeur:registry")];
 
 struct LoadedResource {
     id: NamespacedId,
+    // number of strong references keeping this resource alive
+    strong_count: usize,
+
+    // STRONG: keep the parent bundle alive
+    bundle: NamespacedId,
+    // STRONG: also want to keep dependencies alive
+    dependencies: HashSet<NamespacedId>,
+    // WEAK: don't want to keep the dependents alive - we don't want reference loops
+    dependents: HashSet<NamespacedId>,
+
     #[cfg(feature = "runtime-loading")]
-    resource: tokio::sync::RwLock<Option<Box<dyn super::LoadedResource>>>,
-    // hold a strong reference to the parent bundle to keep it alive
-    bundle: Arc<LoadedBundle>,
-    // and strong references to all of its dependencies for the same reason
-    dependencies: Vec<Arc<LoadedResource>>,
-    // and no strong references to our dependents - we don't want to make reference loops!
-    dependents: std::sync::RwLock<HashSet<NamespacedId>>,
-    sender: EventSender,
+    resource: Option<Box<dyn super::LoadedResource>>,
+}
+
+impl LoadedResource {
+    fn new(map: &mut ResourceMap, id: NamespacedId, bundle: NamespacedId) -> anyhow::Result<Self> {
+        map.reference_bundle(&bundle)?;
+        Ok(Self {
+            id,
+            strong_count: 0,
+            bundle,
+            dependencies: HashSet::new(),
+            dependents: HashSet::new(),
+            #[cfg(feature = "runtime-loading")]
+            resource: None,
+        })
+    }
+
+    fn drop_references(&mut self, map: &mut ResourceMap) {
+        map.drop_bundle_reference(std::mem::replace(
+            &mut self.bundle,
+            NamespacedId::new("", ""),
+        ));
+        for id in self.dependencies.drain() {
+            map.drop_resource_reference(id);
+        }
+    }
+
+    fn add_dependency(
+        map: &mut ResourceMap,
+        dependency_id: &NamespacedIdRef,
+        dependent_id: &NamespacedIdRef,
+    ) -> anyhow::Result<()> {
+        if dependency_id == dependent_id {
+            return Ok(());
+        }
+
+        let [dependency_opt, dependent_opt] = map
+            .resources
+            .get_disjoint_mut([dependency_id, dependent_id]);
+
+        let Some(dependency_info) = dependency_opt else {
+            bail!("could not find dependency '{dependency_id}'");
+        };
+
+        let Some(dependent_info) = dependent_opt else {
+            bail!("could not find dependent '{dependent_id}'");
+        };
+
+        let already_exists = dependency_info.dependents.contains(dependent_id)
+            || dependent_info.dependencies.contains(dependency_id);
+        if already_exists {
+            return Ok(());
+        }
+
+        dependency_info.strong_count += 1;
+
+        dependency_info.dependents.insert(dependent_id.to_owned());
+        dependent_info.dependencies.insert(dependency_id.to_owned());
+
+        Ok(())
+    }
 }
 
 #[allow(clippy::used_underscore_binding)]
 impl Debug for LoadedResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug_struct = f.debug_struct("LoadedResource");
-        debug_struct.field("id", &self.id);
+        debug_struct
+            .field("id", &self.id)
+            .field("strong_count", &self.strong_count)
+            .field("bundle", &self.bundle)
+            .field("dependencies", &self.dependencies)
+            .field("dependents", &self.dependents);
+
         #[cfg(feature = "runtime-loading")]
         debug_struct.field(
             "resource",
-            &if self.resource.blocking_read().is_some() {
+            &if self.resource.is_some() {
                 "<present>"
             } else {
                 "<empty>"
             },
         );
-        debug_struct
-            .field("_bundle", &self.bundle)
-            .field("dependencies", &self.dependencies)
-            .field("dependents", &self.dependents)
-            .field("sender", &self.sender)
-            .finish()
-    }
-}
 
-impl Drop for LoadedResource {
-    fn drop(&mut self) {
-        self.sender.send(RegistryEvent::Unloaded(self.id.clone()));
+        debug_struct.finish()
     }
 }
 
 #[cfg(feature = "runtime-loading")]
 impl LoadedResource {
-    async fn supply_owned(&self, resource: Box<dyn super::LoadedResource>) {
+    fn supply_owned(&mut self, resource: Box<dyn super::LoadedResource>) {
         tracing::trace!(
             "adding {} to the ResourceMap as a NonRunnable",
             resource.ident()
         );
-        let mut resource_option = self.resource.write().await;
-        *resource_option = Some(resource);
+        self.resource = Some(resource);
     }
 
     /// Runs `func` on the contained owned resource, if it exists
     async fn check_get_request(&self, get_request: &GetRequest, registry: &Registry) {
-        let resource_option = self.resource.read().await;
+        let resource_option = &self.resource;
         if let Some(resource) = resource_option.as_deref() {
             get_request.check_ref(resource.resource(), registry).await;
         }
@@ -84,19 +140,61 @@ impl LoadedResource {
 #[derive(Debug)]
 struct LoadedBundle {
     id: NamespacedId,
-    sender: EventSender,
-    // hold a strong reference to a potential parent bundle to keep it alive
-    parent: Option<Arc<LoadedBundle>>,
-    resources: std::sync::RwLock<HashSet<NamespacedId>>,
-    bundles: std::sync::RwLock<HashSet<NamespacedId>>,
+    // number of strong references keeping this resource alive
+    strong_count: usize,
+
+    // STRONG: we want to keep the parent bundle alive
+    parent: Option<NamespacedId>,
+    // WEAK: child resources can come and go
+    resources: HashSet<NamespacedId>,
+    // WEAK: child bundles can come and go
+    bundles: HashSet<NamespacedId>,
+
     #[cfg(feature = "runtime-loading")]
     init: Option<bundle::SharedInitFn>,
 }
 
-impl Drop for LoadedBundle {
-    fn drop(&mut self) {
-        self.sender
-            .send(RegistryEvent::BundleUnloaded(self.id.clone()));
+impl LoadedBundle {
+    fn new(
+        map: &mut ResourceMap,
+        id: NamespacedId,
+        parent: Option<NamespacedId>,
+    ) -> anyhow::Result<Self> {
+        if let Some(parent) = parent.as_deref() {
+            map.reference_bundle(parent)?;
+        }
+        Ok(Self {
+            id,
+            strong_count: 0,
+            parent,
+            resources: HashSet::new(),
+            bundles: HashSet::new(),
+            #[cfg(feature = "runtime-loading")]
+            init: None,
+        })
+    }
+
+    fn add_properties(
+        &mut self,
+        resources: impl IntoIterator<Item = NamespacedId>,
+        bundles: impl IntoIterator<Item = NamespacedId>,
+        #[cfg(feature = "runtime-loading")] init: Option<bundle::SharedInitFn>,
+    ) {
+        self.resources.extend(resources);
+        self.bundles.extend(bundles);
+        if cfg!(feature = "runtime-loading") {
+            self.init = init.or_else(|| self.init.take());
+        }
+    }
+
+    fn drop_references(&mut self, map: &mut ResourceMap) {
+        if let Some(parent) = self.parent.take() {
+            map.drop_bundle_reference(parent);
+        }
+    }
+
+    fn parent<'a>(&self, map: &'a ResourceMap) -> Option<&'a Self> {
+        self.parent.as_deref().and_then(|id| map.get_bundle(id))
     }
 }
 
@@ -122,7 +220,7 @@ impl Drop for LoadedBundle {
 // keep their parents alive, if they exist. From this, dependencies are always kept alive at least
 // as long as their dependents.
 // TODO: add methods to actually view the entire map
-#[derive(Runnable)]
+#[derive(Runnable, Debug)]
 #[listener(
     "auditeur:resource_map",
     registry_component = false,
@@ -131,27 +229,20 @@ impl Drop for LoadedBundle {
 )]
 pub struct ResourceMap {
     sender: EventSender,
-    /// The resources that either aren't loaded or have no references yet
-    ///
-    /// These can't be put in the main resources map, as they'd need a reference to keep them alive
-    resource_queue: HashMap<NamespacedId, LoadedResource>,
-    /// The bundles that either aren't loaded or have no references yet
-    ///
-    /// These can't be put in the main bundles map, as they'd need a reference to keep them alive
-    bundle_queue: HashMap<NamespacedId, LoadedBundle>,
     /// A map of all of the currently running resources
     ///
     /// These resources are the roots of what stays loaded, and as such, are stored as strong
     /// references
-    runners: HashMap<NamespacedId, Arc<LoadedResource>>,
+    // STRONG: the runners are the roots of everything loaded
+    runners: HashSet<NamespacedId>,
     /// A map of all of the resources that have ever been loaded
     ///
     /// If the underlying Arc unloads (no strong references point to it anymore), that means that
     /// the resource also must be unloaded. As such, this map holds no strong references to any of
     /// these resources, allowing them to unload if necessary.
-    resources: HashMap<NamespacedId, Weak<LoadedResource>>,
+    resources: HashMap<NamespacedId, LoadedResource>,
     /// A map of all of the bundles that have ever been loaded
-    bundles: HashMap<NamespacedId, Weak<LoadedBundle>>,
+    bundles: HashMap<NamespacedId, LoadedBundle>,
 }
 
 #[create]
@@ -159,9 +250,7 @@ impl Create for ResourceMap {
     async fn create(sender: EventSender) -> Result<Self> {
         Ok(Self {
             sender,
-            resource_queue: HashMap::new(),
-            bundle_queue: HashMap::new(),
-            runners: HashMap::new(),
+            runners: HashSet::new(),
             resources: HashMap::new(),
             bundles: HashMap::new(),
         })
@@ -169,20 +258,9 @@ impl Create for ResourceMap {
 }
 
 impl ResourceMap {
-    fn add_resource(&mut self, id: NamespacedId, parent: &NamespacedIdRef) -> Result<()> {
-        let parent = self.clone_bundle(parent)?;
-        self.resource_queue.insert(
-            id.clone(),
-            LoadedResource {
-                id,
-                #[cfg(feature = "runtime-loading")]
-                resource: tokio::sync::RwLock::new(None),
-                bundle: parent,
-                dependencies: Vec::new(),
-                dependents: std::sync::RwLock::new(HashSet::new()),
-                sender: self.sender.clone(),
-            },
-        );
+    fn add_resource(&mut self, id: NamespacedId, parent: NamespacedId) -> Result<()> {
+        let resource = LoadedResource::new(self, id.clone(), parent)?;
+        self.resources.insert(id, resource);
         Ok(())
     }
 
@@ -194,113 +272,76 @@ impl ResourceMap {
         bundles: &[NamespacedId],
         #[cfg(feature = "runtime-loading")] init: Option<bundle::SharedInitFn>,
     ) -> Result<()> {
-        let resources = resources.iter().cloned();
-        let bundles = bundles.iter().cloned();
-
-        let parent = parent.map(|parent| self.clone_bundle(parent)).transpose()?;
-        if let Some(bundle) = self.bundles.get(&id).and_then(Weak::upgrade) {
+        let mut bundle = if let Some(bundle) = self.bundles.remove(&id) {
             bundle
-                .resources
-                .write()
-                .expect("RwLock should not be poisoned")
-                .extend(resources);
-            bundle
-                .bundles
-                .write()
-                .expect("RwLock should not be poisoned")
-                .extend(bundles);
         } else {
-            self.bundle_queue.insert(
-                id.clone(),
-                LoadedBundle {
-                    id,
-                    parent,
-                    sender: self.sender.clone(),
-                    resources: std::sync::RwLock::new(resources.collect()),
-                    bundles: std::sync::RwLock::new(bundles.collect()),
-                    #[cfg(feature = "runtime-loading")]
-                    init,
-                },
-            );
-        }
+            LoadedBundle::new(self, id.clone(), parent.map(ToOwned::to_owned))?
+        };
+
+        bundle.add_properties(resources.iter().cloned(), bundles.iter().cloned(), init);
+
+        self.bundles.insert(id, bundle);
+
         Ok(())
     }
 
-    fn clone_resource(&mut self, id: &NamespacedIdRef) -> Result<Arc<LoadedResource>> {
-        if let Some((id, resource)) = self.resource_queue.remove_entry(id) {
-            let resource = Arc::new(resource);
-            self.resources.insert(id, Arc::downgrade(&resource));
-            Ok(resource)
-        } else if let Some(resource) = self.resources.get(id).and_then(Weak::upgrade) {
-            Ok(resource)
-        } else {
-            bail!("could not find resource: {id}");
+    fn drop_resource_reference(&mut self, id: NamespacedId) {
+        if let hash_map::Entry::Occupied(mut entry) = self.resources.entry(id) {
+            let resource = entry.get_mut();
+            resource.strong_count = resource.strong_count.saturating_sub(1);
+
+            if resource.strong_count == 0 {
+                let (id, mut resource) = entry.remove_entry();
+
+                trace!("unloaded: resource '{id}'");
+                self.sender.send(RegistryEvent::Unloaded(id));
+                resource.drop_references(self);
+            }
         }
     }
 
-    fn clone_bundle(&mut self, id: &NamespacedIdRef) -> Result<Arc<LoadedBundle>> {
-        if let Some((id, bundle)) = self.bundle_queue.remove_entry(id) {
-            let bundle = Arc::new(bundle);
-            self.bundles.insert(id, Arc::downgrade(&bundle));
-            Ok(bundle)
-        } else if let Some(bundle) = self.bundles.get(id).and_then(Weak::upgrade) {
-            Ok(bundle)
-        } else {
-            bail!("could not find bundle: {id}");
+    fn drop_bundle_reference(&mut self, id: NamespacedId) {
+        if let hash_map::Entry::Occupied(mut entry) = self.bundles.entry(id) {
+            let bundle = entry.get_mut();
+            bundle.strong_count = bundle.strong_count.saturating_sub(1);
+
+            if bundle.strong_count == 0 {
+                let (id, mut bundle) = entry.remove_entry();
+                bundle.drop_references(self);
+                trace!("unloaded: bundle '{id}'");
+                self.sender.send(RegistryEvent::BundleUnloaded(id));
+            }
         }
     }
 
-    fn add_reference(
+    fn reference_resource(&mut self, id: &NamespacedIdRef) -> anyhow::Result<()> {
+        self.resources
+            .get_mut(id)
+            .map(|resource| resource.strong_count += 1)
+            .ok_or_else(|| anyhow!("failed to get resource '{id}'"))
+    }
+
+    fn reference_bundle(&mut self, id: &NamespacedIdRef) -> anyhow::Result<()> {
+        self.bundles
+            .get_mut(id)
+            .map(|bundle| bundle.strong_count += 1)
+            .ok_or_else(|| anyhow!("failed to get bundle '{id}'"))
+    }
+
+    fn add_dependency(
         &mut self,
         dependent: &NamespacedIdRef,
         dependency: &NamespacedIdRef,
     ) -> Result<()> {
-        let dependency = self.clone_resource(dependency)?;
-        let dependent = self
-            .resource_queue
-            .get_mut(dependent)
-            .ok_or_else(|| anyhow!("could not find resource: {dependent}"))?;
-        dependency
-            .dependents
-            .write()
-            .expect("RwLock should not be poisoned")
-            .insert(dependent.id.clone());
-        dependent.dependencies.push(dependency);
-        Ok(())
+        LoadedResource::add_dependency(self, dependency, dependent)
     }
 
-    fn get_resource(&self, id: &NamespacedIdRef) -> Option<GetResult<'_, LoadedResource>> {
-        (self
-            .resources
-            .get(id)
-            .and_then(Weak::upgrade)
-            .map(GetResult::Arc))
-        .or_else(|| self.resource_queue.get(id).map(GetResult::Ref))
+    fn get_resource(&self, id: &NamespacedIdRef) -> Option<&LoadedResource> {
+        self.resources.get(id)
     }
 
-    fn get_bundle(&self, id: &NamespacedIdRef) -> Option<GetResult<'_, LoadedBundle>> {
-        (self
-            .bundles
-            .get(id)
-            .and_then(Weak::upgrade)
-            .map(GetResult::Arc))
-        .or_else(|| self.bundle_queue.get(id).map(GetResult::Ref))
-    }
-}
-
-enum GetResult<'a, T> {
-    Arc(Arc<T>),
-    Ref(&'a T),
-}
-
-impl<T> Deref for GetResult<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Arc(arc) => arc,
-            Self::Ref(reference) => reference,
-        }
+    fn get_bundle(&self, id: &NamespacedIdRef) -> Option<&LoadedBundle> {
+        self.bundles.get(id)
     }
 }
 
@@ -339,7 +380,7 @@ impl listener::Component<ResourceMap> for MainComponent {
         map: &mut ResourceMap,
         (): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        trace!("handling registry event");
+        // trace!("handling registry event");
         match event {
             RegistryEvent::BundleResolving {
                 id,
@@ -348,15 +389,7 @@ impl listener::Component<ResourceMap> for MainComponent {
                 bundles,
                 #[cfg(feature = "runtime-loading")]
                 init,
-            }
-            | RegistryEvent::BundleLoading {
-                id,
-                parent,
-                resources,
-                bundles,
-                #[cfg(feature = "runtime-loading")]
-                init,
-            } if map.get_bundle(&id).is_none() => {
+            } => {
                 map.add_bundle(
                     id,
                     parent.as_deref(),
@@ -366,25 +399,43 @@ impl listener::Component<ResourceMap> for MainComponent {
                     init,
                 )?;
             }
-            RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle }
-                if map.get_resource(&id).is_none() =>
-            {
-                map.add_resource(id, &bundle)?;
+            RegistryEvent::BundleLoading {
+                id,
+                parent,
+                resources,
+                bundles,
+                #[cfg(feature = "runtime-loading")]
+                init,
+            } => {
+                map.add_bundle(
+                    id,
+                    parent.as_deref(),
+                    &resources,
+                    &bundles,
+                    #[cfg(feature = "runtime-loading")]
+                    init,
+                )?;
+            }
+            RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle } => {
+                if map.get_resource(&id).is_none() {
+                    map.add_resource(id, bundle)?;
+                }
             }
             RegistryEvent::Dependency {
                 dependent,
                 dependency,
             } => {
                 if !RESERVED_IDENTS.contains(&&*dependent) && dependency != dependent {
-                    map.add_reference(&dependent, &dependency)?;
+                    map.add_dependency(&dependent, &dependency)?;
                 }
             }
             RegistryEvent::Running(id) => {
-                let resource = map.clone_resource(&id)?;
-                map.runners.insert(id, resource);
+                map.reference_resource(&id)?;
+                map.runners.insert(id);
             }
             RegistryEvent::Stopped(id) => {
                 map.runners.remove(&id);
+                map.drop_resource_reference(id);
                 // this should be the last runner
                 if self.should_exit && map.runners.len() <= 1 {
                     return Ok(ControlFlow::Break(()));
@@ -392,9 +443,9 @@ impl listener::Component<ResourceMap> for MainComponent {
             }
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::NonRunnable(supplier) => {
-                if let Some(resource) = map.get_resource(supplier.id()) {
+                if let Some(resource) = map.resources.get_mut(supplier.id()) {
                     if let Some(owned) = supplier.take() {
-                        resource.supply_owned(owned).await;
+                        resource.supply_owned(owned);
                     }
                 }
             }
@@ -407,6 +458,9 @@ impl listener::Component<ResourceMap> for MainComponent {
                 }
             }
             RegistryEvent::Exit => {
+                if map.runners.len() <= 1 {
+                    return Ok(ControlFlow::Break(()));
+                }
                 self.should_exit = true;
             }
             _ => (),
@@ -422,7 +476,7 @@ impl ResourceMap {
     pub fn loaded_resources(&self, (): ()) -> HashSet<NamespacedId> {
         self.resources
             .iter()
-            .filter(|(_, resource)| resource.strong_count() != 0)
+            .filter(|(_, resource)| resource.strong_count != 0)
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -432,7 +486,7 @@ impl ResourceMap {
     pub fn loaded_bundles(&self, (): ()) -> HashSet<NamespacedId> {
         self.bundles
             .iter()
-            .filter(|(_, bundle)| bundle.strong_count() != 0)
+            .filter(|(_, bundle)| bundle.strong_count != 0)
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -440,7 +494,7 @@ impl ResourceMap {
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] running in the main loop
     #[must_use]
     pub fn running_resources(&self, (): ()) -> HashSet<NamespacedId> {
-        self.runners.keys().cloned().collect()
+        self.runners.clone()
     }
 
     /// Returns a static view into the resources and bundles that fit `query`
@@ -485,18 +539,12 @@ impl SubMapBundle {
 
     fn from_loaded_bundle(bundle: &LoadedBundle, map: &ResourceMap) -> Self {
         Self {
-            resources: bundle
-                .resources
-                .read()
-                .expect("RwLock should not be poisoned")
-                .clone(),
+            resources: bundle.resources.clone(),
             bundles: bundle
                 .bundles
-                .read()
-                .expect("RwLock shoult not be poisoned")
                 .iter()
                 .filter_map(|id| map.get_bundle(id))
-                .map(|bundle| (bundle.id.clone(), Self::from_loaded_bundle(&bundle, map)))
+                .map(|bundle| (bundle.id.clone(), Self::from_loaded_bundle(bundle, map)))
                 .collect(),
             #[cfg(feature = "runtime-loading")]
             init: bundle.init.clone(),
@@ -584,13 +632,10 @@ impl SubMap {
             .flat_map(SubMapBundle::descendent_resources)
     }
 
-    fn get_bundle_mut(&mut self, bundle: &LoadedBundle) -> &mut SubMapBundle {
-        let mut parent_stack = Vec::from_iter(bundle.parent.as_deref());
+    fn get_bundle_mut(&mut self, map: &ResourceMap, bundle: &LoadedBundle) -> &mut SubMapBundle {
+        let mut parent_stack = Vec::from_iter(bundle.parent(map));
 
-        while let Some(parent) = parent_stack
-            .last()
-            .and_then(|bundle| bundle.parent.as_deref())
-        {
+        while let Some(parent) = parent_stack.last().and_then(|bundle| bundle.parent(map)) {
             parent_stack.push(parent);
         }
 
@@ -626,22 +671,24 @@ impl SubMap {
         bundle
     }
 
-    fn add_resource(&mut self, resource: &NamespacedIdRef, map: &ResourceMap) {
-        let Some(resource) = map.get_resource(resource) else {
+    fn add_resource(&mut self, map: &ResourceMap, resource: &NamespacedIdRef) {
+        let Some(bundle) =
+            (map.get_resource(resource)).and_then(|resource| map.get_bundle(&resource.bundle))
+        else {
             return;
         };
 
-        let sub_bundle = self.get_bundle_mut(&resource.bundle);
-        sub_bundle.resources.insert(resource.id.clone());
+        let sub_bundle = self.get_bundle_mut(map, bundle);
+        sub_bundle.resources.insert(resource.to_owned());
     }
 
-    fn add_bundle(&mut self, bundle: &NamespacedIdRef, map: &ResourceMap) {
+    fn add_bundle(&mut self, map: &ResourceMap, bundle: &NamespacedIdRef) {
         let Some(bundle) = map.get_bundle(bundle) else {
             return;
         };
 
-        let current = self.get_bundle_mut(&bundle);
-        let to_add = SubMapBundle::from_loaded_bundle(&bundle, map);
+        let current = self.get_bundle_mut(map, bundle);
+        let to_add = SubMapBundle::from_loaded_bundle(bundle, map);
         current.combine(to_add);
     }
 
@@ -649,17 +696,11 @@ impl SubMap {
         let dependents: HashSet<NamespacedId> = self
             .resources()
             .filter_map(|id| map.get_resource(id))
-            .flat_map(|resource| {
-                resource
-                    .dependents
-                    .read()
-                    .expect("RwLock should not be poisoned")
-                    .clone()
-            })
+            .flat_map(|resource| resource.dependents.clone())
             .collect();
 
         for dependent in dependents {
-            self.add_resource(&dependent, map);
+            self.add_resource(map, &dependent);
         }
     }
 }
@@ -708,12 +749,12 @@ impl Query {
         match self {
             Self::Resource(id) => {
                 let mut sub_map = SubMap::default();
-                sub_map.add_resource(&id, map);
+                sub_map.add_resource(map, &id);
                 sub_map
             }
             Self::Bundle(id) => {
                 let mut sub_map = SubMap::default();
-                sub_map.add_bundle(&id, map);
+                sub_map.add_bundle(map, &id);
                 sub_map
             }
             Self::AndDependents(query) => {
