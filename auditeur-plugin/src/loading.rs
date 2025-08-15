@@ -28,6 +28,9 @@ impl Plugin {
     /// it to have the correct signature. If the signature is wrong, it could lead to undefined
     /// behavior.
     ///
+    /// Also, if this library is unloaded before the plugin is unloaded, it could lead to a
+    /// segfault if the plugin attempts to access its unloaded code.
+    ///
     /// # Errors
     ///
     /// - If the library fails to load

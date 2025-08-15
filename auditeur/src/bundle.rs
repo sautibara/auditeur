@@ -5,11 +5,12 @@
 //! understand. They allow for module-like hierarchies by putting one in another. See the [struct
 //! documentation](Bundle) for more
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::prelude::*;
 
-use crate::app::{loader, BuiltBundle, Constraint, Loader};
+use crate::app::{BuiltBundle, Constraint, Loader, loader};
 
 /// Create a new bundle with the given identifier
 ///
@@ -192,6 +193,29 @@ impl Bundle {
     #[cfg(feature = "runtime-loading")]
     pub fn reload_with_shared(mut self, func: SharedInitFn) -> Self {
         self.init = Some(func);
+        self
+    }
+
+    /// Remove any reload method in this bundle.
+    pub fn without_reload(mut self) -> Self {
+        #[cfg(feature = "runtime-loading")]
+        {
+            self.init = None;
+        }
+        self
+    }
+}
+
+impl Bundle {
+    /// Keep only the resources whose ids are contained in `accepted`.
+    pub(crate) fn filter_resources(mut self, accepted: &HashSet<NamespacedId>) -> Self {
+        self.loaders
+            .retain(|loader| accepted.contains(loader.ident()));
+        self.bundles = self
+            .bundles
+            .into_iter()
+            .map(|bundle| bundle.filter_resources(accepted))
+            .collect();
         self
     }
 }

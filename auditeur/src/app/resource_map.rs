@@ -2,7 +2,7 @@
 //! currently loaded
 
 use std::{
-    collections::{hash_map, HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map},
     fmt::Debug,
 };
 
@@ -14,6 +14,8 @@ use crate::{app::EventSender, bundle, prelude::*, resource::listener};
 use super::EventReceiver;
 #[cfg(feature = "runtime-loading")]
 use super::GetRequest;
+
+// TODO: transient dependencies - dependencies that can be removed easily
 
 const RESERVED_IDENTS: &[&NamespacedIdRef] = &[ident!("auditeur:registry")];
 
@@ -441,10 +443,10 @@ impl listener::Component<ResourceMap> for MainComponent {
             }
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::NonRunnable(supplier) => {
-                if let Some(resource) = map.resources.get_mut(supplier.id()) {
-                    if let Some(owned) = supplier.take() {
-                        resource.supply_owned(owned);
-                    }
+                if let Some(resource) = map.resources.get_mut(supplier.id())
+                    && let Some(owned) = supplier.take()
+                {
+                    resource.supply_owned(owned);
                 }
             }
             #[cfg(feature = "runtime-loading")]
@@ -506,8 +508,9 @@ impl ResourceMap {
 pub struct SubMapBundle {
     pub resources: HashSet<NamespacedId>,
     pub bundles: HashMap<NamespacedId, SubMapBundle>,
+    pub complete: bool,
     #[cfg(feature = "runtime-loading")]
-    init: Option<bundle::SharedInitFn>,
+    pub init: Option<bundle::SharedInitFn>,
 }
 
 impl SubMapBundle {
@@ -523,6 +526,7 @@ impl SubMapBundle {
         for (key, value) in other.bundles {
             self.bundles.entry(key).or_default().combine(value);
         }
+        self.complete |= other.complete;
         self.init = other.init.or_else(|| std::mem::take(&mut self.init));
     }
 
@@ -535,6 +539,13 @@ impl SubMapBundle {
         }
     }
 
+    pub fn descendent_bundle_ids(&self) -> impl Iterator<Item = &NamespacedId> {
+        DescendentBundleIds::InList {
+            current: Box::new(DescendentBundleIds::Empty),
+            rest: self.bundles.iter(),
+        }
+    }
+
     fn from_loaded_bundle(bundle: &LoadedBundle, map: &ResourceMap) -> Self {
         Self {
             resources: bundle.resources.clone(),
@@ -544,8 +555,60 @@ impl SubMapBundle {
                 .filter_map(|id| map.get_bundle(id))
                 .map(|bundle| (bundle.id.clone(), Self::from_loaded_bundle(bundle, map)))
                 .collect(),
+            complete: true,
             #[cfg(feature = "runtime-loading")]
             init: bundle.init.clone(),
+        }
+    }
+
+    fn load_plan(
+        &self,
+        id: &NamespacedIdRef,
+        parents: &mut Vec<NamespacedId>,
+    ) -> (Vec<LoadPlan>, LoadResult) {
+        let resources: HashSet<_> = self.descendent_resources().cloned().collect();
+        if self.complete
+            && let Some(init) = &self.init
+        {
+            let plan = LoadPlan {
+                init: init.clone(),
+                load_type: LoadType::Complete,
+                parent_bundles: parents.clone(),
+            };
+            let result = LoadResult {
+                loaded: resources,
+                failed: HashSet::new(),
+            };
+            (vec![plan], result)
+        } else {
+            let mut plans = Vec::new();
+            let mut result = LoadResult {
+                loaded: HashSet::new(),
+                failed: resources,
+            };
+
+            parents.push(id.to_owned());
+            for (child_id, child_bundle) in &self.bundles {
+                let (child_plans, child_result) = child_bundle.load_plan(child_id, parents);
+                plans.extend(child_plans);
+                result.extend_loaded(&child_result.loaded);
+            }
+            parents.pop();
+
+            if !result.failed.is_empty()
+                && let Some(init) = &self.init
+            {
+                let to_load = std::mem::take(&mut result.failed);
+                result.loaded = &result.loaded | &to_load;
+                let plan = LoadPlan {
+                    init: init.clone(),
+                    load_type: LoadType::Partial(to_load),
+                    parent_bundles: parents.clone(),
+                };
+                plans.push(plan);
+            }
+
+            (plans, result)
         }
     }
 }
@@ -573,6 +636,45 @@ impl<'a> Iterator for DescendentResources<'a> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+}
+
+// rust has trouble finding out this type in [`SubMapBundle::descendent_bundle_ids`], so we have to
+// write the whole thing out ourselves ;-;
+#[allow(clippy::type_complexity)]
+#[derive(Default)]
+enum DescendentBundleIds<'a> {
+    #[default]
+    Empty,
+    InList {
+        current: Box<Self>,
+        rest: std::collections::hash_map::Iter<'a, NamespacedId, SubMapBundle>,
+    },
+}
+
+impl<'a> Iterator for DescendentBundleIds<'a> {
+    type Item = &'a NamespacedId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match std::mem::take(self) {
+            Self::Empty => None,
+            Self::InList {
+                mut current,
+                mut rest,
+            } => current.next().or_else(|| {
+                rest.next().map(|(id, bundle)| {
+                    *self = Self::InList {
+                        current: Box::new(Self::default()),
+                        rest: bundle.bundles.iter(),
+                    };
+                    id
+                })
+            }),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
     }
 }
 
@@ -610,6 +712,7 @@ impl SubMap {
     ) {
         self.visit_bundles_mut(&mut |id, bundle_info| {
             if id == bundle {
+                bundle_info.complete = true;
                 bundle_info.init = Some(shared_fn.clone());
             }
         });
@@ -625,6 +728,12 @@ impl SubMap {
     }
 
     pub fn resources(&self) -> impl Iterator<Item = &NamespacedId> {
+        self.root_bundles
+            .values()
+            .flat_map(SubMapBundle::descendent_resources)
+    }
+
+    pub fn bundle_ids(&self) -> impl Iterator<Item = &NamespacedId> {
         self.root_bundles
             .values()
             .flat_map(SubMapBundle::descendent_resources)
@@ -691,15 +800,168 @@ impl SubMap {
     }
 
     fn add_all_dependents(&mut self, map: &ResourceMap) {
-        let dependents: HashSet<NamespacedId> = self
-            .resources()
-            .filter_map(|id| map.get_resource(id))
-            .flat_map(|resource| resource.dependents.clone())
-            .collect();
+        let mut queue: Vec<_> = self.resources().cloned().collect();
+        let mut dependents = HashSet::new();
+
+        while let Some(id) = queue.pop() {
+            if !dependents.contains(&id)
+                && let Some(resource) = map.get_resource(&id)
+            {
+                dependents.insert(id);
+                queue.extend(resource.dependents.iter().cloned());
+            }
+        }
 
         for dependent in dependents {
             self.add_resource(map, &dependent);
         }
+    }
+
+    /// Unloads all resources in this map. This waits until all resources are unloaded, and as such
+    /// may never return if a resource can't be unloaded or a dependent isn't specified.
+    ///
+    /// This is a utility that does the same thing as [`Self::unload`], but it's only available if
+    /// the `runtime-loading` feature is specified.
+    #[cfg(feature = "runtime-loading")]
+    pub async fn unload_in_registry(&self, registry: &Registry) {
+        self.unload_inner(&registry.stopper(), &mut registry.event_receiver())
+            .await;
+    }
+
+    /// Unloads all resources in this map. This waits until all resources are unloaded, and as such
+    /// may never return if a resource can't be unloaded or a dependent isn't specified.
+    pub async fn unload(&self, stopper: &Stopper, events: &EventReceiver) {
+        self.unload_inner(stopper, &mut events.resubscribe()).await;
+    }
+
+    async fn unload_inner(&self, stopper: &Stopper, events: &mut EventReceiver) {
+        let resources: HashSet<NamespacedId> = self.resources().cloned().collect();
+
+        if resources.is_empty() {
+            return;
+        }
+
+        events.mark_seen();
+
+        for resource in &resources {
+            stopper.stop_id(resource);
+        }
+
+        let mut loaded_resources = resources.clone();
+        while let Some(event) = events.recv().await {
+            match event {
+                RegistryEvent::Loaded(id) => {
+                    if resources.contains(&id) {
+                        loaded_resources.insert(id);
+                    }
+                }
+                RegistryEvent::Unloaded(id) => {
+                    if resources.contains(&id) {
+                        loaded_resources.remove(&id);
+
+                        if loaded_resources.is_empty() {
+                            return;
+                        }
+                    }
+                }
+                // just in case
+                RegistryEvent::Exit => {
+                    return;
+                }
+                _ => (),
+            }
+        }
+    }
+
+    /// Loads all resources in the map with their `init` functions, and returns which resources in
+    /// this map had `init` functions.
+    ///
+    /// # Errors
+    ///
+    /// - If a resource could not be added to the registry
+    ///     - Note that this doesn't update the load result, as the result only tracks which
+    ///       resources have init functions.
+    pub async fn reload(&self, registry: &mut Registry) -> Result<LoadResult, Error> {
+        let mut app = registry.new_app();
+
+        let (plans, result) = self.load_plans();
+        for plan in plans {
+            let bundle = plan.build();
+            app = app.with_bundle(bundle);
+        }
+
+        app.add_to_registry(registry)
+            .await
+            .map_err(|(_, err)| err)?;
+        Ok(result)
+    }
+
+    fn load_plans(&self) -> (Vec<LoadPlan>, LoadResult) {
+        let mut plans = Vec::new();
+        let mut result = LoadResult::default();
+
+        let mut parents = Vec::new();
+        for (id, bundle) in &self.root_bundles {
+            let (root_plans, root_result) = bundle.load_plan(id, &mut parents);
+            plans.extend(root_plans);
+            result.extend(&root_result);
+        }
+
+        (plans, result)
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+#[derive(Debug)]
+struct LoadPlan {
+    init: bundle::SharedInitFn,
+    load_type: LoadType,
+    parent_bundles: Vec<NamespacedId>,
+}
+
+#[derive(Debug)]
+enum LoadType {
+    Partial(HashSet<NamespacedId>),
+    Complete,
+}
+
+#[cfg(feature = "runtime-loading")]
+impl LoadPlan {
+    fn build(self) -> Bundle {
+        let mut bundle = self.init.call();
+
+        if let LoadType::Partial(resources) = &self.load_type {
+            bundle = bundle.filter_resources(resources);
+            bundle = bundle.without_reload();
+        } else {
+            bundle = bundle.reload_with_shared(self.init);
+        }
+
+        for parent in self.parent_bundles.into_iter().rev() {
+            bundle = Bundle::new(parent).with_bundle(bundle);
+        }
+
+        bundle
+    }
+}
+
+#[derive(Default, Debug)]
+#[cfg(feature = "runtime-loading")]
+pub struct LoadResult {
+    pub loaded: HashSet<NamespacedId>,
+    pub failed: HashSet<NamespacedId>,
+}
+
+#[cfg(feature = "runtime-loading")]
+impl LoadResult {
+    fn extend_loaded(&mut self, set: &HashSet<NamespacedId>) {
+        self.loaded = &self.loaded | set;
+        self.failed = &self.failed - set;
+    }
+
+    fn extend(&mut self, other: &Self) {
+        self.loaded = &self.loaded | &other.loaded;
+        self.failed = &self.failed | &other.failed;
     }
 }
 

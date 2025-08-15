@@ -42,23 +42,24 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use async_recursion::async_recursion;
+use dashmap::DashMap;
 use dashmap::mapref::one::MappedRef;
 use dashmap::mapref::one::Ref;
-use dashmap::DashMap;
 use futures::FutureExt;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 #[cfg(feature = "runtime-loading")]
 use tokio::sync::oneshot;
 use tokio::sync::watch;
-use tokio::sync::Mutex;
+use tracing::Instrument;
 use tracing::error;
 use tracing::info_span;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
-use tracing::Instrument;
 
+use crate::Message;
 #[cfg(feature = "runtime-loading")]
 use crate::app::resource_map::ResourceMapConnection;
 use crate::bundle;
@@ -66,7 +67,6 @@ use crate::input::get::GetRef;
 use crate::prelude::*;
 use crate::resource::listener::Giver;
 use crate::resource::listener::Take;
-use crate::Message;
 
 mod constraints;
 pub(crate) mod loaded;
@@ -730,7 +730,11 @@ impl Channels {
             .expect("this should always be a valid Sender and Receiver");
         let mut receiver_option = receiver_mutex.lock().await;
         let Some(receiver) = receiver_option.take() else {
-            panic!("attempted to take the Respond receiver channel for resource {} and message {}, but it was already taken", R::const_ident(), M::const_ident());
+            panic!(
+                "attempted to take the Respond receiver channel for resource {} and message {}, but it was already taken",
+                R::const_ident(),
+                M::const_ident()
+            );
         };
         TakeReceiver {
             receiver,
@@ -1657,7 +1661,7 @@ impl EventReceiver {
 
     /// Resubscribe to the channel, starting from the beginning.
     #[must_use]
-    pub fn resubscribe(&mut self) -> Self {
+    pub fn resubscribe(&self) -> Self {
         Self {
             watch: self.watch.clone(),
             index: 0,
