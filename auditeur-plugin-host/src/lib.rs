@@ -126,8 +126,8 @@ pub trait AppExt {
 
 impl AppExt for App {
     async fn with_plugin_system(mut self, config: config::Host) -> Self {
-        let (mut registry, plugin_sender) = PluginRegistry::new();
-        let (mut arena, mut errors) = Arena::open_or_init(config, plugin_sender).await;
+        let mut registry = PluginRegistry::new();
+        let (mut arena, mut errors) = Arena::open_or_init(config).await;
         if let Ok(arena) = &mut arena {
             let res = arena.add_to_plugin_registry(&mut registry, &mut self);
             if let Err(err) = res {
@@ -137,7 +137,7 @@ impl AppExt for App {
         self.add_bundle(
             new_bundle!("auditeur:plugin_host")
                 .with_watcher::<Arena>(arena.map_err(Into::into))
-                .with_watcher::<PluginRegistry>(registry),
+                .with_listener::<PluginRegistry>(registry),
         );
         self.add_errors(Arena::const_ident(), errors.into_iter().map(Into::into));
         self

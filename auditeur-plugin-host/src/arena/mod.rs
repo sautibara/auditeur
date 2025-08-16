@@ -4,7 +4,7 @@ use auditeur_plugin::auditeur::app::{App, EventSender};
 use tokio::try_join;
 use tracing::{debug, trace, warn};
 
-use crate::{arena::config_handler::ConfigHandler, prelude::*, registry};
+use crate::{arena::config_handler::ConfigHandler, prelude::*, registry::PluginRegistryConnection};
 
 use self::{
     binaries::Binaries,
@@ -68,7 +68,6 @@ enum Action {
 
 #[resource("plugin_host:arena")]
 pub struct Arena {
-    plugin_registry: registry::Handle,
     source_list: SourceList,
     workspace: Workspace,
     binaries: Binaries,
@@ -90,14 +89,8 @@ impl Arena {
     /// # Errors
     ///
     /// - If the directory structure cannot be created
-    pub async fn open_or_init(
-        config: config::Host,
-        plugin_registry: registry::Handle,
-    ) -> (Result<Self, Error>, Vec<Error>) {
-        async fn open_or_init(
-            config: config::Host,
-            plugin_registry: registry::Handle,
-        ) -> Result<Arena, Error> {
+    pub async fn open_or_init(config: config::Host) -> (Result<Self, Error>, Vec<Error>) {
+        async fn open_or_init(config: config::Host) -> Result<Arena, Error> {
             debug!("initializing plugin arena");
             let (source_list, workspace, binaries) = try_join!(
                 SourceList::new(config.directories().source_dir()),
@@ -122,7 +115,6 @@ impl Arena {
             let actions = state.diff(&goal_state);
 
             Ok(Arena {
-                plugin_registry,
                 source_list,
                 workspace,
                 binaries,
@@ -132,7 +124,7 @@ impl Arena {
             })
         }
 
-        let mut result = open_or_init(config, plugin_registry).await;
+        let mut result = open_or_init(config).await;
         let errors = if let Ok(arena) = result.as_mut() {
             arena.load_binaries().await.err().unwrap_or_default()
         } else {
@@ -143,28 +135,33 @@ impl Arena {
     }
 
     async fn load_binaries(&mut self) -> Result<(), Vec<Error>> {
-        let (load_binary_actions, rest) =
-            std::mem::take(&mut self.actions)
-                .into_iter()
-                .partition(|action| {
-                    if let Action::Load(id) = action
-                        && let Some(source) = self.config.source(id)
-                        && let source::Variant::Builtin(_) = source.variant()
-                    {
-                        true
-                    } else {
-                        false
-                    }
-                });
-        self.actions = rest;
+        let mut errs = Vec::new();
+        let mut other_actions = VecDeque::new();
 
-        for load_binary in load_binary_actions {
-            self.run_action(load_binary).await?;
+        for action in self.actions.drain(..) {
+            if let Action::Load(id) = &action
+                && let Some(source) = self.config.source(id)
+                && let source::Variant::Builtin(_) = source.variant()
+            {
+                let res = self.source_list.load_source(source).await;
+                if let Err(err) = res {
+                    errs.push(err);
+                }
+            } else {
+                other_actions.push_back(action);
+            }
         }
-        Ok(())
+
+        self.actions = other_actions;
+
+        if errs.is_empty() { Ok(()) } else { Err(errs) }
     }
 
-    async fn run_action(&mut self, action: Action) -> Result<(), Vec<Error>> {
+    async fn run_action(
+        &mut self,
+        action: Action,
+        plugin_registry: &mut PluginRegistryConnection,
+    ) -> Result<(), Vec<Error>> {
         match action {
             Action::Load(source) => self.load_source(source).await?,
             Action::Remove(source) => {
@@ -268,7 +265,7 @@ impl Arena {
 
                 debug!("loading {binaries:?} into the registry");
                 // SAFETY: See Self::add_to_plugin_registry for justification
-                unsafe { self.plugin_registry.send(binaries) };
+                unsafe { plugin_registry.load_binaries(binaries).await };
             }
         }
         // TODO: serialize
@@ -399,12 +396,12 @@ impl Arena {
 }
 
 impl Watcher for Arena {
-    type Input = EventSender;
+    type Input = (EventSender, PluginRegistryConnection);
 
-    async fn run(&mut self, sender: &mut Self::Input) -> Result<()> {
+    async fn run(&mut self, (sender, plugin_registry): &mut Self::Input) -> Result<()> {
         // TODO: receive actions as well
         while let Some(action) = self.actions.pop_front() {
-            let res = self.run_action(action).await;
+            let res = self.run_action(action, plugin_registry).await;
             if let Err(errors) = res {
                 sender.send_errors(Self::const_ident(), errors);
             }

@@ -9,7 +9,12 @@ use std::{
 use anyhow::{anyhow, bail};
 use tracing::{instrument, trace};
 
-use crate::{app::EventSender, bundle, prelude::*, resource::listener};
+use crate::{
+    app::{BundleInit, EventSender},
+    bundle,
+    prelude::*,
+    resource::listener,
+};
 
 use super::EventReceiver;
 #[cfg(feature = "runtime-loading")]
@@ -176,6 +181,18 @@ impl LoadedBundle {
         })
     }
 
+    fn replace_parent(
+        &mut self,
+        map: &mut ResourceMap,
+        parent: NamespacedId,
+    ) -> anyhow::Result<()> {
+        map.reference_bundle(&parent)?;
+        if let Some(old_parent) = self.parent.replace(parent) {
+            map.drop_bundle_reference(old_parent);
+        }
+        Ok(())
+    }
+
     fn add_properties(
         &mut self,
         resources: impl IntoIterator<Item = NamespacedId>,
@@ -227,6 +244,7 @@ impl LoadedBundle {
     "auditeur:resource_map",
     registry_component = false,
     respond,
+    listen(BundleInit),
     components((component = MainComponent, input = ())),
 )]
 pub struct ResourceMap {
@@ -269,15 +287,18 @@ impl ResourceMap {
     fn add_bundle(
         &mut self,
         id: NamespacedId,
-        parent: Option<&NamespacedIdRef>,
+        parent: Option<NamespacedId>,
         resources: &[NamespacedId],
         bundles: &[NamespacedId],
         #[cfg(feature = "runtime-loading")] init: Option<bundle::SharedInitFn>,
     ) -> Result<()> {
-        let mut bundle = if let Some(bundle) = self.bundles.remove(&id) {
+        let mut bundle = if let Some(mut bundle) = self.bundles.remove(&id) {
+            if let Some(parent) = parent {
+                bundle.replace_parent(self, parent)?;
+            }
             bundle
         } else {
-            LoadedBundle::new(self, id.clone(), parent.map(ToOwned::to_owned))?
+            LoadedBundle::new(self, id.clone(), parent)?
         };
 
         bundle.add_properties(resources.iter().cloned(), bundles.iter().cloned(), init);
@@ -389,31 +410,20 @@ impl listener::Component<ResourceMap> for MainComponent {
                 parent,
                 resources,
                 bundles,
-            } => {
-                map.add_bundle(
-                    id,
-                    parent.as_deref(),
-                    &resources,
-                    &bundles,
-                    #[cfg(feature = "runtime-loading")]
-                    None,
-                )?;
             }
-            RegistryEvent::BundleLoading {
+            | RegistryEvent::BundleLoading {
                 id,
                 parent,
                 resources,
                 bundles,
-                #[cfg(feature = "runtime-loading")]
-                init,
             } => {
                 map.add_bundle(
                     id,
-                    parent.as_deref(),
+                    parent,
                     &resources,
                     &bundles,
                     #[cfg(feature = "runtime-loading")]
-                    init.take(),
+                    None,
                 )?;
             }
             RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle } => {
@@ -466,6 +476,20 @@ impl listener::Component<ResourceMap> for MainComponent {
             _ => (),
         }
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+#[has_input]
+impl Listen<BundleInit> for ResourceMap {
+    async fn on(&mut self, message: BundleInit, (): ()) -> anyhow::Result<()> {
+        self.add_bundle(
+            message.id().to_owned(),
+            None,
+            &[],
+            &[],
+            #[cfg(feature = "runtime-loading")]
+            message.init(),
+        )
     }
 }
 

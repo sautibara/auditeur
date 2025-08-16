@@ -1,17 +1,14 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::{HashMap, HashSet};
 
 use auditeur_plugin::auditeur::{
-    app::{App, EventReceiver, Registry},
+    app::{App, BundleInit, Registry, resource_map::ResourceMapConnection},
+    bundle,
     prelude::*,
 };
-use tokio::select;
-use tracing::{debug, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::{Error, PluginName, source::Binary};
-use auditeur_plugin::{LibraryHandle, loading::Plugin};
+use auditeur_plugin::loading::Plugin;
 
 // FIXME: Let a, b, and c be resources within separate libraries.
 // Then, let a depend on b, and c own a reference and LibraryHandle to a.
@@ -28,54 +25,118 @@ use auditeur_plugin::{LibraryHandle, loading::Plugin};
 // the CallbackCollection and only accessible as references. This would allow removing callbacks
 // too.
 
-struct Shared {
-    libraries: HashMap<NamespacedId, LibraryHandle>,
-    bundles: HashMap<PluginName, NamespacedId>,
-}
-
 /// A registry of all of the currently loaded plugins in the [`App`]
 ///
 /// This registry keeps a [`LibraryHandle`] of all loaded plugins, keeping their dynamic libraries
 /// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is received
 /// for the plugin's bundle, so that the library isn't held for forever.
 #[must_use = "if the registry isn't added to an app, the libraries that are loaded will be leaked"]
-#[resource("plugin_host:registry")]
+#[derive(Runnable, Default)]
+#[listener(
+    "plugin_host:registry",
+    listen_to_registry,
+    registry_component = false,
+    respond,
+    listen(BundleInit)
+)]
 #[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
 pub struct PluginRegistry {
-    shared: Arc<Mutex<Shared>>,
-    receiver: tokio::sync::mpsc::UnboundedReceiver<Vec<Binary>>,
+    libraries: HashMap<NamespacedId, bundle::SharedInitFn>,
+    bundles: HashMap<PluginName, NamespacedId>,
+    plugins: HashSet<NamespacedId>,
+    should_exit: bool,
 }
 
 #[create]
 impl Create for PluginRegistry {
-    async fn create(#[external] registry: Self) -> Result<Self> {
-        Ok(registry)
+    async fn create(#[external] this: Self) -> Result<Self> {
+        Ok(this)
     }
 }
 
 impl PluginRegistry {
-    pub fn new() -> (Self, Handle) {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let shared = Shared {
-            libraries: HashMap::new(),
-            bundles: HashMap::new(),
-        };
-        let shared = Arc::new(Mutex::new(shared));
-        (
-            Self {
-                shared: shared.clone(),
-                receiver,
-            },
-            Handle { shared, sender },
-        )
+    pub fn new() -> Self {
+        Self::default()
     }
+}
 
-    fn shared_mut(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared
-            .try_lock()
-            .expect("registry library lock shouldn't be poisoned")
+#[has_input]
+impl ListenToRegistry for PluginRegistry {
+    async fn on(&mut self, message: RegistryEvent, (): ()) -> anyhow::Result<bool> {
+        match message {
+            RegistryEvent::BundleUnloaded(id) => {
+                if let Some(library) = self.libraries.remove(&id) {
+                    debug!("unloading bundle `{id}`'s library...");
+                    drop(library);
+                    debug!("unloaded bundle `{id}`'s library");
+                }
+                // we only should stop if all of the libraries are unloaded first
+                if self.should_exit && self.libraries.is_empty() {
+                    return Ok(true);
+                }
+            }
+            // NOTE: extra stop signals are ignored
+            RegistryEvent::Exit => {
+                // WARN: if this is removed and no bundles are unloaded after we
+                // receive the exit signal, the registry will never exit.
+                if self.libraries.is_empty() {
+                    return Ok(true); // we already get to exit :)
+                }
+                self.should_exit = true;
+            }
+            _ => (),
+        }
+        Ok(false)
     }
+}
 
+#[has_input]
+impl Listen<BundleInit> for PluginRegistry {
+    async fn on(
+        &mut self,
+        message: BundleInit,
+        resource_map: &mut ResourceMapConnection,
+    ) -> anyhow::Result<()> {
+        if !self.plugins.contains(message.id()) {
+            return Ok(());
+        }
+
+        if let Some(new_init) = message.init() {
+            if let Some(old_init) = self.libraries.remove(message.id())
+                && old_init != new_init
+                // double check to make sure it's actually still loaded
+                && resource_map.loaded_bundles().await.contains(message.id())
+            {
+                // NOTE: this is the main reason the PluginRegistry exists (at least now).
+                // Initially, the registry was created to keep libraries of bundles always alive.
+                // But when reloading was added, the ResourceMap began keeping libraries alive
+                // through their initialization functions (which have a handle to the library
+                // stored). But there's a catch! See, the ResourceMap only keeps a single
+                // initialization function stored per bundle (if it exists), so it has to kick out
+                // old ones when new ones come in. If only part of a bundle is reloaded, then,
+                // there may be two versions of the plugin... but then the old library is unloaded
+                // (as the map kicks it out), which would lead the resources from the old version
+                // to segfault (as their code is no longer loaded).
+                // HACK: the fix for this, at least now, is to just leak the old library - just
+                // like what happens when the registry is dropped with libraries.
+                error!(
+                    concat!(
+                        "attempted to reload plugin with bundle id '{}' without unloading all of",
+                        " its resources, forced to leak its library",
+                    ),
+                    message.id(),
+                );
+                std::mem::forget(old_init);
+            }
+
+            self.libraries.insert(message.id().to_owned(), new_init);
+        }
+
+        Ok(())
+    }
+}
+
+impl PluginRegistry {
     /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
     /// handle in the registry.
     ///
@@ -99,16 +160,46 @@ impl PluginRegistry {
         trace!("loading binary at '{}' to app", library.path.display());
         // SAFETY: upheld by caller
         let plugin = unsafe { Plugin::load_from_file_unchecked(&library.path, app) }?;
-        {
-            let mut shared = self.shared_mut();
-            shared
-                .libraries
-                .insert(plugin.bundle.clone(), plugin.library);
-            shared
-                .bundles
-                .insert(library.name.clone(), plugin.bundle.clone());
-        }
+        self.libraries.insert(plugin.bundle.clone(), plugin.init);
+        self.bundles
+            .insert(library.name.clone(), plugin.bundle.clone());
+        self.plugins.insert(plugin.bundle.clone());
         Ok(plugin.bundle)
+    }
+}
+
+#[respond("plugin_host:registry")]
+impl PluginRegistry {
+    /// # Safety
+    ///
+    /// Each of these plugins must adhere to the safety contract specified in
+    /// [`PluginRegistry::load_plugin_from_file_unchecked`]
+    pub async unsafe fn load_binaries(&mut self, plugins: Vec<Binary>, registry: &mut Registry) {
+        trace!("recieved plugins: {plugins:?}");
+        let mut app = registry.new_app();
+        // FIXME: check for necessary unloads
+        // (when a plugin is updated, for example)
+        for plugin in plugins {
+            // TODO: handle this error
+            // SAFETY: safety must be upheld by the caller of PluginSender::send
+            let _ = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
+        }
+        if let Err((app, _)) = app.add_to_registry(registry).await {
+            for unloaded_bundle in app.unloaded_bundles() {
+                // FIXME: If only part of a bundle is loaded, the registry gets put
+                // into a terrible situation. It can't just drop the library, since one
+                // of the library's resources could have still been loaded. But it also
+                // can't keep the library, since it will never be unloaded: the
+                // ResourceMap doesn't know that one of the resources was never loaded,
+                // so it'll forever wait for it to unload before unloading the bundle.
+                // Instead, we use the hacky solution: just leak the library and keep
+                // it always loaded.
+                let library = self.libraries.remove(unloaded_bundle);
+                if let Some(library) = library {
+                    std::mem::forget(library);
+                }
+            }
+        }
     }
 }
 
@@ -116,7 +207,7 @@ impl Drop for PluginRegistry {
     fn drop(&mut self) {
         #[allow(clippy::collection_is_never_read)]
         let libraries: Vec<_> = {
-            let libraries = &mut self.shared_mut().libraries;
+            let libraries = &mut self.libraries;
             // the registry should only get dropped when it's empty
             if libraries.is_empty() {
                 return;
@@ -124,107 +215,7 @@ impl Drop for PluginRegistry {
             libraries.drain().map(|(_, library)| library).collect()
         };
         // if the registry isn't empty, then leak the library handles just in case
+        warn!("PluginRegistry was dropped with libraries, leaking them");
         libraries.leak();
-    }
-}
-
-impl Watcher for PluginRegistry {
-    type Input = (EventReceiver, Registry, Stopper);
-
-    async fn run(&mut self, (_, _, stopper): &mut Self::Input) -> Result<()> {
-        // a strange workaround to avoid getting stopped: do it ourselves first
-        stopper.stop::<Self>();
-        Ok(())
-    }
-
-    // I hate how much indentation this method has, but I don't see any way to improve it much...
-    async fn exit(&mut self, (registry_event, registry, _): &mut Self::Input) -> Result<()> {
-        let mut should_exit = false;
-        loop {
-            select! {
-                Some(event) = registry_event.recv() => {
-                    match event {
-                        RegistryEvent::BundleUnloaded(id) => {
-                            let libraries = &mut self.shared_mut().libraries;
-                            if let Some(library) = libraries.remove(&id) {
-                                debug!("unloading bundle `{id}`'s library...");
-                                drop(library);
-                                debug!("unloaded bundle `{id}`'s library");
-                            }
-                            // we only should stop if all of the libraries are unloaded first
-                            if should_exit && libraries.is_empty() {
-                                break;
-                            }
-                        }
-                        // NOTE: extra stop signals are ignored
-                        RegistryEvent::Exit => {
-                            // WARN: if this is removed and no bundles are unloaded after we
-                            // receive the exit signal, the registry will never exit.
-                            if self.shared_mut().libraries.is_empty() {
-                                break; // we already get to exit :)
-                            }
-                            should_exit = true;
-                        }
-                        _ => (),
-                    }
-                },
-                Some(plugins) = self.receiver.recv() => {
-                    trace!("recieved plugins: {plugins:?}");
-                    let mut app = registry.new_app();
-                    // FIXME: check for necessary unloads
-                    // (when a plugin is updated, for example)
-                    for plugin in plugins {
-                        // TODO: handle this error
-                        // SAFETY: safety must be upheld by the caller of PluginSender::send
-                        let _ = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
-                    }
-                    if let Err((registry, _)) = app.add_to_registry(registry).await {
-                        for unloaded_bundle in registry.unloaded_bundles() {
-                            // FIXME: If only part of a bundle is loaded, the registry gets put
-                            // into a terrible situation. It can't just drop the library, since one
-                            // of the library's resources could have still been loaded. But it also
-                            // can't keep the library, since it will never be unloaded: the
-                            // ResourceMap doesn't know that one of the resources was never loaded,
-                            // so it'll forever wait for it to unload before unloading the bundle.
-                            // Instead, we use the hacky solution: just leak the library and keep
-                            // it always loaded.
-                            let library = self.shared_mut().libraries.remove(unloaded_bundle);
-                            if let Some(library) = library {
-                                std::mem::forget(library);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub struct Handle {
-    shared: Arc<Mutex<Shared>>,
-    sender: tokio::sync::mpsc::UnboundedSender<Vec<Binary>>,
-}
-
-impl Handle {
-    /// # Safety
-    ///
-    /// Each of these plugins must adhere to the safety contract specified in
-    /// [`PluginRegistry::load_plugin_from_file_unchecked`]
-    pub unsafe fn send(&self, plugins: Vec<Binary>) {
-        let _ = self.sender.send(plugins);
-    }
-
-    fn shared_mut(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared
-            .try_lock()
-            .expect("registry library lock shouldn't be poisoned")
-    }
-
-    #[must_use]
-    pub fn is_loaded(&self, plugin: &PluginName) -> bool {
-        let shared = self.shared_mut();
-        (shared.bundles.get(plugin)).is_some_and(|id| shared.libraries.contains_key(id))
     }
 }

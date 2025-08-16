@@ -3,10 +3,10 @@
 use std::{fmt::Debug, marker::PhantomData};
 
 use crate::{
+    Message,
     app::{EventReceiver, EventSender, LoadedResource, Loader, Runner, TakeReceiver},
     input::subset::Subset,
     prelude::*,
-    Message,
 };
 
 use bevy_utils_proc_macros::all_tuples;
@@ -112,7 +112,7 @@ pub trait ListenToRegistry: Listener {
         &mut self,
         message: RegistryEvent,
         input: <Self as ListenToRegistry>::OnInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send;
 }
 
 #[component((<$_:ty>) => (implementation = ListenToRegistry))]
@@ -150,8 +150,12 @@ impl<L: ListenToRegistry> Component<L> for ListenToRegistryComponent<L> {
         listener: &mut L,
         input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        listener.on(message, input).send().await?;
-        Ok(ControlFlow::Continue(()))
+        let should_break = listener.on(message, input).send().await?;
+        if should_break {
+            Ok(ControlFlow::Break(()))
+        } else {
+            Ok(ControlFlow::Continue(()))
+        }
     }
 }
 

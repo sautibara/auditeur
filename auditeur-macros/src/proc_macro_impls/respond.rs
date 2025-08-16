@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use proc_macro2::Span;
-use quote::{format_ident, quote, quote_spanned, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use syn::{
     braced,
     parse::Parse,
@@ -313,14 +313,20 @@ impl Respond {
                 .filter(|(selection, _)| selection.in_set)
                 .map(|(selection, ident)| Ident::new(&ident, selection.span));
 
-            let maybe_await = method
-                .asyncness
-                .map(|token| quote_spanned! { token.span() => .await })
-                .unwrap_or_default();
+            let mut call = quote! { self.#method_ident(#(#arg1,)* (#(#inputs),*)) };
+
+            if let Some(async_kw) = method.asyncness {
+                let await_kw = Token![await](async_kw.span);
+                call = quote! { #call . #await_kw };
+            }
+
+            if let Some(unsafe_kw) = method.unsafety {
+                call = quote! { #unsafe_kw { #call } };
+            }
 
             variants.extend(quote! {
                 #message_ident::#variant { #response, #(#arg0),* } => {
-                    let result = self.#method_ident(#(#arg1,)* (#(#inputs),*)) #maybe_await;
+                    let result = #call;
                     let _ = #response.send(result);
                 }
             });
@@ -389,10 +395,11 @@ impl Respond {
             let return_type = method.return_type_to_token_stream();
             let docs = &method.docs;
             let vis = &method.vis;
+            let unsafety = method.unsafety;
 
             methods_out.extend(quote! {
                 #(#docs)*
-                #vis async fn #method_ident(&self, #(#arg0: #ty),*) -> #return_type {
+                #vis async #unsafety fn #method_ident(&self, #(#arg0: #ty),*) -> #return_type {
                     let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
                     let query = #message_ident::#variant { #response, #(#arg1),* };
                     self.giver.give(query).await;
@@ -637,10 +644,19 @@ impl Respond {
                 .filter(|(_, selection)| selection.in_set)
                 .map(|(i, selection)| format_ident!("self.input.{i}", span = selection.span));
 
+            let mut body = quote! {
+                self.deref.#method_ident(#(#arg1,)* (#(#input),*)) #maybe_await
+            };
+
+            let unsafety = method.unsafety;
+            if let Some(unsafe_kw) = unsafety {
+                body = quote! { #unsafe_kw { #body } };
+            }
+
             methods_out.extend(quote! {
                 #(#docs)*
-                #vis #asyncness fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
-                    self.deref.#method_ident(#(#arg1,)* (#(#input),*)) #maybe_await
+                #vis #asyncness #unsafety fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
+                    #body
                 }
             });
         }
@@ -974,6 +990,7 @@ struct Method<'a> {
     args: Vec<Arg<'a>>,
     combination: Combination,
     return_type: Option<&'a Type>,
+    unsafety: Option<Token![unsafe]>,
     asyncness: Option<Token![async]>,
     mutability: Option<Token![mut]>,
     vis: Visibility,
@@ -1041,6 +1058,7 @@ impl<'a> Method<'a> {
             ReturnType::Type(_, typ) => Some(&**typ),
         };
 
+        let unsafety = item.sig.unsafety;
         let asyncness = item.sig.asyncness;
         let mutability = item
             .sig
@@ -1064,6 +1082,7 @@ impl<'a> Method<'a> {
             args,
             combination,
             return_type,
+            unsafety,
             asyncness,
             mutability,
             vis,

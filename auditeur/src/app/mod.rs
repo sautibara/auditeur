@@ -796,14 +796,21 @@ pub struct Registry {
     channels: Arc<Channels>,
     event_sender: EventSender,
     state: RegistryState,
+
+    #[cfg(feature = "runtime-loading")]
+    bundle_init_sender: broadcast::Sender<BundleInit>,
 }
 
 impl Registry {
     /// Creates a new, empty registry.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
+        let channels = Arc::new(Channels::new(capacity));
         Self {
-            channels: Arc::new(Channels::new(capacity)),
+            #[cfg(feature = "runtime-loading")]
+            bundle_init_sender: channels.sender(),
+
+            channels,
             event_sender: EventSender::new(),
             state: RegistryState::Building(BuildingRegistry::new()),
         }
@@ -936,11 +943,16 @@ impl Registry {
     /// Note: This only adds the "specification" of the bundle to the registry (i.e. its id,
     /// potential parent, ids of its child resources and bundles, etc) - not its actual resources
     pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
+        #[cfg(feature = "runtime-loading")]
+        if let Some(init) = bundle.init {
+            let _ = self.bundle_init_sender.send(BundleInit {
+                id: id.clone(),
+                init,
+            });
+        }
+
         self.state.add_bundle(id.clone());
         self.event_sender.send(RegistryEvent::BundleLoading {
-            #[cfg(feature = "runtime-loading")]
-            init: InitSupplier::new(id.clone(), bundle.init),
-
             id,
             parent: bundle.parent,
             resources: bundle.resources,
@@ -999,6 +1011,8 @@ impl Registry {
                 resource_sender,
                 map: ResourceMapConnection::new(self, ident!("auditeur:registry")),
             }),
+            #[cfg(feature = "runtime-loading")]
+            bundle_init_sender: self.bundle_init_sender.clone(),
         }
     }
 
@@ -1169,8 +1183,6 @@ pub enum RegistryEvent {
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
-        #[cfg(feature = "runtime-loading")]
-        init: InitSupplier,
     },
     /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
     ///
@@ -1435,65 +1447,29 @@ impl Hash for ResourceSupplier {
     }
 }
 
-#[derive(Clone)]
-#[cfg(feature = "runtime-loading")]
-pub struct InitSupplier {
-    arc: Arc<InitSupplierInner>,
+/// A message to obtain [`SharedInitFn`s](bundle::SharedInitFn)s of loaded bundles
+///
+/// Notice that this message is not feature-locked behind `runtime-loading`. This is because
+/// resources must be able to accept this message with and without the feature, as the
+/// [listener macro](crate::macros::listener) doesn't support conditional components.
+#[message("auditeur:bundle_init")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BundleInit {
+    pub(crate) id: NamespacedId,
+    #[cfg(feature = "runtime-loading")]
+    pub(crate) init: bundle::SharedInitFn,
 }
 
-#[cfg(feature = "runtime-loading")]
-struct InitSupplierInner {
-    id: NamespacedId,
-    init: std::sync::Mutex<Option<bundle::SharedInitFn>>,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl InitSupplier {
-    /// Get the [`NamespacedId`] of the inner resource
+impl BundleInit {
     #[must_use]
     pub fn id(&self) -> &NamespacedIdRef {
-        &self.arc.id
+        &self.id
     }
 
-    fn new(id: NamespacedId, init: Option<bundle::SharedInitFn>) -> Self {
-        let arc = InitSupplierInner {
-            id,
-            init: std::sync::Mutex::new(init),
-        };
-        Self { arc: Arc::new(arc) }
-    }
-
-    pub(crate) fn take(&self) -> Option<bundle::SharedInitFn> {
-        let mut resource = self
-            .arc
-            .init
-            .lock()
-            .expect("InitSupplier lock shouldn't be poisoned");
-        resource.take()
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl Debug for InitSupplier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InitSupplier")
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl PartialEq for InitSupplier {
-    fn eq(&self, other: &Self) -> bool {
-        self.arc.id == other.arc.id
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl Eq for InitSupplier {}
-
-#[cfg(feature = "runtime-loading")]
-impl Hash for InitSupplier {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.arc.id.hash(state);
+    #[must_use]
+    #[cfg(feature = "runtime-loading")]
+    pub fn init(&self) -> Option<bundle::SharedInitFn> {
+        Some(self.init.clone())
     }
 }
 
