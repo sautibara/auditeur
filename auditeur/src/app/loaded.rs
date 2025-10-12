@@ -10,7 +10,7 @@ use crate::resource::Resource as ResourceTrait;
 use crate::resource::Watcher as WatcherTrait;
 
 use super::RegistryEvent;
-use super::{EventReceiver, EventSender};
+use super::channels::{EventReceiver, EventSender};
 
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
     if conditional {
@@ -33,12 +33,8 @@ pub trait LoadedResource: Identifiable + Send + Sync {
     fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>>;
     /// Obtain a reference to the original resource within a trait object
     fn resource(&self) -> &dyn ResourceTrait;
-    /// Obtain a reference to the original resource within an [`Any`] trait object
-    ///
-    /// This allows [`Registry::get_as`] to give a cloned version of the resource
-    ///
-    /// Note: this will be deprecated once trait upcasting coercion stabilizes
-    fn resource_any(&self) -> &dyn Any;
+    /// Obtain a reference to the original resource within a trait object
+    fn resource_mut(&mut self) -> &mut dyn ResourceTrait;
 }
 
 /// An object that can run a simple async function, see [`LoadedResource::runner`]
@@ -66,8 +62,8 @@ impl<R: ResourceTrait> LoadedResource for Resource<R> {
         &self.resource
     }
 
-    fn resource_any(&self) -> &dyn Any {
-        &self.resource
+    fn resource_mut(&mut self) -> &mut dyn ResourceTrait {
+        &mut self.resource
     }
 }
 
@@ -100,7 +96,11 @@ impl<W: WatcherTrait> Watcher<W> {
             registry: registry.handle(),
             event_receiver: registry.event_receiver(),
             event_sender: registry.event_sender(),
-            input: <W::Input as Input>::create(registry, watcher.ident()).await?,
+            input: <W::Input as Input>::create(
+                registry,
+                super::event::ComponentIdRef::Resource(watcher.ident()),
+            )
+            .await?,
             inner: watcher,
         })
     }
@@ -108,7 +108,10 @@ impl<W: WatcherTrait> Watcher<W> {
     #[instrument(name = "handle_registry_event", level = "debug", skip_all, fields(?message))]
     async fn handle_meta(
         message: Option<RegistryEvent>,
-        #[cfg(feature = "runtime-loading")] reference: Option<&dyn crate::input::get::ResourceRef>,
+        #[cfg(feature = "runtime-loading")] reference: Result<
+            &dyn crate::input::get::ResourceRef,
+            &Error,
+        >,
     ) -> ControlFlow<()> {
         let Some(message) = message else {
             return ControlFlow::Break(());
@@ -122,12 +125,11 @@ impl<W: WatcherTrait> Watcher<W> {
 
                 if get_request.id() == W::const_ident() {
                     #[allow(clippy::option_if_let_else)] // doesn't return anything
-                    if let Some(reference) = reference {
-                        get_request
-                            .send(reference.clone_as_boxed(get_request.dependent()))
-                            .await;
+                    if let Ok(reference) = reference {
+                        let ident = get_request.dependent();
+                        get_request.send(reference.clone_as_boxed(ident)).await;
                     } else {
-                        warn!("id matched GetRequest, but MaybeGetRef returned None");
+                        warn!("id matched GetRequest, but MaybeGetRef returned Err");
                         get_request.cancel().await;
                     }
                 }
@@ -145,8 +147,8 @@ impl<W: WatcherTrait> LoadedResource for Watcher<W> {
         &self.inner
     }
 
-    fn resource_any(&self) -> &dyn Any {
-        &self.inner
+    fn resource_mut(&mut self) -> &mut dyn ResourceTrait {
+        &mut self.inner
     }
 
     fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>> {
@@ -159,7 +161,9 @@ impl<W: WatcherTrait> Runner for Watcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
-        let reference = self.inner.maybe_get_ref(&self.registry, W::const_ident());
+        let ident = crate::app::event::ComponentIdRef::Resource(W::const_ident());
+        #[cfg(feature = "runtime-loading")]
+        let reference = self.inner.maybe_get_ref(&self.registry, ident).await;
 
         {
             let mut meta_receiver = self.event_receiver.resubscribe();

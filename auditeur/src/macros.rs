@@ -1,11 +1,11 @@
 //! A separate module for imported macros just to clean up `lib.rs`
 
 #[allow(unused_imports)] // used for doc links
+use crate::Message;
+#[allow(unused_imports)] // used for doc links
 use crate::prelude::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // used for doc links
 use crate::resource::listener::*;
-#[allow(unused_imports)] // used for doc links
-use crate::Message;
 
 /// Returns a parsed static reference to a [`NamespacedIdRef`].
 ///
@@ -581,8 +581,8 @@ pub use auditeur_macros::has_input;
 /// ```
 pub use auditeur_macros::Runnable;
 
-pub use auditeur_macros::create;
 pub use auditeur_macros::Create;
+pub use auditeur_macros::create;
 
 pub use auditeur_macros::Input;
 
@@ -619,9 +619,8 @@ pub use auditeur_macros::GetRef;
 #[cfg(feature = "runtime-loading")]
 pub use auditeur_macros::MaybeGetRef;
 
-/// Automatically provides an implementation of [`ResourceRef`](crate::input::get::ResourceRef).
-#[cfg(feature = "runtime-loading")]
-pub use auditeur_macros::ResourceRef;
+/// Automatically provides an implementation of [`CloneAs`](crate::app::event::CloneAs).
+pub use auditeur_macros::CloneAs;
 
 /// Automatically provides an implementation of [`PathAny`] by implementing
 /// [`PathAnyConst`](crate::path_any::PathAnyConst)

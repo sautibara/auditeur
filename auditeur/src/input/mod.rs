@@ -3,7 +3,9 @@ use std::marker::PhantomData;
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 
-use crate::prelude::*;
+// TODO: implement Input for NamespacedId, make it the resource's id
+
+use crate::{app::event::ComponentIdRef, prelude::*};
 
 pub mod get;
 pub mod subset;
@@ -16,7 +18,7 @@ pub trait Input: Sized + Send + Sync + 'static {
     /// - If the input failed to gather the resources necessary
     fn create(
         registry: &Registry,
-        as_resource: &NamespacedIdRef,
+        dependent: ComponentIdRef<'_>,
     ) -> impl Future<Output = Result<Self, Error>> + Send;
 
     #[must_use]
@@ -26,8 +28,8 @@ pub trait Input: Sized + Send + Sync + 'static {
 }
 
 impl<I: Input> Input for Option<I> {
-    async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
-        I::create(registry, as_resource).await.map(Some)
+    async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
+        I::create(registry, dependent).await.map(Some)
     }
 
     fn constraints() -> Constraints {
@@ -36,7 +38,7 @@ impl<I: Input> Input for Option<I> {
 }
 
 impl<T: Send + Sync + 'static> Input for PhantomData<T> {
-    async fn create(_: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(_: &Registry, _: ComponentIdRef<'_>) -> Result<Self, Error> {
         Ok(Self)
     }
 
@@ -49,8 +51,8 @@ macro_rules! impl_input {
     ($($T:ident),*) => {
         impl<$($T: Input),*> Input for ($($T,)*) {
             #[allow(unused_variables)]
-            async fn create(registry: &Registry, as_resource: &NamespacedIdRef) -> Result<Self, Error> {
-                futures::try_join!($($T::create(registry, as_resource),)*)
+            async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
+                futures::try_join!($($T::create(registry, dependent),)*)
             }
 
             fn constraints() -> Constraints {

@@ -1,3 +1,4 @@
+use crate::app::event::ComponentIdRef;
 use crate::prelude::*;
 
 use crate::resource::Resource as ResourceTrait;
@@ -25,6 +26,14 @@ pub trait Loader: Send {
     fn constraints(&self) -> Constraints;
     /// Return a reference to the contained [resource](mod@crate::resource)'s [`NamespacedId`]
     fn ident(&self) -> &NamespacedIdRef;
+    /// Returns a set of channels that this loader "owns".
+    ///
+    /// These channels will automatically be added to the [registry](Registry), but special care
+    /// should be taken to make sure that a specific channel isn't added multiple times.
+    #[must_use]
+    fn channels(&self) -> Channels {
+        Channels::new()
+    }
 }
 
 pub struct Resource<R: ResourceTrait + Create> {
@@ -40,7 +49,8 @@ impl<R: ResourceTrait + Create> Resource<R> {
 #[async_trait]
 impl<R: ResourceTrait + Create> Loader for Resource<R> {
     async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let registry_input = R::RegistryInput::create(registry, R::const_ident()).await?;
+        let ident = ComponentIdRef::Resource(R::const_ident());
+        let registry_input = R::RegistryInput::create(registry, ident).await?;
         let resource = R::create(registry_input, self.external_input)
             .await
             .map_err(|error| Error::FromResource {
@@ -72,7 +82,8 @@ impl<W: WatcherTrait + Create> Watcher<W> {
 #[async_trait]
 impl<W: WatcherTrait + Create> Loader for Watcher<W> {
     async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let registry_input = W::RegistryInput::create(registry, W::const_ident()).await?;
+        let ident = ComponentIdRef::Resource(W::const_ident());
+        let registry_input = W::RegistryInput::create(registry, ident).await?;
         let watcher = W::create(registry_input, self.external_input)
             .await
             .map_err(|error| Error::FromResource {
@@ -84,13 +95,16 @@ impl<W: WatcherTrait + Create> Loader for Watcher<W> {
     }
 
     fn constraints(&self) -> Constraints {
-        let constraints = W::RegistryInput::constraints().extend(W::Input::constraints());
-        #[cfg(feature = "runtime-loading")]
-        let constraints = constraints.extend(Registry::constraints());
-        constraints
+        W::RegistryInput::constraints()
+            .extend(W::Input::constraints())
+            .extend(W::constraints())
     }
 
     fn ident(&self) -> &NamespacedIdRef {
         W::const_ident()
+    }
+
+    fn channels(&self) -> Channels {
+        W::channels()
     }
 }

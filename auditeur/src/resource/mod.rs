@@ -65,8 +65,18 @@ pub trait Watcher: Resource + Send {
         }
     }
 
-    fn constraints(&self) -> Constraints {
-        Self::Input::constraints()
+    #[must_use]
+    fn constraints() -> Constraints {
+        Constraints::empty()
+    }
+
+    /// Returns a set of channels that this watcher "owns".
+    ///
+    /// These channels will automatically be added to the [registry](Registry), but special care
+    /// should be taken to make sure that a specific channel isn't added multiple times.
+    #[must_use]
+    fn channels() -> Channels {
+        Channels::new()
     }
 }
 

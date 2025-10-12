@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::prelude::*;
+use crate::{Message, prelude::*};
 
 use crate::app::{BuiltBundle, Constraint, Loader, loader};
 
@@ -43,6 +43,7 @@ pub struct Bundle {
     loaders: Vec<Box<dyn Loader>>,
     bundles: Vec<Self>,
     constraints: Constraints,
+    channels: Channels,
     #[cfg(feature = "runtime-loading")]
     init: Option<SharedInitFn>,
 }
@@ -57,6 +58,7 @@ impl Bundle {
             loaders: Vec::new(),
             bundles: Vec::new(),
             constraints: Constraints::empty(),
+            channels: Channels::new(),
             #[cfg(feature = "runtime-loading")]
             init: None,
         }
@@ -75,6 +77,7 @@ impl Bundle {
             .into_iter()
             .map(|loader| app.add_loader(loader, this_id))
             .collect();
+        app.add_channels(self.channels, this_id);
         app.add_bundle_inner(
             self.id.clone(),
             BuiltBundle {
@@ -154,17 +157,42 @@ impl Bundle {
     }
 }
 
+/// These methods allow adding [`Channels`] to the bundle, ensuring that they can be accessed in
+/// the future.
+impl Bundle {
+    pub fn with_channels(mut self, channels: Channels) -> Self {
+        self.channels.add(channels);
+        self
+    }
+
+    pub fn with_listen_channel<M: ListenMessage>(self) -> Self {
+        Self {
+            channels: self.channels.with_listen_channel::<M>(),
+            ..self
+        }
+    }
+
+    pub fn with_take_channel<M: Message>(self) -> Self {
+        Self {
+            channels: self.channels.with_take_channel::<M>(),
+            ..self
+        }
+    }
+}
+
 /// These methods allow providing [`Constraints`] that must be satisfied before any contained
 /// [resource](mod@crate::resource) or [`Bundle`] is loaded
 impl Bundle {
     /// Only load the items within this bundle once the resource specified by `id` has been loaded
-    pub fn after_resource(self, id: impl Into<NamespacedId>) -> Self {
-        self.add_constraint(Constraint::AfterResource { id: id.into() })
+    pub fn after_resource(mut self, id: impl Into<NamespacedId>) -> Self {
+        self.constraints = self.constraints.after_resource(id);
+        self
     }
 
     /// Only load the items within this bundle once the bundle specified by `id` has been loaded
-    pub fn after_bundle(self, id: impl Into<NamespacedId>) -> Self {
-        self.add_constraint(Constraint::AfterBundle { id: id.into() })
+    pub fn after_bundle(mut self, id: impl Into<NamespacedId>) -> Self {
+        self.constraints = self.constraints.after_bundle(id);
+        self
     }
 
     /// Only load the items within this bundle once the specified `constraint` has been satisfied

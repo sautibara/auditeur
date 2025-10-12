@@ -33,42 +33,36 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map;
 use std::fmt::Debug;
 use std::future::Future;
-use std::hash::Hash;
 use std::ops::Deref;
-use std::ops::DerefMut;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use async_recursion::async_recursion;
-use dashmap::DashMap;
-use dashmap::mapref::one::MappedRef;
-use dashmap::mapref::one::Ref;
 use futures::FutureExt;
-use tokio::sync::Mutex;
-use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-#[cfg(feature = "runtime-loading")]
-use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tracing::Instrument;
 use tracing::error;
 use tracing::info_span;
 use tracing::instrument;
 use tracing::trace;
-use tracing::warn;
 
-use crate::Message;
+use crate::app::channels::Channels;
+use crate::app::channels::ChannelsRefMut;
+use crate::app::channels::Giver;
+use crate::app::event::CloneAs;
+use crate::app::event::ComponentId;
+use crate::app::event::ComponentIdRef;
 #[cfg(feature = "runtime-loading")]
 use crate::app::resource_map::ResourceMapConnection;
 use crate::bundle;
 use crate::input::get::GetRef;
 use crate::prelude::*;
-use crate::resource::listener::Giver;
-use crate::resource::listener::Take;
 
+pub mod channels;
 mod constraints;
+pub mod event;
 pub(crate) mod loaded;
 pub(crate) mod loader;
 
@@ -84,6 +78,8 @@ pub use loader::Loader;
 pub use constraints::Constraint;
 pub use constraints::Constraints;
 
+use channels::ChannelsRef;
+
 // TODO: separate NamespacedId into ResourceId and BundleId
 
 struct BundledLoader {
@@ -98,6 +94,26 @@ pub(crate) struct BuiltBundle {
     pub bundles: Arc<[NamespacedId]>,
     #[cfg(feature = "runtime-loading")]
     pub init: Option<bundle::SharedInitFn>,
+}
+
+enum TypedAnyChannel {
+    Listen(channels::AnyListenChannel),
+    Take(channels::AnyTakeChannel),
+}
+
+impl Debug for TypedAnyChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Listen(_) => write!(f, "Listen(_)"),
+            Self::Take(_) => write!(f, "Take(_)"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BuiltChannel {
+    channel: TypedAnyChannel,
+    bundle: NamespacedId,
 }
 
 /// The main entry-point for the application: the thing that runs resources
@@ -117,6 +133,8 @@ pub(crate) struct BuiltBundle {
 pub struct App {
     loaders: HashMap<NamespacedId, Option<BundledLoader>>,
     bundles: HashMap<NamespacedId, Option<BuiltBundle>>,
+    channels: HashMap<NamespacedId, Option<BuiltChannel>>,
+
     loading_loaders: HashMap<NamespacedId, NamespacedId>,
     // TODO: check if adding App events is a good idea
     events: Vec<RegistryEvent>,
@@ -124,21 +142,12 @@ pub struct App {
 
 impl App {
     /// Create a new app
-    #[cfg_attr(
-        not(feature = "resource-map"),
-        allow(clippy::let_and_return, unused_mut)
-    )]
     pub fn new() -> Self {
-        let mut this = Self::new_empty();
-        #[cfg(feature = "resource-map")]
-        this.add_bundle(new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(()));
-        this
-    }
-
-    fn new_empty() -> Self {
         Self {
             loaders: HashMap::new(),
             bundles: HashMap::new(),
+            channels: HashMap::new(),
+
             loading_loaders: HashMap::new(),
             events: Vec::new(),
         }
@@ -159,11 +168,17 @@ impl App {
         self
     }
 
+    pub(crate) fn add_bundle_inner(&mut self, id: NamespacedId, bundle: BuiltBundle) {
+        self.bundles.insert(id, Some(bundle));
+    }
+
     pub(crate) fn add_loader(
         &mut self,
         loader: Box<dyn Loader>,
         bundle: &NamespacedIdRef,
     ) -> NamespacedId {
+        self.add_channels(loader.channels(), bundle);
+
         let id = loader.ident().to_owned();
         // prefer the eldest loader
         self.loaders
@@ -172,24 +187,50 @@ impl App {
                 loader,
                 bundle: bundle.to_owned(),
             }));
+
         id
     }
 
-    pub(crate) fn add_bundle_inner(&mut self, id: NamespacedId, bundle: BuiltBundle) {
-        self.bundles.insert(id, Some(bundle));
+    pub(crate) fn add_channels(&mut self, channels: Channels, bundle: &NamespacedIdRef) {
+        let Channels { listen, take } = channels;
+
+        let listen = listen
+            .into_iter()
+            .map(|(id, channel)| (id, TypedAnyChannel::Listen(channel)));
+        let take = take
+            .into_iter()
+            .map(|(id, channel)| (id, TypedAnyChannel::Take(channel)));
+
+        for (id, channel) in listen.chain(take) {
+            let entry = self.channels.entry(id);
+            match entry {
+                hash_map::Entry::Occupied(entry) => {
+                    // TODO: remove duplicated messages for ResourceMap
+                    if entry.key() != resource_map::ResourceMapQuery::const_ident() {
+                        error!(
+                            "message '{}' added multiple times, using old message",
+                            entry.key()
+                        );
+                    }
+                }
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Some(BuiltChannel {
+                        channel,
+                        bundle: bundle.to_owned(),
+                    }));
+                }
+            }
+        }
     }
 
     /// [Build](Self::build) the `App` and run all [runners](Runner) to completion
-    ///
-    /// - `capacity`: the capacity of the message channel - how many messages the channel
-    ///   can hold before listeners start to lag
     ///
     /// # Errors
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn run(self, capacity: usize) -> Result<(), (Self, Error)> {
-        let registry = self.build(capacity).await?;
+    pub async fn run(self) -> Result<(), (Self, Error)> {
+        let registry = self.build().await?;
         registry.run().await;
         Ok(())
     }
@@ -201,14 +242,14 @@ impl App {
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn run_with<F, Fut, I>(self, capacity: usize, func: F) -> Result<(), Error>
+    pub async fn run_with<F, Fut, I>(self, func: F) -> Result<(), Error>
     where
         F: FnOnce(I) -> Fut,
         Fut: Future<Output = ()>,
         I: Input,
     {
-        let ident = ident!("auditeur:run_with");
-        let registry = self.build(capacity).await.map_err(|(_, err)| err)?;
+        let ident = ComponentIdRef::Resource(ident!("auditeur:run_with"));
+        let registry = self.build().await.map_err(|(_, err)| err)?;
         let input = I::create(&registry, ident).await?;
         let stopper = Stopper::create(&registry, ident).await?;
         let running = tokio::spawn(registry.run());
@@ -220,15 +261,12 @@ impl App {
 
     /// Build the `App` into a [`Registry`], without running it
     ///
-    /// - `capacity`: the capacity of the message channel - how many messages the channel
-    ///   can hold before listeners start to lag
-    ///
     /// # Errors
     ///
     /// - If one of the loaders failed to build
     /// - If a dependency wasn't found
-    pub async fn build(self, capacity: usize) -> Result<Registry, (Self, Error)> {
-        let mut registry = Registry::new(capacity);
+    pub async fn build(self) -> Result<Registry, (Self, Error)> {
+        let mut registry = Registry::new();
         self.add_to_registry(&mut registry).await?;
         Ok(registry)
     }
@@ -247,6 +285,8 @@ impl App {
     }
 
     async fn add_to_registry_fallible(&mut self, registry: &mut Registry) -> Result<(), Error> {
+        // free events :)
+        registry.event_sender_ref().extend(self.events.drain(..));
         // add the loaders and bundles that have already been loaded in the registry to our list
         // this is necessary so that constraints can know that their dependencies have already been
         // loaded
@@ -264,14 +304,24 @@ impl App {
                 .into_iter()
                 .map(|id| (id, None)),
         );
+        self.channels.extend(
+            registry
+                .loaded_messages()
+                .await
+                .into_iter()
+                .map(|id| (id, None)),
+        );
+
+        if !self.loaders.contains_key(ResourceMap::const_ident()) {
+            self.add_bundle(resource_map::init);
+        }
+
         // the collect is needed so that the immutable reference to the keys doesn't mess with the
         // mutable references used by resolving
         #[allow(clippy::needless_collect)]
         for loader in self.loaders.keys().cloned().collect::<Vec<_>>() {
             self.resolve_loader(registry, &loader).await?;
         }
-        // free events :)
-        registry.event_sender_ref().extend(self.events.drain(..));
         Ok(())
     }
 
@@ -303,11 +353,12 @@ impl App {
             bundle: bundle.clone(),
         });
         // if there are constraints, we must load them first
-        self.resolve_constraints(registry, &loader.constraints(), Some(loader.ident()))
+        self.resolve_constraints(registry, &loader.constraints())
             .await?;
         // then we can finally load the loader
         registry.add_loader(loader, bundle).await?;
         self.loading_loaders.remove(id);
+        trace!("resolved loader {id}");
         Ok(())
     }
 
@@ -338,10 +389,61 @@ impl App {
             bundles: bundle.bundles.clone(),
         });
         // then the constraints also have to be resolved
-        self.resolve_constraints(registry, &bundle.constraints, None)
+        self.resolve_constraints(registry, &bundle.constraints)
             .await?;
         // then the bundle can finally be added to the registry
         registry.add_bundle(id.to_owned(), bundle);
+        trace!("resolved bundle {id}");
+        Ok(())
+    }
+
+    #[async_recursion]
+    async fn resolve_message(
+        &mut self,
+        registry: &mut Registry,
+        id: &NamespacedIdRef,
+    ) -> Result<(), Error> {
+        trace!("resolving message {id}");
+        let channel = self
+            .channels
+            .get_mut(id)
+            .ok_or_else(|| Error::MessageNotFound { id: id.to_owned() })?;
+        // if it's already finished, then early return
+        let Some(channel) = channel.take() else {
+            return Ok(());
+        };
+        // the parent bundle always have to be resolved first
+        self.resolve_bundle(registry, &channel.bundle).await?;
+
+        match channel.channel {
+            TypedAnyChannel::Listen(listen_channel) => {
+                // then now that we have the parent bundle we could say that this bundle is loading
+                registry
+                    .event_sender
+                    .send(RegistryEvent::ListenMessageLoaded {
+                        id: id.to_owned(),
+                        bundle: channel.bundle.clone(),
+                    });
+
+                // then the channel can finally be added to the registry
+                let mut channels = Channels::new();
+                channels.listen.insert(id.to_owned(), listen_channel);
+                registry.channels_mut().add(channels).await;
+            }
+            TypedAnyChannel::Take(take_channel) => {
+                registry
+                    .event_sender
+                    .send(RegistryEvent::TakeMessageLoaded {
+                        id: id.to_owned(),
+                        bundle: channel.bundle.clone(),
+                    });
+
+                let mut channels = Channels::new();
+                channels.take.insert(id.to_owned(), take_channel);
+                registry.channels_mut().add(channels).await;
+            }
+        }
+        trace!("resolved message {id}");
         Ok(())
     }
 
@@ -349,27 +451,22 @@ impl App {
         &mut self,
         registry: &mut Registry,
         constraints: &Constraints,
-        dependent: Option<&NamespacedIdRef>,
     ) -> Result<(), Error> {
         for constraint in constraints {
             match constraint {
-                Constraint::AfterResource { id } => {
-                    self.resolve_loader(registry, id).await?;
-                    if let Some(dependent) = dependent {
-                        registry.event_sender.send_dependency(dependent, &**id);
-                    }
-                }
-                Constraint::AfterBundle { id } => self.resolve_bundle(registry, id).await?,
+                Constraint::After(component) => match component {
+                    ComponentId::Resource(id) => self.resolve_loader(registry, id).await?,
+                    ComponentId::Bundle(id) => self.resolve_bundle(registry, id).await?,
+                    ComponentId::Message(id) => self.resolve_message(registry, id).await?,
+                },
             }
         }
         Ok(())
     }
 
     pub fn add_error(&mut self, source: NamespacedId, error: anyhow::Error) {
-        self.events.push(RegistryEvent::Error(ErrorEvent {
-            source,
-            error: Arc::new(error),
-        }));
+        self.events
+            .push(RegistryEvent::Error(event::Error::new(source, error)));
     }
 
     pub fn add_errors<I: IntoIterator<Item = anyhow::Error>>(
@@ -377,12 +474,11 @@ impl App {
         source: &NamespacedIdRef,
         errors: I,
     ) {
-        self.events.extend(errors.into_iter().map(|error| {
-            RegistryEvent::Error(ErrorEvent {
-                source: source.to_owned(),
-                error: Arc::new(error),
-            })
-        }));
+        self.events.extend(
+            errors
+                .into_iter()
+                .map(|error| RegistryEvent::Error(event::Error::new(source.to_owned(), error))),
+        );
     }
 
     // TODO: documentation to clarify name
@@ -407,6 +503,7 @@ impl Debug for App {
         f.debug_struct("App")
             .field("bundles", &self.bundles.keys())
             .field("loaders", &self.loaders.keys())
+            .field("channels", &self.channels)
             .field("events", &self.events)
             .field("loading_loaders", &self.loading_loaders)
             .finish()
@@ -457,17 +554,16 @@ impl RegistryState {
         }
     }
 
-    #[must_use]
     #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
     #[inline]
     async fn get_as<R: Resource + GetRef>(
         &self,
-        dependent: &NamespacedIdRef,
+        dependent: ComponentIdRef<'_>,
         event_sender: &EventSender,
         parent: &Registry,
-    ) -> Option<R::Ref> {
+    ) -> Result<R::Ref, crate::Error> {
         match self {
-            Self::Building(registry) => registry.get_as::<R>(dependent, parent, event_sender),
+            Self::Building(registry) => registry.get_as::<R>(dependent, parent).await,
             #[cfg(feature = "runtime-loading")]
             Self::Running(registry) => registry.get_as::<R>(dependent, event_sender).await,
         }
@@ -490,11 +586,42 @@ impl RegistryState {
             Self::Running(registry) => registry.loaded_bundles().await,
         }
     }
+
+    #[inline]
+    async fn loaded_messages(&self) -> HashSet<NamespacedId> {
+        match self {
+            Self::Building(registry) => registry.loaded_messages(),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(registry) => registry.loaded_messages().await,
+        }
+    }
+
+    const fn channels_ref<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRef<'a> {
+        match self {
+            Self::Building(building) => building.channels_ref(event_sender),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(running) => running.channels_ref(event_sender),
+        }
+    }
+
+    const fn channels_ref_mut<'a>(
+        &'a mut self,
+        event_sender: &'a EventSender,
+    ) -> ChannelsRefMut<'a> {
+        match self {
+            Self::Building(building) => building.channels_ref_mut(event_sender),
+            #[cfg(feature = "runtime-loading")]
+            Self::Running(running) => running.channels_ref_mut(event_sender),
+        }
+    }
 }
 
 struct BuildingRegistry {
     resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
     bundles: HashSet<NamespacedId>,
+    channels: Channels,
+    #[cfg(feature = "resource-map")]
+    resource_map_connection: Giver<resource_map::ResourceMapQuery>,
     #[cfg(feature = "runtime-loading")]
     resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
     #[cfg(feature = "runtime-loading")]
@@ -504,8 +631,11 @@ struct BuildingRegistry {
 impl Debug for BuildingRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug_struct = f.debug_struct("BuildingRegistry");
-        debug_struct.field("resources", &DebugMapAsSet(&self.resources));
+        debug_struct.field("resources", &self.resources.keys());
         debug_struct.field("bundles", &self.bundles);
+        debug_struct.field("channels", &self.channels);
+        #[cfg(feature = "resource-map")]
+        debug_struct.field("resource_map_connection", &self.resource_map_connection);
         #[cfg(feature = "runtime-loading")]
         debug_struct.field("resource_sender", &self.resource_sender);
         #[cfg(feature = "runtime-loading")]
@@ -514,22 +644,20 @@ impl Debug for BuildingRegistry {
     }
 }
 
-struct DebugMapAsSet<'a>(&'a HashMap<NamespacedId, Box<dyn LoadedResource>>);
-
-impl Debug for DebugMapAsSet<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_set().entries(self.0.keys()).finish()
-    }
-}
-
 impl BuildingRegistry {
-    fn new() -> Self {
+    fn with_channels(mut channels: Channels) -> Self {
         #[cfg(feature = "runtime-loading")]
         let (resource_sender, resource_receiver) = mpsc::channel(64);
+
+        #[cfg(feature = "resource-map")]
+        let resource_map_connection = channels.add_take_channel::<resource_map::ResourceMapQuery>();
 
         Self {
             resources: HashMap::new(),
             bundles: HashSet::new(),
+            channels,
+            #[cfg(feature = "resource-map")]
+            resource_map_connection,
             #[cfg(feature = "runtime-loading")]
             resource_sender,
             #[cfg(feature = "runtime-loading")]
@@ -547,28 +675,20 @@ impl BuildingRegistry {
 
     #[must_use]
     #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
-    fn get_as<R: Resource + GetRef>(
+    async fn get_as<R: Resource + GetRef>(
         &self,
-        dependent: &NamespacedIdRef,
+        dependent: ComponentIdRef<'_>,
         parent: &Registry,
-        event_sender: &EventSender,
-    ) -> Option<R::Ref> {
+    ) -> Result<R::Ref, crate::Error> {
         let id = R::const_ident();
-        let loaded = self.resources.get(id)?;
-        let reference = loaded
-            .resource_any()
+        let loaded = self
+            .resources
+            .get(id)
+            .ok_or_else(|| Error::ResourceNotFound { id: id.to_owned() })?;
+        let downcast = (loaded.resource() as &dyn crate::Any)
             .downcast_ref::<R>()
-            .map(|loaded| loaded.get_ref(parent, dependent));
-        // only send the event if the reference actually succeeded
-        if reference.is_some() {
-            event_sender.send(RegistryEvent::Dependency {
-                dependent: dependent.into(),
-                dependency: id.to_owned(),
-            });
-        } else {
-            warn!("attempt to downcast {} failed", id);
-        }
-        reference
+            .ok_or_else(|| Error::DowncastFailed { id: id.to_owned() })?;
+        downcast.get_ref(parent, dependent).await
     }
 
     fn loaded_resources(&self) -> HashSet<NamespacedId> {
@@ -578,10 +698,24 @@ impl BuildingRegistry {
     fn loaded_bundles(&self) -> HashSet<NamespacedId> {
         self.bundles.clone()
     }
+
+    fn loaded_messages(&self) -> HashSet<NamespacedId> {
+        self.channels.ids()
+    }
+
+    const fn channels_ref<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRef<'a> {
+        ChannelsRef::new_building(&self.channels, event_sender)
+    }
+
+    const fn channels_ref_mut<'a>(
+        &'a mut self,
+        event_sender: &'a EventSender,
+    ) -> ChannelsRefMut<'a> {
+        ChannelsRefMut::new_building(&mut self.channels, event_sender)
+    }
 }
 
 #[cfg(feature = "runtime-loading")]
-#[derive(Debug)]
 struct RunningRegistry {
     resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
     map: ResourceMapConnection,
@@ -597,16 +731,11 @@ impl RunningRegistry {
     #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
-        dependent: &NamespacedIdRef,
+        dependent: ComponentIdRef<'_>,
         event_sender: &EventSender,
-    ) -> Option<R::Ref> {
-        let id = R::const_ident().to_owned();
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let get_request = GetRequest {
-            id: id.clone(),
-            dependent: dependent.to_owned(),
-            sender: tokio::sync::Mutex::new(Some(sender)),
-        };
+    ) -> Result<R::Ref, crate::Error> {
+        let id = R::const_ident();
+        let (get_request, receiver) = event::GetRequest::new(id.to_owned(), dependent.into_owned());
         // FIXME: by using an EventSender, the requests actually never get dropped
         // - it all stays in the main Vec, awaiting new receivers
         // this should be separated into another channel for only Get requests
@@ -615,22 +744,15 @@ impl RunningRegistry {
         // if it isn't and all requests get dropped, the channel drops and returns a RecvError
         let reference = tokio::time::timeout(std::time::Duration::from_millis(100), receiver)
             .await
-            .ok()?
-            .ok()?;
-        // let reference = receiver.await.ok()?;
+            .ok()
+            .and_then(Result::ok)
+            .ok_or_else(|| Error::ResourceNotFound { id: id.to_owned() })?;
+
         trace!("succeeded getting {id}");
-        // and then, the actual reference gets downcasted
-        let Ok(reference) = crate::downcast(reference) else {
-            // downcasting shouldn't ever fail, so this is an important tracing
-            error!("attempt to downcast {} failed", id);
-            return None;
-        };
-        // the reference worked! we can send the message now
-        event_sender.send(RegistryEvent::Dependency {
-            dependent: dependent.into(),
-            dependency: id,
-        });
-        Some(*reference)
+
+        crate::downcast(reference)
+            .map(|boxed| *boxed)
+            .map_err(|_| Error::DowncastFailed { id: id.to_owned() })
     }
 
     async fn loaded_resources(&self) -> HashSet<NamespacedId> {
@@ -640,141 +762,23 @@ impl RunningRegistry {
     async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
         self.map.loaded_bundles().await
     }
+
+    async fn loaded_messages(&self) -> HashSet<NamespacedId> {
+        self.map.loaded_messages().await
+    }
+
+    const fn channels_ref<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRef<'a> {
+        ChannelsRef::new_running(&self.map, event_sender)
+    }
+
+    const fn channels_ref_mut<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRefMut<'a> {
+        ChannelsRefMut::new_running(&self.map, event_sender)
+    }
 }
 
-struct Channels {
-    capacity: usize,
-    // TODO: these probably don't have to be [`DashMap`]s - profile this or something
-    listen_map: DashMap<NamespacedId, Box<dyn crate::Any + Send + Sync>>,
-    respond_map: DashMap<(NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>>,
-}
-
-impl Debug for Channels {
+impl Debug for RunningRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Channels")
-            .field("capacity", &self.capacity)
-            .field("listen_map", &DebugDashMapAsSet(&self.listen_map))
-            .field("respond_map", &DebugDashMapAsSet(&self.respond_map))
-            .finish()
-    }
-}
-
-struct DebugDashMapAsSet<'a, T>(&'a DashMap<T, Box<dyn crate::Any + Send + Sync>>);
-
-impl<T: Hash + Eq + Debug + Clone> Debug for DebugDashMapAsSet<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_set()
-            .entries(self.0.iter().map(|entry| entry.key().clone()))
-            .finish()
-    }
-}
-
-type RespondChannels<M> = (mpsc::Sender<M>, Arc<Mutex<Option<mpsc::Receiver<M>>>>);
-
-impl Channels {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            listen_map: DashMap::new(),
-            respond_map: DashMap::new(),
-        }
-    }
-
-    fn sender_ref<M: ListenMessage>(
-        &self,
-    ) -> MappedRef<'_, NamespacedId, Box<dyn crate::Any + Send + Sync>, broadcast::Sender<M>> {
-        self.listen_map
-            .entry(M::const_ident().to_owned())
-            .or_insert_with(|| Box::new(broadcast::Sender::<M>::new(self.capacity)))
-            .downgrade()
-            .map(|val| {
-                val.downcast_ref()
-                    .expect("this should always be a valid Sender")
-            })
-    }
-
-    fn sender<M: ListenMessage>(&self) -> broadcast::Sender<M> {
-        self.sender_ref().clone()
-    }
-
-    fn receiver<M: ListenMessage>(&self) -> broadcast::Receiver<M> {
-        self.sender_ref().subscribe()
-    }
-
-    fn respond_ref<R: Take<M>, M: Message>(
-        &self,
-    ) -> Ref<'_, (NamespacedId, NamespacedId), Box<dyn crate::Any + Send + Sync>> {
-        self.respond_map
-            .entry((M::const_ident().to_owned(), R::const_ident().to_owned()))
-            .or_insert_with(|| {
-                let (sender, receiver) = mpsc::channel::<M>(16);
-                Box::new((sender, Arc::new(Mutex::new(Some(receiver)))))
-            })
-            .downgrade()
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    fn respond_sender<R: Take<M>, M: Message>(&self) -> mpsc::Sender<M> {
-        let boxed = self.respond_ref::<R, M>();
-        let (sender, _): &RespondChannels<M> = boxed
-            .downcast_ref()
-            .expect("this should always be a valid Sender and Receiver");
-        sender.clone()
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    async fn respond_receiver<R: Take<M>, M: Message>(&self) -> TakeReceiver<M> {
-        let boxed = self.respond_ref::<R, M>();
-        let (_, receiver_mutex): &RespondChannels<M> = boxed
-            .downcast_ref()
-            .expect("this should always be a valid Sender and Receiver");
-        let mut receiver_option = receiver_mutex.lock().await;
-        let Some(receiver) = receiver_option.take() else {
-            panic!(
-                "attempted to take the Respond receiver channel for resource {} and message {}, but it was already taken",
-                R::const_ident(),
-                M::const_ident()
-            );
-        };
-        TakeReceiver {
-            receiver,
-            source: receiver_mutex.clone(),
-        }
-    }
-}
-
-pub(crate) struct TakeReceiver<M: Send + 'static> {
-    receiver: mpsc::Receiver<M>,
-    source: Arc<Mutex<Option<mpsc::Receiver<M>>>>,
-}
-
-impl<M: Send + 'static> Drop for TakeReceiver<M> {
-    fn drop(&mut self) {
-        let (_, dummy_receiver) = mpsc::channel(1);
-        let receiver = std::mem::replace(&mut self.receiver, dummy_receiver);
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let source = self.source.clone();
-            handle.spawn(async move {
-                let mut source = source.lock().await;
-                *source = Some(receiver);
-            });
-        } else {
-            let mut source = self.source.blocking_lock();
-            *source = Some(receiver);
-        }
-    }
-}
-
-impl<M: Send + 'static> Deref for TakeReceiver<M> {
-    type Target = mpsc::Receiver<M>;
-    fn deref(&self) -> &Self::Target {
-        &self.receiver
-    }
-}
-
-impl<M: Send + 'static> DerefMut for TakeReceiver<M> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.receiver
+        write!(f, "RunningRegistry {{ .. }}")
     }
 }
 
@@ -792,27 +796,38 @@ impl<M: Send + 'static> DerefMut for TakeReceiver<M> {
 /// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
 /// - To listen to messages, use [`Self::message_receiver`]
 #[derive(Debug)]
+#[cfg_attr(feature = "runtime-loading", derive(PathAny))]
 pub struct Registry {
-    channels: Arc<Channels>,
     event_sender: EventSender,
     state: RegistryState,
 
     #[cfg(feature = "runtime-loading")]
-    bundle_init_sender: broadcast::Sender<BundleInit>,
+    bundle_init_sender: channels::Shouter<event::BundleInit>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Registry {
     /// Creates a new, empty registry.
     #[must_use]
-    pub fn new(capacity: usize) -> Self {
-        let channels = Arc::new(Channels::new(capacity));
+    pub fn new() -> Self {
+        let mut channels = Channels::new();
+
+        #[cfg(feature = "runtime-loading")]
+        let bundle_init_sender = channels.add_listen_channel::<event::BundleInit>();
+
+        let state = RegistryState::Building(BuildingRegistry::with_channels(channels));
+
         Self {
             #[cfg(feature = "runtime-loading")]
-            bundle_init_sender: channels.sender(),
+            bundle_init_sender,
 
-            channels,
             event_sender: EventSender::new(),
-            state: RegistryState::Building(BuildingRegistry::new()),
+            state,
         }
     }
 
@@ -821,10 +836,33 @@ impl Registry {
     pub async fn run(self) {
         use tokio::task::JoinSet;
 
+        let mut resource_map_option: Option<Box<dyn LoadedResource>>;
+
+        #[cfg(feature = "resource-map")]
+        {
+            let mut resource_map = ResourceMap::new(self.event_sender.clone());
+            let resource_map =
+                crate::resource::listener::LoadedListener::build(resource_map, &self)
+                    .await
+                    .expect("building ResourceMap shouldn't fail");
+            let resource_map = Box::new(resource_map) as Box<dyn LoadedResource>;
+
+            resource_map_option = Some(resource_map);
+        }
+
+        #[cfg(not(feature = "resource-map"))]
+        {
+            resource_map_option = None;
+        }
+
         let RegistryState::Building(building_registry) = self.state;
 
         let mut futures = JoinSet::new();
-        for resource in building_registry.resources.into_values() {
+        for resource in building_registry
+            .resources
+            .into_values()
+            .chain(resource_map_option)
+        {
             if let Ok(runner) = resource.runner() {
                 let _ = futures.spawn(Self::run_runner(runner, self.event_sender.clone()));
             }
@@ -843,9 +881,24 @@ impl Registry {
         use futures::FutureExt;
         use tokio::task::JoinSet;
 
-        let RegistryState::Building(building_registry) = self.state else {
-            panic!("tried to run an already running registry");
+        let RegistryState::Building(mut building_registry) = self.state else {
+            unreachable!("already checked that it was building above");
         };
+
+        // NOTE: We must add the channels to the ResourceMap before running the other resources.
+        // If another resource asks the map to load something before all the channels are added, it
+        // could fail when it should succeed.
+
+        let resource_map = building_registry
+            .resources
+            .get_mut(ResourceMap::const_ident())
+            .expect("ResourceMap should be loaded");
+        let resource_map: &mut ResourceMap = (resource_map.resource_mut() as &mut dyn crate::Any)
+            .downcast_mut()
+            .expect("ResourceMap downcast shouldn't fail");
+        resource_map.add_channels_pub(building_registry.channels);
+
+        // Now that we initialized the ResourceMap, we could continue to the other resources.
 
         let mut receiver = building_registry.resource_receiver;
         let mut futures = JoinSet::new();
@@ -854,9 +907,9 @@ impl Registry {
                 Ok(runner) => {
                     let _ = futures.spawn(Self::run_runner(runner, self.event_sender.clone()));
                 }
-                Err(resource) => self
-                    .event_sender
-                    .send(RegistryEvent::NonRunnable(ResourceSupplier::new(resource))),
+                Err(resource) => self.event_sender.send(RegistryEvent::NonRunnable(
+                    event::ResourceSupplier::new(resource),
+                )),
             }
         }
         // drop the sender now so we don't keep the channel alive
@@ -945,7 +998,7 @@ impl Registry {
     pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
         #[cfg(feature = "runtime-loading")]
         if let Some(init) = bundle.init {
-            let _ = self.bundle_init_sender.send(BundleInit {
+            self.bundle_init_sender.send(event::BundleInit {
                 id: id.clone(),
                 init,
             });
@@ -966,14 +1019,17 @@ impl Registry {
     /// [`ResourceMap`] for why this information is necessary).
     ///
     /// This uses [`Any`] in order to get the contained object, if it exists.
+    ///
+    /// # Errors
+    ///
+    /// - If [`R::get_ref`](GetRef::get_ref) returns an error.
     // NOTE: in a previous version, this returned Option<&R>. But that messes with RegistryEvent,
     // as resources could get a reference and then immediately drop it, confusing the ResourceMap
     // (the map would think that the resource would still contain the reference).
-    #[must_use]
     pub async fn get_as<R: Resource + GetRef>(
         &self,
-        dependent: &NamespacedIdRef,
-    ) -> Option<R::Ref> {
+        dependent: ComponentIdRef<'_>,
+    ) -> Result<R::Ref, crate::Error> {
         self.state
             .get_as::<R>(dependent, &self.event_sender, self)
             .await
@@ -999,20 +1055,31 @@ impl Registry {
     /// - If this method is called on an app built from [`Self::new_app`].
     #[must_use]
     pub fn handle(&self) -> Self {
-        let resource_sender = match &self.state {
-            RegistryState::Running(running) => running.resource_sender.clone(),
-            RegistryState::Building(building) => building.resource_sender.clone(),
+        use crate::app::event::ComponentIdRef;
+
+        let ident = ComponentIdRef::Resource(ident!("auditeur:registry"));
+
+        let (resource_sender, connection) = match &self.state {
+            RegistryState::Running(running) => {
+                (running.resource_sender.clone(), running.map.clone_as(ident))
+            }
+            RegistryState::Building(building) => (
+                building.resource_sender.clone(),
+                ResourceMapConnection::new_for_registry(
+                    self.event_sender.clone(),
+                    building.resource_map_connection.clone_erased(),
+                ),
+            ),
         };
 
         Self {
-            channels: self.channels.clone(),
             event_sender: self.event_sender.clone(),
             state: RegistryState::Running(RunningRegistry {
                 resource_sender,
-                map: ResourceMapConnection::new(self, ident!("auditeur:registry")),
+                map: connection,
             }),
             #[cfg(feature = "runtime-loading")]
-            bundle_init_sender: self.bundle_init_sender.clone(),
+            bundle_init_sender: self.bundle_init_sender.clone_as(ident),
         }
     }
 
@@ -1024,45 +1091,36 @@ impl Registry {
     }
 
     /// Creates a new [`App`] that can eventually be added to this registry
-    ///
-    /// Note: If this app is built without adding it to this registry, [`Self::handle`] will panic.
     pub fn new_app(&self) -> App {
-        App::new_empty()
+        App::new()
+    }
+}
+
+#[cfg(feature = "runtime-loading")]
+impl CloneAs for Registry {
+    fn clone_as(&self, _: event::ComponentIdRef<'_>) -> Self
+    where
+        Self: Sized,
+    {
+        self.handle()
     }
 }
 
 /// Methods to access the various channels that the registry contains
 impl Registry {
     #[must_use]
-    pub fn message_sender<M: ListenMessage>(&self) -> broadcast::Sender<M> {
-        self.channels.sender()
+    pub const fn channels(&self) -> ChannelsRef<'_> {
+        self.state.channels_ref(&self.event_sender)
     }
 
     #[must_use]
-    pub fn message_receiver<M: ListenMessage>(&self) -> broadcast::Receiver<M> {
-        self.channels.receiver()
-    }
-
-    #[must_use]
-    pub(crate) fn respond_sender<R: Take<M>, M: Message>(&self) -> mpsc::Sender<M> {
-        self.channels.respond_sender::<R, M>()
-    }
-
-    #[must_use]
-    pub(crate) async fn respond_receiver<R: Take<M>, M: Message>(&self) -> TakeReceiver<M> {
-        self.channels.respond_receiver::<R, M>().await
-    }
-
-    #[must_use]
-    pub fn giver<R: Take<M>, M: Message>(&self) -> Giver<R, M> {
-        Giver::new(self)
+    pub(crate) const fn channels_mut(&mut self) -> ChannelsRefMut<'_> {
+        self.state.channels_ref_mut(&self.event_sender)
     }
 
     #[must_use]
     pub fn stopper(&self) -> Stopper {
-        Stopper {
-            sender: self.event_sender(),
-        }
+        Stopper::new(self.event_sender())
     }
 
     #[must_use]
@@ -1076,7 +1134,7 @@ impl Registry {
     }
 
     #[must_use]
-    pub fn event_receiver(&self) -> EventReceiver {
+    pub fn event_receiver(&self) -> channels::EventReceiver {
         self.event_sender.subscribe()
     }
 }
@@ -1094,746 +1152,18 @@ impl Registry {
     pub async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
         self.state.loaded_bundles().await
     }
+
+    /// Returns a set of the [`NamespacedId`]s of each [`Message`] that is currently loaded
+    #[must_use]
+    pub async fn loaded_messages(&self) -> HashSet<NamespacedId> {
+        self.state.loaded_messages().await
+    }
 }
 
 #[cfg(feature = "runtime-loading")]
 impl Input for Registry {
     /// Use a registry [handle](Self::handle) as an input to a running resource
-    async fn create(registry: &Self, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Self, _: ComponentIdRef<'_>) -> Result<Self, Error> {
         Ok(registry.handle())
     }
 }
-
-impl<M: ListenMessage> Input for broadcast::Sender<M> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(registry.message_sender())
-    }
-}
-
-impl<M: ListenMessage> Input for broadcast::Receiver<M> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(registry.message_receiver())
-    }
-}
-
-/// Messages from the [`Registry`] about different events, such as loading or unloading resources
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum RegistryEvent {
-    /// Stop all [`Runner`]s, making the entire [`App`] exit
-    Exit,
-    /// Stop `id`, making it exit
-    ///
-    /// Note: this is automatically handled for both
-    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher),
-    /// but custom [`Runner`]s will have to listen to this message themselves.
-    Stop(NamespacedId),
-    /// `id` has begun resolving its dependencies in an [`App`]
-    ///
-    /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
-    /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
-    Resolving {
-        id: NamespacedId,
-        bundle: NamespacedId,
-    },
-    /// `id` has begun being loaded into the main [`Registry`]
-    ///
-    /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
-    /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
-    Loading {
-        id: NamespacedId,
-        bundle: NamespacedId,
-    },
-    /// `id` has been loaded into the main [`Registry`]
-    ///
-    /// Note: All [resources](mod@crate::resource) will emit this message, even if they won't
-    /// provide a [`Runner`] - see [`Self::Running`] instead, if that information is needed.
-    Loaded(NamespacedId),
-    /// `id` has started running
-    ///
-    /// Note: this only is emitted for resources that have [`Runner`]s, like
-    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher).
-    /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
-    /// message.
-    Running(NamespacedId),
-    /// `id` has stopped running
-    ///
-    /// Note: this only is emitted for resources that are [`Runner`]s, like
-    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher).
-    /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
-    /// message - see [`Self::Unloaded`] instead, if that information is needed.
-    Stopped(NamespacedId),
-    /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
-    /// [references](crate::input::get::Get) of it from other [resources](mod@crate::resource) have
-    /// been dropped
-    ///
-    /// Note: this will only ever be sent if the `resource-map` feature is enabled
-    #[cfg(feature = "resource-map")]
-    Unloaded(NamespacedId),
-    /// A bundle has started resolving its dependencies
-    BundleResolving {
-        id: NamespacedId,
-        parent: Option<NamespacedId>,
-        resources: Arc<[NamespacedId]>,
-        bundles: Arc<[NamespacedId]>,
-    },
-    /// A bundle has started loading into the registry
-    BundleLoading {
-        id: NamespacedId,
-        parent: Option<NamespacedId>,
-        resources: Arc<[NamespacedId]>,
-        bundles: Arc<[NamespacedId]>,
-    },
-    /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
-    ///
-    /// Note: this will only ever be sent if the `resource-map` feature is enabled
-    #[cfg(feature = "resource-map")]
-    BundleUnloaded(NamespacedId),
-    /// Resource `dependent` now depends on `dependency` in some way. This should be called
-    /// whenever one resources uses another resource's code in any way. For example, this is
-    /// emitted when [get](crate::input::get::Get) requests are fulfilled and when
-    /// [respond](crate::macros::respond) connections are created. Note that this also means
-    /// that this should be emitted when resources accept trait objects or function pointers
-    /// from other resources.
-    ///
-    /// [`ResourceMap`] uses this to determine which resources to unload when another resource
-    /// unloads. Specifically, it makes sure that all dependencies of a resource are also unloaded
-    /// when it is unloaded.
-    ///
-    /// Lastly, this may be emitted multiple times for a single dependency.
-    Dependency {
-        dependent: NamespacedId,
-        dependency: NamespacedId,
-    },
-    /// There is a [`Get<_>`](crate::input::get::Get) request that must be fulfilled
-    ///
-    /// Note: this will only ever be sent if the `runtime-loading` feature is enabled
-    #[cfg(feature = "runtime-loading")]
-    Get(Arc<GetRequest>),
-    /// Added a resource to the [`Registry`] that doesn't provide a [`Runner`]
-    #[cfg(feature = "runtime-loading")]
-    NonRunnable(ResourceSupplier),
-    /// The resource `from` emitted `error`
-    Error(ErrorEvent),
-}
-
-impl RegistryEvent {
-    /// Returns `true` if the registry event is [`Error`].
-    ///
-    /// [`Error`]: RegistryEvent::Error
-    #[must_use]
-    pub const fn is_error(&self) -> bool {
-        matches!(self, Self::Error(..))
-    }
-}
-
-#[derive(Clone, Debug, Error)]
-#[error("resource '{source}' had an error: {error}")]
-pub struct ErrorEvent {
-    source: NamespacedId,
-    #[source]
-    error: Arc<anyhow::Error>,
-}
-
-impl ErrorEvent {
-    fn new(source: NamespacedId, error: anyhow::Error) -> Self {
-        Self {
-            source,
-            error: Arc::new(error),
-        }
-    }
-
-    #[must_use]
-    pub fn source(&self) -> &NamespacedIdRef {
-        &self.source
-    }
-
-    #[must_use]
-    pub fn error(&self) -> &anyhow::Error {
-        &self.error
-    }
-}
-
-impl PartialEq for ErrorEvent {
-    fn eq(&self, other: &Self) -> bool {
-        self.source == other.source && Arc::ptr_eq(&self.error, &other.error)
-    }
-}
-
-impl Eq for ErrorEvent {}
-
-impl Hash for ErrorEvent {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.source.hash(state);
-        Arc::as_ptr(&self.error).hash(state);
-    }
-}
-
-/// A request to all [resources](mod@crate::resource) to fulfil a
-/// [`Get<_>`](crate::input::get::Get) input
-///
-/// Under the hood, this is sent to all running resources as a [`RegistryEvent`]. Each resource
-/// checks if the request's id matches their own, and if so, uses
-/// [`MaybeGetRef`](crate::input::get::MaybeGetRef) to try to create the reference to send back. If
-/// the trait succeeds, they send the result back to the asker.
-///
-/// `MaybeGetRef` is used because there must be a trait that works for all resources. The
-/// underlying runner won't be able to know if the type it represents implements [`GetRef`], so
-/// instead it must be able to use a trait that works either way.
-#[cfg(feature = "runtime-loading")]
-pub struct GetRequest {
-    id: NamespacedId,
-    dependent: NamespacedId,
-    // NOTE: This must be a tokio Mutex, not a std one. Why? I'm not really sure!
-    // In fact, this was the culprit of what has been the most dreadful bug I have ever encountered
-    // due to insane amounts of inconsistency... Deadlocks are not my friend - they very well may be
-    // my greatest enemy D:
-    sender: tokio::sync::Mutex<Option<oneshot::Sender<Box<dyn crate::input::get::ResourceRef>>>>,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl GetRequest {
-    /// Check if `resource` is the resource that is asked for by the request, and if so, call
-    /// [`GetRef`] and send the result back to the original asker.
-    #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub async fn check<R: Resource>(&self, resource: &R, registry: &Registry) {
-        self.check_ref(resource, registry).await;
-    }
-
-    /// Returns `true` if `R` if the resource that is asked for by this request
-    #[inline]
-    pub fn matches<R: Resource>(&self) -> bool {
-        R::const_ident() == &self.id
-    }
-
-    /// Check if `resource` is the resource that is asked for by the request, and if so, call
-    /// [`GetRef`] and send the result back to the original asker.
-    #[allow(clippy::missing_panics_doc)] // should resume panic when lock is poisoned
-    pub async fn check_ref(&self, resource: &dyn Resource, registry: &Registry) {
-        if !self.matches_ref(resource) {
-            return;
-        }
-        trace!("fulfilling get request");
-        #[allow(clippy::option_if_let_else)] // not using the return type...
-        if let Some(reference) = resource.maybe_get_ref(registry, &self.dependent) {
-            self.send(reference).await;
-        } else {
-            warn!("resource matches GetRequest, but MaybeGetRef returned None");
-            self.cancel().await;
-        }
-    }
-
-    /// Returns `true` if `resource` if the resource that is asked for by this request
-    #[inline]
-    pub fn matches_ref(&self, resource: &dyn Resource) -> bool {
-        resource.ident() == &self.id
-    }
-
-    /// Returns the [id](NamespacedId) of the resource that the request is asking for
-    pub fn id(&self) -> &NamespacedIdRef {
-        &self.id
-    }
-
-    /// Returns the [id](NamespacedId) of the resource that is asking for this request
-    pub fn dependent(&self) -> &NamespacedIdRef {
-        &self.dependent
-    }
-
-    /// Cancels the get request, instantly returning nothing
-    ///
-    /// This should only be used by the resource that this request is for if they are sure that
-    /// they can't fulfil the request.
-    pub async fn cancel(&self) {
-        drop(self.sender.lock().await.take());
-    }
-
-    /// Fulfils the request by sending `reference`
-    ///
-    /// Note: this doesn't actually check if the reference matches the request - use
-    /// [`Self::matches`] to check first
-    pub(crate) async fn send(&self, reference: Box<dyn crate::input::get::ResourceRef>) {
-        let Some(sender) = self.sender.lock().await.take() else {
-            // this could only happen with a name collision
-            warn!("resource matches GetRequest, but the channel was already used");
-            return;
-        };
-        let _ = sender.send(reference);
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl PartialEq for GetRequest {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl Eq for GetRequest {}
-
-#[cfg(feature = "runtime-loading")]
-impl Debug for GetRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.id)
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl std::hash::Hash for GetRequest {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-#[derive(Clone)]
-#[cfg(feature = "runtime-loading")]
-pub struct ResourceSupplier {
-    arc: Arc<ResourceSupplierInner>,
-}
-
-#[cfg(feature = "runtime-loading")]
-struct ResourceSupplierInner {
-    id: NamespacedId,
-    resource: std::sync::Mutex<Option<Box<dyn LoadedResource>>>,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl ResourceSupplier {
-    /// Get the [`NamespacedId`] of the inner resource
-    #[must_use]
-    pub fn id(&self) -> &NamespacedIdRef {
-        &self.arc.id
-    }
-
-    fn new(resource: Box<dyn LoadedResource>) -> Self {
-        let arc = ResourceSupplierInner {
-            id: resource.ident().to_owned(),
-            resource: std::sync::Mutex::new(Some(resource)),
-        };
-        Self { arc: Arc::new(arc) }
-    }
-
-    pub(crate) fn take(&self) -> Option<Box<dyn LoadedResource>> {
-        let mut resource = self
-            .arc
-            .resource
-            .lock()
-            .expect("ResourceSupplier lock shouldn't be poisoned");
-        resource.take()
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl Debug for ResourceSupplier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ResourceSupplier")
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl PartialEq for ResourceSupplier {
-    fn eq(&self, other: &Self) -> bool {
-        self.arc.id == other.arc.id
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl Eq for ResourceSupplier {}
-
-#[cfg(feature = "runtime-loading")]
-impl Hash for ResourceSupplier {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.arc.id.hash(state);
-    }
-}
-
-/// A message to obtain [`SharedInitFn`s](bundle::SharedInitFn)s of loaded bundles
-///
-/// Notice that this message is not feature-locked behind `runtime-loading`. This is because
-/// resources must be able to accept this message with and without the feature, as the
-/// [listener macro](crate::macros::listener) doesn't support conditional components.
-#[message("auditeur:bundle_init")]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct BundleInit {
-    pub(crate) id: NamespacedId,
-    #[cfg(feature = "runtime-loading")]
-    pub(crate) init: bundle::SharedInitFn,
-}
-
-impl BundleInit {
-    #[must_use]
-    pub fn id(&self) -> &NamespacedIdRef {
-        &self.id
-    }
-
-    #[must_use]
-    #[cfg(feature = "runtime-loading")]
-    pub fn init(&self) -> Option<bundle::SharedInitFn> {
-        Some(self.init.clone())
-    }
-}
-
-/// A handle on a [`Registry`] that can be used to stop one single resource or exit the entire
-/// program
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "path-any", derive(PathAny))]
-pub struct Stopper {
-    sender: EventSender,
-}
-
-impl Stopper {
-    /// Tell all resources in the [`Registry`] to exit
-    pub fn exit(&self) {
-        self.sender.send(RegistryEvent::Exit);
-    }
-
-    /// Stop the resource `R`, if it exists
-    #[inline]
-    pub fn stop<R: Identifiable>(&self) {
-        self.stop_id(R::const_ident());
-    }
-
-    /// Stop the resource with id `id`, if it exists
-    pub fn stop_id(&self, id: &NamespacedIdRef) {
-        let id = id.to_owned();
-        self.sender.send(RegistryEvent::Stop(id));
-    }
-}
-
-impl Input for Stopper {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(registry.stopper())
-    }
-}
-
-/// A sender for [`RegistryEvent`]s
-///
-/// Each of these events will always be read by every other receiver; see [`EventReceiver`] for
-/// more information about the channel.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "path-any", derive(PathAny))]
-pub struct EventSender {
-    watch: watch::Sender<Vec<RegistryEvent>>,
-}
-
-impl EventSender {
-    pub(crate) fn new() -> Self {
-        Self {
-            watch: watch::Sender::new(Vec::new()),
-        }
-    }
-
-    pub(crate) fn send(&self, event: RegistryEvent) {
-        self.watch.send_modify(|vec| vec.push(event));
-    }
-
-    pub(crate) fn extend<I: IntoIterator<Item = RegistryEvent>>(&self, events: I) {
-        self.watch.send_modify(|vec| vec.extend(events));
-    }
-
-    pub fn send_error(&self, ident: impl Into<NamespacedId>, error: anyhow::Error) {
-        let error = ErrorEvent::new(ident.into(), error);
-        error!("{error}");
-        self.send(RegistryEvent::Error(error));
-    }
-
-    pub fn handle_error<T>(&self, res: anyhow::Result<T>, id: &NamespacedIdRef) -> Option<T> {
-        res.map_err(|err| self.send_error(id, err)).ok()
-    }
-
-    pub fn send_errors<E: Into<anyhow::Error>>(
-        &self,
-        ident: impl Into<NamespacedId>,
-        errors: impl IntoIterator<Item = E>,
-    ) {
-        let ident = ident.into();
-        let events = errors
-            .into_iter()
-            .map(|err| ErrorEvent::new(ident.clone(), err.into()))
-            .inspect(|val| error!("{val}"))
-            .map(RegistryEvent::Error);
-        self.extend(events);
-    }
-
-    pub fn send_dependency(
-        &self,
-        dependent: impl Into<NamespacedId>,
-        dependency: impl Into<NamespacedId>,
-    ) {
-        self.send(RegistryEvent::Dependency {
-            dependent: dependent.into(),
-            dependency: dependency.into(),
-        });
-    }
-
-    pub(crate) fn subscribe(&self) -> EventReceiver {
-        EventReceiver::new(self.watch.subscribe())
-    }
-}
-
-impl Input for EventSender {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(registry.event_sender())
-    }
-}
-
-/// A receiver for [`RegistryEvent`]s
-///
-/// This will always hold the entire history of events, even ones that happened before the receiver
-/// was created. This allows receivers to make models of the [`Registry`] using its entire state,
-/// like [`ResourceMap`].
-#[derive(Debug)]
-#[cfg_attr(feature = "path-any", derive(PathAny))]
-pub struct EventReceiver {
-    watch: watch::Receiver<Vec<RegistryEvent>>,
-    index: usize,
-}
-
-impl EventReceiver {
-    const fn new(receiver: watch::Receiver<Vec<RegistryEvent>>) -> Self {
-        Self {
-            watch: receiver,
-            index: 0,
-        }
-    }
-
-    /// Receive the oldest unhandled message or return [`None`] if the channel has closed.
-    #[instrument(name = "recv_registry_event", skip(self))]
-    pub async fn recv(&mut self) -> Option<RegistryEvent> {
-        loop {
-            let value = self.watch.borrow_and_update().get(self.index).cloned();
-            if let Some(val) = value {
-                self.index += 1;
-                return Some(val);
-            }
-            self.watch
-                .changed()
-                .instrument(info_span!("waiting_for_new_event"))
-                .await
-                .ok()?;
-        }
-    }
-
-    /// Receive an unhandled message if it is ready
-    ///
-    /// # Errors
-    ///
-    /// - [`EventTryRecvError::NotReady`] if the stream is not ready
-    /// - [`EventTryRecvError::Closed`] if the stream is closed
-    pub fn try_recv(&mut self) -> Result<RegistryEvent, EventTryRecvError> {
-        let value = self.watch.borrow_and_update().get(self.index).cloned();
-        if let Some(val) = value {
-            self.index += 1;
-            // can't use else 'cause the compiler gets angry at the mutable ref above
-            return Ok(val);
-        }
-        // the easiest way to check if the channel is closed is through this method
-        if self.watch.has_changed().is_err() {
-            Err(EventTryRecvError::Closed)
-        } else {
-            Err(EventTryRecvError::NotReady)
-        }
-    }
-
-    /// Resubscribe to the channel, starting from the beginning.
-    #[must_use]
-    pub fn resubscribe(&self) -> Self {
-        Self {
-            watch: self.watch.clone(),
-            index: 0,
-        }
-    }
-
-    /// Mark the most recent message as seen, ignoring recv
-    pub fn mark_seen(&mut self) {
-        let vec = self.watch.borrow_and_update();
-        self.index = vec.len();
-    }
-}
-
-impl Input for EventReceiver {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(registry.event_receiver())
-    }
-}
-
-/// The result for [`EventReceiver::try_recv`]
-pub enum EventTryRecvError {
-    Closed,
-    NotReady,
-}
-
-impl EventTryRecvError {
-    /// Returns `true` if the event try recv error is [`Closed`].
-    ///
-    /// [`Closed`]: EventTryRecvError::Closed
-    #[must_use]
-    pub const fn is_closed(&self) -> bool {
-        matches!(self, Self::Closed)
-    }
-
-    /// Returns `true` if the event try recv error is [`NotReady`].
-    ///
-    /// [`NotReady`]: EventTryRecvError::NotReady
-    #[must_use]
-    pub const fn is_not_ready(&self) -> bool {
-        matches!(self, Self::NotReady)
-    }
-}
-
-// PluginRegistry
-// /// this only holds the listeners and watchers that are currently running
-// /// they're the roots of what stays loaded
-// - running: HashMap<NamespacedId, Arc<ResourceInfo>>
-// /// this holds everything, including resources that are currently running and resources that are
-// /// unloaded
-// - loaded: HashMap<NamespacedId, Weak<ResourceInfo>>
-//
-// ResourceInfo
-// - id: NamespacedId
-// - type: ResourceType
-// - library: Option<PluginLibrary>
-// - dependencies: Vec<Arc<ResourceInfo>>
-// - dependents: Vec<NamespacedId>
-//
-// ResourceType
-// - Resource
-// - Plugin
-//
-// This automatically allows for keeping alive both plugins and resources in a safe manner, and
-// provides information that is necessary to unloading plugins. (why does this writing seem like
-// I'm writing for the HR of a multinational corporation it's so dry)
-//
-// When creating the registry, all resources have to stay loaded in an Arc
-// When running, resources and plugins that aren't currently running should be stored in a Weak, so
-// that they aren't kept alive even though they shouldn't be
-//
-// Plugins will be stored in resources' dependencies (the plugin's code is a dependency for the
-// resource), and as such you can see the resources in a plugin by viewing its dependents.
-
-// building plugins
-//
-// To build a plugin, you either provide a closure or function that takes in a plugin builder and
-// returns a plugin declaration.
-//
-// App
-// - add_plugin(fn(PluginBuilder<NoId>) -> PluginBuilder<HasId>)
-//
-// PluginBuilder<NoId>
-// - id
-//
-// PluginBuilder<HasId>
-// - add_listener
-// - add_watcher
-// - add_resource
-// - add_plugin
-// - load_after(id)
-
-// how to implement?
-//
-// Rename "plugins" to "bundles" - they're just groups of resources
-//
-// The main app essentially becomes its own bundle, so enforce that
-// - Only have a single add_bundle method in the app
-// - Only bundles can add loaders, not the main app
-// - Only the app can be used to run the... app
-//
-// This has a few interesting effects
-// - *All* listeners will have a parent bundle
-// - As such, listeners can be always paired with a parent bundle, no options needed
-//
-// To model bundles in the actual app,
-// - There will be two HashMaps: loaders and bundles
-// - Everything will be put into the same HashMaps, in the main app
-// - Loaders will always be paired with a bundle
-// - Bundles may also be paired with other bundles
-// - Bundles may have their own constraints, and child loaders will have to finish those first
-
-// What about when the Registry starts running?
-//
-// In the Registry, hold an enum between a LoadingRegistry and a Handle
-// - These will figure out how to implement methods such as get<R> and add_boxed
-// - Methods concerning channels can be shared - the channels will be stored alongside the enums
-//
-// Why can't it just be one trait and the trait objects take in an impl Trait?
-// - Simple: trait objects can't take in impl Trait types
-//
-// LoadingRegistry
-// - HashMap<NamespacedId, Box<dyn LoadedResource>>,
-// - broadcast::Sender<Box<dyn LoadedResource>>,
-//
-// Handle
-// - broadcast::Sender<Box<dyn LoadedResource>>
-// - broadcast::Sender<RegistryEvent>?
-//
-// Handle can actually become an Input returning a full Registry handle
-
-// How should the plugin system be applied to an App?
-//
-// First off, the plugin system has to be applied to the App, not the Registry
-// - The plugin system has to utilize the App to make things load in the right order
-// - Although, it'll also have to emulate it when it's adding bundles from plugins loaded after the
-//   registry has already started running
-//     - Maybe put an add_bundle method on a registry handle?
-//
-// So we'll have to make the plugin system have a function that takes in a &mut App, adds the
-// plugins that are meant to be loaded, and adds the main plugin system bundle
-//
-// This could be wrapped in an extension trait, making the app have something like an
-// add_plugin_system(config) function
-//
-// ```
-// App::new(1024)
-//     .with_bundle(...)
-//     .with_plugin_system(...)
-//     .run()
-// ```
-
-// ResourceMap redo
-//
-// There's one big question about Handles: how about Resources?
-// - So if we're going to allow users to get resources through Handles, normal Resources need to
-//   stay alive for a while
-// - This means that we now need to find out when specific resources are needed and unneeded based
-//   on which runners are using them... exactly what we need to do for plugins!
-// - Because of this, we could use the same system for both of them
-//
-// How do we link the auditeur ResourceMap to auditeur_plugin_host?
-// - We could simply extend the resource idea to bundles, telling listeners when bundles are loaded
-//   and unloaded
-//
-// How to only add it when it's needed?
-// - If the Handle system is only added when it's needed, it could lower complexity.
-// - It can be added only when a Handle is actually cloned, which could be detected through an
-//   Arc-like thing (through its strong_count)
-// - If no Handles are created, the entire system can be ignored
-// - This is fine because then there's no chance of a Handle ever being needed again: since no new
-//   resources can be added (since there is no Handle), none will ask for a new Handle in the
-//   future
-
-// add_resource_with and such redo
-//
-// Instead of add_resource_with, do something like a Create trait
-//
-// ```
-// trait Create {
-//     // similar to input for resources
-//     type RegistryInput: Input;
-//     // input given when adding the type to an App
-//     // necessary for things like a LibraryHandle
-//     type ExternalInput;
-//
-//     fn create(
-//         registry_input: Self::RegistryInput::Output,
-//         external_input: ExternalInput,
-//     ) -> Self;
-// }
-// ```
-//
-// ```
-// let app = App::new(32)
-//         new_bundle!("bundle:bundle")
-//             .with_listener::<Library>(())
-//             .with_resource::<QueueLimit>(32)
-//     );
-// ```

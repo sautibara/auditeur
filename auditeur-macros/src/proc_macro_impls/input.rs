@@ -29,9 +29,12 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
             let members: Vec<_> = strct.fields.members().collect();
             let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
             quote! {
-                async fn create<'a>(registry: &'a #auditeur::app::Registry, as_resource: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
+                async fn create<'a>(
+                    registry: &'a #auditeur::app::Registry,
+                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                ) -> Result<Self, #auditeur::Error> {
                     let ( #(#members,)* ) = #auditeur::try_join!(
-                        #( <#types as #input_mod::Input>::create(registry, as_resource) ),*
+                        #( <#types as #input_mod::Input>::create(registry, dependent) ),*
                     )?;
                     Ok(Self { #(#members),* })
                 }
@@ -50,9 +53,12 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
                 .collect();
             let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
             quote! {
-                async fn create(registry: &#auditeur::app::Registry, as_resource: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
+                async fn create(
+                    registry: &#auditeur::app::Registry,
+                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                ) -> Result<Self, #auditeur::Error> {
                     let ( #(#members,)* ) = #auditeur::try_join!(
-                        #( <#types as #input_mod::Input>::create(registry, as_resource) ),*
+                        #( <#types as #input_mod::Input>::create(registry, dependent) ),*
                     )?;
                     Ok(Self( #(#members),* ))
                 }
@@ -64,7 +70,10 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
             }
         }
         syn::Fields::Unit => quote! {
-            async fn create(_: &#auditeur::app::Registry, _: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
+            async fn create(
+                _: &#auditeur::app::Registry,
+                _: #auditeur::app::event::ComponentIdRef<'_>,
+            ) -> Result<Self, #auditeur::Error> {
                 Self
             }
 

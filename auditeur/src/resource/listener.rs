@@ -1,10 +1,14 @@
 #![doc = include_str!("listener_docs.md")]
 
-use std::{fmt::Debug, marker::PhantomData};
+use std::marker::PhantomData;
 
 use crate::{
     Message,
-    app::{EventReceiver, EventSender, LoadedResource, Loader, Runner, TakeReceiver},
+    app::{
+        LoadedResource, Loader, Runner,
+        channels::{self, EventReceiver, EventSender, Taker},
+        event::ComponentIdRef,
+    },
     input::subset::Subset,
     prelude::*,
 };
@@ -55,6 +59,15 @@ pub trait Component<L: Listener>: Input {
         listener: &mut L,
         input: Self::UserInput<'_>,
     ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send;
+
+    /// Returns a set of channels that this component "owns".
+    ///
+    /// These channels will automatically be added to the [registry](Registry), but special care
+    /// should be taken to make sure that a specific channel isn't added multiple times.
+    #[must_use]
+    fn channels() -> Channels {
+        Channels::new()
+    }
 }
 
 pub trait Listen<M: ListenMessage>: Listener {
@@ -69,16 +82,20 @@ pub trait Listen<M: ListenMessage>: Listener {
 
 #[component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
 pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
-    receiver: tokio::sync::broadcast::Receiver<M>,
+    receiver: channels::Listener<M>,
     listener: PhantomData<L>,
 }
 
 impl<L: Listen<M>, M: ListenMessage> Input for ListenComponent<L, M> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
         Ok(Self {
-            receiver: registry.message_receiver::<M>(),
+            receiver: registry.channels().listener::<M>(dependent).await?,
             listener: PhantomData,
         })
+    }
+
+    fn constraints() -> Constraints {
+        Constraints::empty().after_message(M::const_ident())
     }
 }
 
@@ -89,8 +106,8 @@ impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
         match self.receiver.recv().await {
-            Ok(message) => Ok(ControlFlow::Continue(message)),
-            Err(_) => Ok(ControlFlow::Break(())),
+            Some(message) => Ok(ControlFlow::Continue(message)),
+            None => Ok(ControlFlow::Break(())),
         }
     }
 
@@ -122,7 +139,7 @@ pub struct ListenToRegistryComponent<L: ListenToRegistry> {
 }
 
 impl<L: ListenToRegistry> Input for ListenToRegistryComponent<L> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: ComponentIdRef<'_>) -> Result<Self, Error> {
         let mut receiver = registry.event_receiver();
         receiver.mark_seen();
         Ok(Self {
@@ -176,7 +193,7 @@ pub struct OnLoadComponent<L: OnLoad<R>, R: Resource> {
 }
 
 impl<L: OnLoad<R>, R: Resource> Input for OnLoadComponent<L, R> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: ComponentIdRef<'_>) -> Result<Self, Error> {
         let mut receiver = registry.event_receiver();
         receiver.mark_seen();
 
@@ -224,16 +241,20 @@ impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
 
 #[component((<$_:ty, $message:ty>) => (implementation = Take<$message>))]
 pub struct TakeComponent<R: Take<M>, M: Message> {
-    receiver: TakeReceiver<M>,
+    receiver: Taker<M>,
     pd: PhantomData<R>,
 }
 
 impl<R: Take<M>, M: Message> Input for TakeComponent<R, M> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
         Ok(Self {
-            receiver: registry.respond_receiver::<R, M>().await,
+            receiver: registry.channels().taker::<M>(dependent).await?,
             pd: PhantomData,
         })
+    }
+
+    fn constraints() -> Constraints {
+        Constraints::empty().after_message(M::const_ident())
     }
 }
 
@@ -267,47 +288,9 @@ impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
         responder.on(message, input).send().await?;
         Ok(ControlFlow::Continue(()))
     }
-}
 
-pub struct Giver<R: Take<M>, M: Message> {
-    sender: tokio::sync::mpsc::Sender<M>,
-    pd: PhantomData<R>,
-}
-
-impl<R: Take<M>, M: Message> Debug for Giver<R, M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Giver")
-            .field("sender", &self.sender)
-            .finish()
-    }
-}
-
-impl<R: Take<M>, M: Message> Input for Giver<R, M> {
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
-        Ok(Self::new(registry))
-    }
-}
-
-impl<R: Take<M>, M: Message> Giver<R, M> {
-    #[must_use]
-    pub fn new(registry: &Registry) -> Self {
-        Self {
-            sender: registry.respond_sender::<R, M>(),
-            pd: PhantomData,
-        }
-    }
-
-    pub async fn give(&self, message: M) {
-        let _ = self.sender.send(message).await;
-    }
-}
-
-impl<R: Take<M>, M: Message> Clone for Giver<R, M> {
-    fn clone(&self) -> Self {
-        Self {
-            sender: self.sender.clone(),
-            pd: PhantomData,
-        }
+    fn channels() -> Channels {
+        Channels::new().with_take_channel::<M>()
     }
 }
 
@@ -320,7 +303,7 @@ pub struct RegistryComponent {
 
 impl Input for RegistryComponent {
     #[cfg_attr(not(feature = "runtime-loading"), expect(unused_variables))]
-    async fn create(registry: &Registry, _: &NamespacedIdRef) -> Result<Self, Error> {
+    async fn create(registry: &Registry, _: ComponentIdRef<'_>) -> Result<Self, Error> {
         let mut receiver = registry.event_receiver();
         receiver.mark_seen();
         Ok(Self {
@@ -331,10 +314,7 @@ impl Input for RegistryComponent {
     }
 
     fn constraints() -> Constraints {
-        #[cfg(not(feature = "runtime-loading"))]
-        return Constraints::default();
-        #[cfg(feature = "runtime-loading")]
-        return Registry::constraints();
+        Constraints::empty()
     }
 }
 
@@ -378,6 +358,8 @@ pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send + Sync {
         input: &mut L::Input,
         sender: &EventSender,
     ) -> impl Future<Output = ()> + Send;
+
+    fn channels() -> Channels;
 }
 
 pub(crate) trait Sealed<L> {}
@@ -411,6 +393,11 @@ macro_rules! impl_component_list {
                     )*}
                 }
             }
+
+            fn channels() -> Channels {
+                Channels::new()
+                    $(.combine_with($T::channels()))*
+            }
         }
 
         #[allow(unused_parens)]
@@ -435,10 +422,11 @@ pub(crate) struct LoadedListener<L: Listener> {
 }
 
 impl<L: Listener> LoadedListener<L> {
-    async fn build(listener: L, registry: &Registry) -> Result<Self, Error> {
+    pub(crate) async fn build(listener: L, registry: &Registry) -> Result<Self, Error> {
+        let ident = ComponentIdRef::Resource(listener.ident());
         Ok(Self {
-            input: L::Input::create(registry, listener.ident()).await?,
-            components: L::Components::create(registry, listener.ident()).await?,
+            input: L::Input::create(registry, ident).await?,
+            components: L::Components::create(registry, ident).await?,
             listener,
             event_sender: registry.event_sender(),
         })
@@ -482,12 +470,12 @@ impl<L: Listener> Identifiable for LoadedListener<L> {
 }
 
 impl<L: Listener> LoadedResource for LoadedListener<L> {
-    fn resource_any(&self) -> &dyn crate::Any {
+    fn resource(&self) -> &dyn Resource {
         &self.listener
     }
 
-    fn resource(&self) -> &dyn Resource {
-        &self.listener
+    fn resource_mut(&mut self) -> &mut dyn Resource {
+        &mut self.listener
     }
 
     fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>> {
@@ -508,7 +496,8 @@ impl<L: Listener + Create> ListenerLoader<L> {
 #[async_trait]
 impl<L: Listener + Create> Loader for ListenerLoader<L> {
     async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let registry_input = L::RegistryInput::create(registry, L::const_ident()).await?;
+        let ident = ComponentIdRef::Resource(L::const_ident());
+        let registry_input = L::RegistryInput::create(registry, ident).await?;
         let listener = L::create(registry_input, self.external_input)
             .await
             .map_err(|error| Error::FromResource {
@@ -527,5 +516,9 @@ impl<L: Listener + Create> Loader for ListenerLoader<L> {
 
     fn ident(&self) -> &NamespacedIdRef {
         L::const_ident()
+    }
+
+    fn channels(&self) -> Channels {
+        L::Components::channels()
     }
 }

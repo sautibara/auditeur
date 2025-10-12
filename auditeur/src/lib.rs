@@ -29,6 +29,8 @@ pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn A
 #[doc(hidden)]
 pub use anyhow;
 #[doc(hidden)]
+pub use async_trait;
+#[doc(hidden)]
 pub use futures::try_join;
 #[doc(hidden)]
 pub use tokio;
@@ -36,27 +38,37 @@ pub use tokio;
 pub mod prelude {
     pub use crate::resource::Identifiable as _;
     pub use crate::{
-        app::{App, Constraints, Registry, RegistryEvent, Stopper},
+        app::{
+            App, Constraints, Registry,
+            channels::{Channels, ChannelsRef, Shouter, Stopper},
+            event::RegistryEvent,
+        },
         bundle::Bundle,
         input::get::Get,
         macros::{
-            component, create, has_input, ident, identifiable, listener, message, resource,
-            respond, Create, GetRef, Input, Runnable,
+            Create, GetRef, Input, Runnable, component, create, has_input, ident, identifiable,
+            listener, message, resource, respond,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
-            listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
             Create, Runnable, Watcher,
+            listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
         },
     };
 
     #[cfg(feature = "path-any")]
     pub use crate::macros::PathAny;
     pub(crate) use crate::{
-        input::Input, resource::Identifiable, resource::Resource, Any, Error, ListenMessage,
+        Error, ListenMessage, app::channels::EventSender, input::Input, resource::Identifiable,
+        resource::Resource,
     };
+
+    pub use crate::resource::Identifiable as _;
+
+    pub(crate) use tracing::Instrument as _;
+    pub(crate) use tracing::{error, instrument, trace, warn};
 
     pub use anyhow;
     pub use anyhow::Result;
@@ -93,10 +105,22 @@ pub enum Error {
     BundleNotFound { id: NamespacedId },
     #[error("downcast of resource '{id}' failed, has it been loaded?")]
     DowncastFailed { id: NamespacedId },
+    #[error("resource '{id}' not found, has it been loaded?")]
+    ResourceNotFound { id: NamespacedId },
+    #[error("attempted to Get a resource, but it doesn't implement GetRef")]
+    ResourceNoGetRef,
     #[error("resource '{id}' had an error: {error:?}")]
     FromResource {
         id: NamespacedId,
         #[source]
         error: anyhow::Error,
     },
+    #[error("could not find `Listen` message with id '{id}', has it been added to a bundle?")]
+    ListenMessageNotFound { id: NamespacedId },
+    #[error("could not find `Take` message with id '{id}', has it been added to a bundle?")]
+    TakeMessageNotFound { id: NamespacedId },
+    #[error("could not find message with id '{id}', has it been added to a bundle?")]
+    MessageNotFound { id: NamespacedId },
+    #[error("tried to take ownership of `Taker` with id '{id}', but it had already been taken")]
+    TakeTakerTaken { id: NamespacedId },
 }

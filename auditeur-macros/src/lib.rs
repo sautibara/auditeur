@@ -67,10 +67,9 @@ mod proc_macro_impls {
     #[cfg(feature = "runtime-loading")]
     pub use maybe_get_ref::maybe_get_ref;
 
-    #[cfg(feature = "runtime-loading")]
-    mod resource_ref;
-    #[cfg(feature = "runtime-loading")]
-    pub use resource_ref::resource_ref;
+    mod clone_as;
+    pub use clone_as::clone_as_enum;
+    pub use clone_as::clone_as_struct;
 
     #[cfg(feature = "path-any")]
     mod path_any;
@@ -329,9 +328,16 @@ pub fn derive_input(item: TokenStream) -> TokenStream {
 pub fn get_ref(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 
-    let ident = match item {
-        Item::Struct(strct) => strct.ident,
-        Item::Enum(enm) => enm.ident,
+    let (clone_as, ident) = match item {
+        Item::Struct(strct) => (
+            proc_macro_impls::clone_as_struct(
+                &strct.ident,
+                strct.fields.iter().filter_map(|field| field.ident.as_ref()),
+                &strct.generics,
+            ),
+            strct.ident,
+        ),
+        Item::Enum(enm) => (proc_macro_impls::clone_as_enum(&enm), enm.ident),
         _ => {
             return quote_spanned! {
                 item.span() => compile_error!("item must be a struct or enum"),
@@ -343,14 +349,16 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
     let auditeur = &*AUDITEUR;
 
     quote! {
+        #clone_as
+
         impl #auditeur::input::get::GetRef for #ident {
             type Ref = Self;
-            fn get_ref(
+            async fn get_ref(
                 &self,
                 _: &#auditeur::app::Registry,
-                _: &#auditeur::namespaced_id::NamespacedIdRef,
-            ) -> Self {
-                self.clone()
+                dependent: #auditeur::app::event::ComponentIdRef<'_>,
+            ) -> Result<Self, #auditeur::Error> {
+                Ok(<Self as #auditeur::app::event::CloneAs>::clone_as(self, dependent))
             }
         }
     }
@@ -382,14 +390,14 @@ pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
     proc_macro_impls::maybe_get_ref(&ident, &generics).into()
 }
 
-#[proc_macro_derive(ResourceRef)]
-#[cfg(feature = "runtime-loading")]
-pub fn resource_ref(item: TokenStream) -> TokenStream {
+#[proc_macro_derive(CloneAs)]
+pub fn clone_as(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemStruct);
 
     let fields = item.fields.iter().filter_map(|field| field.ident.as_ref());
+    let generics = &item.generics;
 
-    proc_macro_impls::resource_ref(&item.ident, None, fields).into()
+    proc_macro_impls::clone_as_struct(&item.ident, fields, generics).into()
 }
 
 #[cfg(feature = "path-any")]

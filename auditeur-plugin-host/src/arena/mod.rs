@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use auditeur_plugin::auditeur::app::{App, EventSender};
+use auditeur_plugin::auditeur::app::{App, channels::EventSender};
 use tokio::try_join;
 use tracing::{debug, trace, warn};
 

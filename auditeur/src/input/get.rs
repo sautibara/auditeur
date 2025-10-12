@@ -1,18 +1,14 @@
 use std::ops::{Deref, DerefMut};
 
+#[cfg(feature = "runtime-loading")]
+use crate::app::event::{CloneAs, ComponentIdRef};
 use crate::prelude::*;
 
 pub struct Get<T: Resource + GetRef>(T::Ref);
 
 impl<T: Resource + GetRef> Input for Get<T> {
-    async fn create(registry: &Registry, dependent: &NamespacedIdRef) -> Result<Self, Error> {
-        let reference =
-            registry
-                .get_as::<T>(dependent)
-                .await
-                .ok_or_else(|| Error::DowncastFailed {
-                    id: T::const_ident().into(),
-                })?;
+    async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
+        let reference = registry.get_as::<T>(dependent).await?;
         Ok(Self(reference))
     }
 
@@ -64,7 +60,11 @@ pub trait GetRef {
     /// A synchronized reference to the original [`Resource`]
     type Ref: ResourceRef;
     /// Get a synchronized reference to `Self`
-    fn get_ref(&self, registry: &Registry, dependent: &NamespacedIdRef) -> Self::Ref;
+    fn get_ref(
+        &self,
+        registry: &Registry,
+        dependent: ComponentIdRef<'_>,
+    ) -> impl Future<Output = Result<Self::Ref, crate::Error>> + Send + Sync;
 }
 
 /// A trait that returns [`Some(R::Ref)`](GetRef::Ref) if the type implements [`GetRef`], or [`None`] otherwise
@@ -76,18 +76,19 @@ pub trait GetRef {
 /// To implement the trait, use [`#[resource]`](macro@resource) or
 /// [`#[derive(MaybeGetRef)]`](macro@crate::MaybeGetRef)
 #[cfg(feature = "runtime-loading")]
+#[async_trait]
 pub trait MaybeGetRef {
-    fn maybe_get_ref(
+    async fn maybe_get_ref(
         &self,
         registry: &Registry,
-        dependent: &NamespacedIdRef,
-    ) -> Option<Box<dyn ResourceRef>>;
+        dependent: ComponentIdRef<'_>,
+    ) -> Result<Box<dyn ResourceRef>, crate::Error>;
 }
 
 #[doc(hidden)]
 #[cfg(feature = "runtime-loading")]
 pub mod maybe_get_ref {
-    use crate::{app::Registry, prelude::NamespacedIdRef};
+    use crate::app::{Registry, event::ComponentIdRef};
 
     use super::ResourceRef;
 
@@ -95,78 +96,48 @@ pub mod maybe_get_ref {
         fn specialization(
             &self,
             registry: &Registry,
-            dependent: &NamespacedIdRef,
-        ) -> Option<Box<dyn ResourceRef>>;
+            dependent: ComponentIdRef<'_>,
+        ) -> impl Future<Output = Result<Box<dyn ResourceRef>, crate::Error>> + Send + Sync;
     }
 
-    impl<T> Specialization for &T {
-        fn specialization(
+    impl<T: Send + Sync> Specialization for &T {
+        async fn specialization(
             &self,
             _: &Registry,
-            _: &NamespacedIdRef,
-        ) -> Option<Box<dyn ResourceRef>> {
-            None
+            _: ComponentIdRef<'_>,
+        ) -> Result<Box<dyn ResourceRef>, crate::Error> {
+            Err(crate::Error::ResourceNoGetRef)
         }
     }
 
-    impl<T: super::GetRef + crate::Any> Specialization for &mut &T {
-        fn specialization(
+    impl<T: super::GetRef + crate::Any + Send + Sync> Specialization for &mut &T {
+        async fn specialization(
             &self,
             registry: &Registry,
-            dependent: &NamespacedIdRef,
-        ) -> Option<Box<dyn ResourceRef>> {
-            Some(Box::new(self.get_ref(registry, dependent)))
+            dependent: ComponentIdRef<'_>,
+        ) -> Result<Box<dyn ResourceRef>, crate::Error> {
+            self.get_ref(registry, dependent)
+                .await
+                .map(|value| Box::new(value) as Box<dyn ResourceRef>)
         }
     }
 }
+
+// TODO: move to dependency and generalize (no feature gate, allow any component)
 
 /// A trait that allows for [cloning](Clone) within a trait object and dynamic typing
 ///
 /// This trait is used only in [`MaybeGetRef`] and is implemented for all types that implement
 /// [`Clone`] and [`Any`]
 #[cfg(feature = "runtime-loading")]
-pub trait ResourceRef: crate::Any + Send + Sync {
+pub trait ResourceRef: CloneAs + crate::Any + Send + Sync {
     #[must_use]
-    fn clone_as_boxed(&self, dependent: &NamespacedIdRef) -> Box<dyn ResourceRef>;
-
-    #[must_use]
-    fn clone_as(&self, dependent: &NamespacedIdRef) -> Self
-    where
-        Self: Sized;
+    fn clone_as_boxed(&self, dependent: ComponentIdRef<'_>) -> Box<dyn ResourceRef>;
 }
 
 #[cfg(feature = "runtime-loading")]
-impl<T: Clone + crate::Any + Send + Sync> ResourceRef for T {
-    fn clone_as_boxed(&self, _: &NamespacedIdRef) -> Box<dyn ResourceRef> {
-        Box::new(self.clone())
-    }
-
-    fn clone_as(&self, _: &NamespacedIdRef) -> Self
-    where
-        Self: Sized,
-    {
-        self.clone()
-    }
-}
-
-#[doc(hidden)]
-#[cfg(feature = "runtime-loading")]
-pub mod resource_ref {
-    use crate::prelude::NamespacedIdRef;
-
-    pub trait Specialization<T> {
-        fn specialization(&self, dependent: &NamespacedIdRef) -> T;
-    }
-
-    impl<T: Clone> Specialization<T> for &T {
-        fn specialization(&self, _: &NamespacedIdRef) -> T {
-            (*self).clone()
-        }
-    }
-
-    impl<T: super::ResourceRef> Specialization<T> for &mut &T {
-        fn specialization(&self, dependent: &NamespacedIdRef) -> T {
-            self.clone_as(dependent)
-        }
+impl<T: CloneAs + crate::Any + Send + Sync> ResourceRef for T {
+    fn clone_as_boxed(&self, dependent: ComponentIdRef<'_>) -> Box<dyn ResourceRef> {
+        Box::new(self.clone_as(dependent))
     }
 }

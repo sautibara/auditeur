@@ -360,7 +360,8 @@ impl Respond {
         })
     }
 
-    #[allow(clippy::too_many_lines)] // anyways
+    // TODO: please for the love of god break this into multiple functions
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     fn define_connection_struct(
         item_ident: &Ident,
         config: &Config<'_>,
@@ -372,16 +373,8 @@ impl Respond {
 
         let message_ident = &config.query.message_ident;
 
-        let mut fields = quote! {
-            giver: #auditeur::resource::listener::Giver<#item_ident, #message_ident>,
-        };
-
-        let mut create_fields = quote! {
-            giver: #auditeur::resource::listener::Giver::new(registry),
-        };
-
-        #[cfg(feature = "runtime-loading")]
-        let mut fields_list = vec![Ident::new("giver", Span::call_site())];
+        let mut field_idents = vec![Ident::new("giver", Span::call_site())];
+        let mut field_types = vec![parse_quote!(#auditeur::app::channels::Giver<#message_ident>)];
 
         let response = format_ident!("{RESPONSE}");
 
@@ -403,7 +396,7 @@ impl Respond {
                     let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
                     let query = #message_ident::#variant { #response, #(#arg1),* };
                     self.giver.give(query).await;
-                    auditeur_receiver.await.expect(concat!(stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
+                    auditeur_receiver.await.expect(concat!("respond: ", stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
                 }
             });
         }
@@ -416,16 +409,8 @@ impl Respond {
             let transaction_message = &transaction.message_ident;
             let transaction_ref = &transaction.ref_ident;
 
-            fields.extend(quote! {
-                transactions: #auditeur::resource::listener::Giver<#item_ident, #transaction_message>,
-            });
-
-            create_fields.extend(quote! {
-                transactions: #auditeur::resource::listener::Giver::new(registry),
-            });
-
-            #[cfg(feature = "runtime-loading")]
-            fields_list.push(Ident::new("transactions", Span::call_site()));
+            field_idents.push(Ident::new("transactions", Span::call_site()));
+            field_types.push(parse_quote!(#auditeur::app::channels::Giver<#transaction_message>));
 
             let vis = if hidden.is_some() {
                 quote! { pub(crate) }
@@ -458,20 +443,12 @@ impl Respond {
             });
         }
 
-        for field in &config.fields {
-            let FieldRef {
-                ident,
-                ty,
-                registry_ident,
-                init,
-            } = field;
-            fields.extend(quote! {
-                #ident: #ty,
-            });
-            create_fields.extend(quote! {
-                #ident: { let #registry_ident = registry; #init },
-            });
-            fields_list.push((*ident).clone());
+        if let Some(fields) = &config.fields {
+            for field in &fields.list {
+                let Field { ident, ty, .. } = &field;
+                field_idents.push((*ident).clone());
+                field_types.push(ty.clone());
+            }
         }
 
         let ref_ident = &config.query.ref_ident;
@@ -487,8 +464,15 @@ impl Respond {
             #[cfg(not(feature = "path-any"))]
             let any_impl = quote! {};
 
-            let resource_ref_impl =
-                super::resource_ref(ref_ident, Some(item_ident), fields_list.iter());
+            let dependency_handle_ident = format_ident!("dependency_handle");
+
+            let generics = syn::Generics::default();
+
+            let resource_ref_impl = super::clone_as_struct(
+                ref_ident,
+                std::iter::once(&dependency_handle_ident).chain(&field_idents),
+                &generics,
+            );
 
             quote! {
                 #any_impl
@@ -500,20 +484,29 @@ impl Respond {
 
         quote! {
             #hidden
-            #[derive(Debug)]
             pub struct #ref_ident {
-                event_sender: #auditeur::app::EventSender,
-                #fields
+                dependency_handle: #auditeur::app::event::DependencyHandle,
+                #(#field_idents: #field_types),*
             }
 
             impl #auditeur::input::Input for #ref_ident {
-                async fn create(registry: &#auditeur::app::Registry, dependent: &NamespacedIdRef) -> Result<Self, #auditeur::Error> {
-                    Ok(Self::new(registry, dependent))
+                async fn create(
+                    registry: &#auditeur::app::Registry,
+                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                ) -> Result<Self, #auditeur::Error> {
+                    Self::new(registry, dependent).await
                 }
 
                 fn constraints() -> #auditeur::app::Constraints {
                     #auditeur::app::Constraints::empty()
                         .after_resource(<#item_ident as #auditeur::resource::Identifiable>::const_ident())
+                        #(.extend(<#field_types as #auditeur::input::Input>::constraints()))*
+                }
+            }
+
+            impl std::fmt::Debug for #ref_ident {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{} {{ .. }}", stringify!(#ref_ident))
                 }
             }
 
@@ -522,19 +515,29 @@ impl Respond {
             #[allow(clippy::missing_panics_doc)]
             impl #ref_ident {
                 #[doc = #new_docs]
-                pub fn new(
+                pub async fn new(
                     registry: &#auditeur::app::Registry,
-                    dependent: &#auditeur::namespaced_id::NamespacedIdRef,
-                ) -> Self {
+                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                ) -> ::std::result::Result<Self, #auditeur::Error> {
                     let event_sender = registry.event_sender();
-                    event_sender.send_dependency(
-                        dependent,
-                        <#item_ident as #auditeur::resource::Identifiable>::const_ident(),
-                    );
-                    Self {
+                    let id = <#item_ident as #auditeur::resource::Identifiable>::const_ident()
+                        .to_owned();
+                    let dependency = #auditeur::app::event::DependencyFull {
+                        link: #auditeur::app::event::DependencyLink {
+                            dependency: #auditeur::app::event::ComponentId::Resource(id),
+                            dependent: dependent.into_owned(),
+                        },
+                        removable: #auditeur::app::event::Removable::Inherit,
+                    };
+                    let dependency_handle = #auditeur::app::event::DependencyHandle::new(
                         event_sender,
-                        #create_fields
-                    }
+                        dependency,
+                    );
+                    #[allow(unused_variables)]
+                    Ok(Self {
+                        dependency_handle,
+                        #(#field_idents: <#field_types as #auditeur::input::Input>::create(registry, dependent).await?),*
+                    })
                 }
 
                 #methods_out
@@ -736,12 +739,12 @@ impl Respond {
             impl #auditeur::input::get::GetRef for #item_ident {
                 type Ref = #connection;
 
-                fn get_ref(
+                async fn get_ref(
                     &self,
                     registry: &#auditeur::app::Registry,
-                    dependent: &#auditeur::namespaced_id::NamespacedIdRef,
-                ) -> Self::Ref {
-                    #connection::new(registry, dependent)
+                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                ) -> Result<Self::Ref, #auditeur::Error> {
+                    #connection::new(registry, dependent).await
                 }
             }
         }
@@ -1113,7 +1116,7 @@ pub struct Config<'a> {
     pub query: TakeConfig<'a>,
     pub transaction: Option<TakeConfig<'a>>,
     pub get_ref: bool,
-    pub fields: Vec<FieldRef<'a>>,
+    pub fields: Option<&'a Fields>,
 }
 
 pub struct TakeConfig<'a> {
@@ -1177,12 +1180,14 @@ impl Meta {
 
         let get_ref = self.params.iter().any(MetaParam::is_get_ref);
 
-        let fields = self
-            .params
-            .iter()
-            .filter_map(MetaParam::as_fields)
-            .flat_map(|fields| fields.refs())
-            .collect();
+        let mut fields_iter = self.params.iter().filter_map(MetaParam::as_fields);
+        let fields = fields_iter.next().map(|nv| &nv.value);
+        if let Some(fields) = fields_iter.next() {
+            return Err(syn::Error::new_spanned(
+                fields,
+                "expected a maximum of one fields argument",
+            ));
+        }
 
         Ok(Config {
             query,
@@ -1411,33 +1416,15 @@ impl ToTokens for TakeTypesParam {
 }
 
 #[derive(Debug)]
-struct Fields {
-    lbar: Token![|],
-    registry_ident: Ident,
-    rbar: Token![|],
+pub struct Fields {
     brace: Brace,
     list: Punctuated<Field, Token![,]>,
-}
-
-impl Fields {
-    fn refs(&self) -> impl Iterator<Item = FieldRef<'_>> {
-        let registry_ident = &self.registry_ident;
-        self.list.iter().map(|field| FieldRef {
-            ident: &field.ident,
-            ty: &field.ty,
-            registry_ident,
-            init: &field.init,
-        })
-    }
 }
 
 impl Parse for Fields {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let content;
         Ok(Self {
-            lbar: input.parse()?,
-            registry_ident: input.parse()?,
-            rbar: input.parse()?,
             brace: braced!(content in input),
             list: content.parse_terminated(Field::parse, Token![,])?,
         })
@@ -1446,9 +1433,6 @@ impl Parse for Fields {
 
 impl ToTokens for Fields {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.lbar.to_tokens(tokens);
-        self.registry_ident.to_tokens(tokens);
-        self.rbar.to_tokens(tokens);
         self.brace.surround(tokens, |tokens| {
             self.list.to_tokens(tokens);
         });
@@ -1460,8 +1444,6 @@ struct Field {
     ident: Ident,
     colon: Token![:],
     ty: Box<Type>,
-    eq: Token![=],
-    init: Box<Expr>,
 }
 
 impl Parse for Field {
@@ -1470,8 +1452,6 @@ impl Parse for Field {
             ident: input.parse()?,
             colon: input.parse()?,
             ty: input.parse()?,
-            eq: input.parse()?,
-            init: input.parse()?,
         })
     }
 }
@@ -1481,14 +1461,5 @@ impl ToTokens for Field {
         self.ident.to_tokens(tokens);
         self.colon.to_tokens(tokens);
         self.ty.to_tokens(tokens);
-        self.eq.to_tokens(tokens);
-        self.init.to_tokens(tokens);
     }
-}
-
-pub struct FieldRef<'a> {
-    ident: &'a Ident,
-    ty: &'a Type,
-    registry_ident: &'a Ident,
-    init: &'a Expr,
 }

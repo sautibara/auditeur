@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use auditeur_plugin::auditeur::{
-    app::{App, BundleInit, Registry, resource_map::ResourceMapConnection},
+    app::{App, Registry, event::BundleInit, resource_map::ResourceMapConnection},
     bundle,
     prelude::*,
 };
