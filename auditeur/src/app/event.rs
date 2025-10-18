@@ -60,13 +60,19 @@ pub enum RegistryEvent {
     /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
     /// message - see [`Self::Unloaded`] instead, if that information is needed.
     Stopped(NamespacedId),
-    /// `id` has been unloaded from the app: it has stopped if it ever started running, and all
-    /// [references](crate::input::get::Get) of it from other [resources](mod@crate::resource) have
-    /// been dropped
+    /// `id` has been unloaded from the app.
+    ///
+    /// If it is a:
+    /// - [`ComponentId::Resource`]: The resource has stopped if it ever started running, and all
+    ///   [references](crate::input::get::Get) of it from other [resources](mod@crate::resource)
+    ///   have been dropped.
+    /// - [`ComponentId::Bundle`]: All of the child components in this bundle have unloaded.
+    /// - [`ComponentId::Message`]: All resources that use this message have either unloaded or
+    ///   otherwise dropped their handle.
     ///
     /// Note: this will only ever be sent if the `resource-map` feature is enabled
     #[cfg(feature = "resource-map")]
-    Unloaded(NamespacedId),
+    Unloaded(ComponentId),
     /// A bundle has started resolving its dependencies
     BundleResolving {
         id: NamespacedId,
@@ -81,11 +87,6 @@ pub enum RegistryEvent {
         resources: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
     },
-    /// The last child of the bundle represented by `id` has unloaded, unloading the bundle
-    ///
-    /// Note: this will only ever be sent if the `resource-map` feature is enabled
-    #[cfg(feature = "resource-map")]
-    BundleUnloaded(NamespacedId),
     // TODO: actually emit these
     ListenMessageLoaded {
         id: NamespacedId,
@@ -95,10 +96,6 @@ pub enum RegistryEvent {
         id: NamespacedId,
         bundle: NamespacedId,
     },
-    #[cfg(feature = "resource-map")]
-    ListenMessageUnloaded(NamespacedId),
-    #[cfg(feature = "resource-map")]
-    TakeMessageUnloaded(NamespacedId),
     /// Resource `dependent` now depends on `dependency` in some way. This should be called
     /// whenever one resources uses another resource's code in any way. For example, this is
     /// emitted when [get](crate::input::get::Get) requests are fulfilled and when
@@ -499,6 +496,22 @@ impl ComponentId {
             None
         }
     }
+
+    /// Returns the inner [`NamespacedIdRef`], no matter what type of component this is.
+    #[must_use]
+    pub fn inner(&self) -> &NamespacedIdRef {
+        match self {
+            Self::Resource(id) | Self::Bundle(id) | Self::Message(id) => id,
+        }
+    }
+
+    /// Returns the inner [`NamespacedId`], no matter what type of component this is.
+    #[must_use]
+    pub fn into_inner(self) -> NamespacedId {
+        match self {
+            Self::Resource(id) | Self::Bundle(id) | Self::Message(id) => id,
+        }
+    }
 }
 
 impl Display for ComponentId {
@@ -515,7 +528,7 @@ pub enum ComponentIdRef<'a> {
     Message(&'a NamespacedIdRef),
 }
 
-impl ComponentIdRef<'_> {
+impl<'a> ComponentIdRef<'a> {
     /// Converts this into an owned [`ComponentId`] by cloning.
     #[must_use]
     pub fn into_owned(self) -> ComponentId {
@@ -525,11 +538,25 @@ impl ComponentIdRef<'_> {
             Self::Message(id) => ComponentId::Message(id.to_owned()),
         }
     }
+
+    /// Returns the inner [`NamespacedIdRef`], no matter what type of component this is.
+    #[must_use]
+    pub const fn inner(self) -> &'a NamespacedIdRef {
+        match self {
+            Self::Resource(id) | Self::Bundle(id) | Self::Message(id) => id,
+        }
+    }
 }
 
 impl hashbrown::Equivalent<ComponentId> for ComponentIdRef<'_> {
     fn equivalent(&self, key: &ComponentId) -> bool {
         key.as_ref() == *self
+    }
+}
+
+impl<'a> From<&'a ComponentIdRef<'a>> for ComponentId {
+    fn from(value: &'a ComponentIdRef) -> Self {
+        value.into_owned()
     }
 }
 
@@ -546,6 +573,12 @@ impl Display for ComponentIdRef<'_> {
 impl From<ComponentIdRef<'_>> for ComponentId {
     fn from(value: ComponentIdRef<'_>) -> Self {
         value.into_owned()
+    }
+}
+
+impl<'a> From<&'a Self> for ComponentId {
+    fn from(value: &'a Self) -> Self {
+        value.clone()
     }
 }
 

@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use auditeur_plugin::auditeur::{
-    app::{App, Registry, event::BundleInit, resource_map::ResourceMapConnection},
+    app::{
+        App, Registry,
+        event::{BundleInit, ComponentId},
+        resource_map::ResourceMapConnection,
+    },
     bundle,
     prelude::*,
 };
@@ -64,7 +68,7 @@ impl PluginRegistry {
 impl ListenToRegistry for PluginRegistry {
     async fn on(&mut self, message: RegistryEvent, (): ()) -> anyhow::Result<bool> {
         match message {
-            RegistryEvent::BundleUnloaded(id) => {
+            RegistryEvent::Unloaded(ComponentId::Bundle(id)) => {
                 if let Some(library) = self.libraries.remove(&id) {
                     debug!("unloading bundle `{id}`'s library...");
                     drop(library);

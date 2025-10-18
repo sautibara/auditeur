@@ -420,6 +420,38 @@ impl Clone for AnyChannel {
     }
 }
 
+pub(crate) enum TypedAnyChannel {
+    Listen(AnyListenChannel),
+    Take(AnyTakeChannel),
+}
+
+impl TypedAnyChannel {
+    pub(crate) const fn as_listen(&self) -> Option<&AnyListenChannel> {
+        if let Self::Listen(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn as_take(&self) -> Option<&AnyTakeChannel> {
+        if let Self::Take(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Debug for TypedAnyChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Listen(_) => write!(f, "Listen(_)"),
+            Self::Take(_) => write!(f, "Take(_)"),
+        }
+    }
+}
+
 type ListenChannel<M> = Shouter<M>;
 #[derive(Clone)]
 pub(crate) struct AnyListenChannel(AnyChannel);

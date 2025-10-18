@@ -51,6 +51,7 @@ use tracing::trace;
 use crate::app::channels::Channels;
 use crate::app::channels::ChannelsRefMut;
 use crate::app::channels::Giver;
+use crate::app::channels::TypedAnyChannel;
 use crate::app::event::CloneAs;
 use crate::app::event::ComponentId;
 use crate::app::event::ComponentIdRef;
@@ -94,20 +95,6 @@ pub(crate) struct BuiltBundle {
     pub bundles: Arc<[NamespacedId]>,
     #[cfg(feature = "runtime-loading")]
     pub init: Option<bundle::SharedInitFn>,
-}
-
-enum TypedAnyChannel {
-    Listen(channels::AnyListenChannel),
-    Take(channels::AnyTakeChannel),
-}
-
-impl Debug for TypedAnyChannel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Listen(_) => write!(f, "Listen(_)"),
-            Self::Take(_) => write!(f, "Take(_)"),
-        }
-    }
 }
 
 #[derive(Debug)]
