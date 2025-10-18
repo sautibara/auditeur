@@ -1,16 +1,11 @@
 use futures::pin_mut;
 use tokio::select;
-#[allow(clippy::wildcard_imports)] // dnc
-use tracing::*;
+use tracing::debug;
 
-use crate::prelude::*;
-
-use crate::resource::Identifiable;
-use crate::resource::Resource as ResourceTrait;
-use crate::resource::Watcher as WatcherTrait;
-
-use super::RegistryEvent;
-use super::channels::{EventReceiver, EventSender};
+use crate::{
+    app::{LoadedResource, Loader, Runner, channels::EventReceiver},
+    prelude::*,
+};
 
 const fn then_continue(conditional: bool) -> ControlFlow<()> {
     if conditional {
@@ -20,67 +15,77 @@ const fn then_continue(conditional: bool) -> ControlFlow<()> {
     }
 }
 
-/// A [resource](mod@crate::resource) that has already been loaded into a [`Registry`]
-#[allow(clippy::module_name_repetitions)] // without Loaded, it would conflict with Resource
-pub trait LoadedResource: Identifiable + Send + Sync {
-    /// Optionally provide a [`Runner`] to run in the main loop
+/// A [`Resource`] that runs its own method in the main async loop
+///
+/// The main use of `Watcher`s is that they can ask for [`Input`]s from the rest of the [`App`]
+pub trait Watcher: Resource + Send {
+    type Input: Input;
+
+    fn run(&mut self, input: &mut Self::Input) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn exit(&mut self, input: &mut Self::Input) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async {
+            let _ = input;
+            Ok(())
+        }
+    }
+
+    #[must_use]
+    fn constraints() -> Constraints {
+        Constraints::empty()
+    }
+
+    /// Returns a set of channels that this watcher "owns".
     ///
-    /// This runner is joined alongside every other runner, if it is given
-    ///
-    /// # Errors
-    ///
-    /// - Returns [`Err(Self)`] if this resource doesn't provide a runner
-    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>>;
-    /// Obtain a reference to the original resource within a trait object
-    fn resource(&self) -> &dyn ResourceTrait;
-    /// Obtain a reference to the original resource within a trait object
-    fn resource_mut(&mut self) -> &mut dyn ResourceTrait;
+    /// These channels will automatically be added to the [registry](Registry), but special care
+    /// should be taken to make sure that a specific channel isn't added multiple times.
+    #[must_use]
+    fn channels() -> Channels {
+        Channels::new()
+    }
 }
 
-/// An object that can run a simple async function, see [`LoadedResource::runner`]
+pub(crate) struct WatcherLoader<W: Watcher + Create> {
+    external_input: W::ExternalInput,
+}
+
+impl<W: Watcher + Create> WatcherLoader<W> {
+    pub const fn new(external_input: W::ExternalInput) -> Self {
+        Self { external_input }
+    }
+}
+
 #[async_trait]
-pub trait Runner: Identifiable + Send {
-    async fn run(self: Box<Self>);
-}
+impl<W: Watcher + Create> Loader for WatcherLoader<W> {
+    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
+        let ident = ComponentIdRef::Resource(W::const_ident());
+        let registry_input = W::RegistryInput::create(registry, ident).await?;
+        let watcher = W::create(registry_input, self.external_input)
+            .await
+            .map_err(|error| Error::FromResource {
+                id: W::const_ident().into(),
+                error,
+            })?;
+        let runner = LoadedWatcher::build(watcher, registry).await?;
+        Ok(Box::new(runner))
+    }
 
-pub struct Resource<R: ResourceTrait> {
-    resource: R,
-}
+    fn constraints(&self) -> Constraints {
+        W::RegistryInput::constraints()
+            .extend(W::Input::constraints())
+            .extend(W::constraints())
+    }
 
-impl<R: ResourceTrait> Resource<R> {
-    pub const fn new(resource: R) -> Self {
-        Self { resource }
+    fn ident(&self) -> &NamespacedIdRef {
+        W::const_ident()
+    }
+
+    fn channels(&self) -> Channels {
+        W::channels()
     }
 }
 
-impl<R: ResourceTrait> LoadedResource for Resource<R> {
-    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>> {
-        Err(self)
-    }
-
-    fn resource(&self) -> &dyn ResourceTrait {
-        &self.resource
-    }
-
-    fn resource_mut(&mut self) -> &mut dyn ResourceTrait {
-        &mut self.resource
-    }
-}
-
-impl<R: ResourceTrait> Identifiable for Resource<R> {
-    fn ident(&self) -> &'static NamespacedIdRef {
-        self.resource.ident()
-    }
-
-    fn const_ident() -> &'static NamespacedIdRef
-    where
-        Self: Sized,
-    {
-        R::const_ident()
-    }
-}
-
-pub struct Watcher<W: WatcherTrait> {
+struct LoadedWatcher<W: Watcher> {
     inner: W,
     input: W::Input,
     event_receiver: EventReceiver,
@@ -89,18 +94,15 @@ pub struct Watcher<W: WatcherTrait> {
     registry: Registry,
 }
 
-impl<W: WatcherTrait> Watcher<W> {
+impl<W: Watcher> LoadedWatcher<W> {
     pub async fn build(watcher: W, registry: &Registry) -> Result<Self, Error> {
         Ok(Self {
             #[cfg(feature = "runtime-loading")]
             registry: registry.handle(),
             event_receiver: registry.event_receiver(),
             event_sender: registry.event_sender(),
-            input: <W::Input as Input>::create(
-                registry,
-                super::event::ComponentIdRef::Resource(watcher.ident()),
-            )
-            .await?,
+            input: <W::Input as Input>::create(registry, ComponentIdRef::Resource(watcher.ident()))
+                .await?,
             inner: watcher,
         })
     }
@@ -142,12 +144,12 @@ impl<W: WatcherTrait> Watcher<W> {
     }
 }
 
-impl<W: WatcherTrait> LoadedResource for Watcher<W> {
-    fn resource(&self) -> &dyn ResourceTrait {
+impl<W: Watcher> LoadedResource for LoadedWatcher<W> {
+    fn resource(&self) -> &dyn Resource {
         &self.inner
     }
 
-    fn resource_mut(&mut self) -> &mut dyn ResourceTrait {
+    fn resource_mut(&mut self) -> &mut dyn Resource {
         &mut self.inner
     }
 
@@ -157,7 +159,7 @@ impl<W: WatcherTrait> LoadedResource for Watcher<W> {
 }
 
 #[async_trait]
-impl<W: WatcherTrait> Runner for Watcher<W> {
+impl<W: Watcher> Runner for LoadedWatcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
@@ -201,7 +203,7 @@ impl<W: WatcherTrait> Runner for Watcher<W> {
     }
 }
 
-impl<W: WatcherTrait> Identifiable for Watcher<W> {
+impl<W: Watcher> Identifiable for LoadedWatcher<W> {
     fn ident(&self) -> &'static NamespacedIdRef {
         self.inner.ident()
     }

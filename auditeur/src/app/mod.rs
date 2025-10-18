@@ -64,44 +64,69 @@ use crate::prelude::*;
 pub mod channels;
 mod constraints;
 pub mod event;
-pub(crate) mod loaded;
-pub(crate) mod loader;
 
 #[cfg(feature = "resource-map")]
 pub mod resource_map;
 #[cfg(feature = "resource-map")]
 pub use resource_map::ResourceMap;
 
-pub use loaded::LoadedResource;
-pub use loaded::Runner;
-pub use loader::Loader;
-
 pub use constraints::Constraint;
 pub use constraints::Constraints;
 
 use channels::ChannelsRef;
 
+/// An object that can be loaded with a [`Registry`] to return a finished [`LoadedResource`]
+///
+/// This trait and its delayed execution is the thing that allows for the "trait magic" of
+/// [inputs](Input). When loading, inputs are taken from the [Registry]. Resources are ensured to
+/// already be loaded through the [`Constraints`] of each input, which is why delayed execution is
+/// necessary.
+#[async_trait]
+pub trait Loader: Send {
+    /// Consume the loader and create a [`LoadedResource`], resolving inputs using `registry`
+    ///
+    /// # Errors
+    ///
+    /// - If the inputs return any errors
+    ///   - If any resources are not found
+    async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error>;
+    /// Return a list of [`Constraints`] that must be satisfied before loading
+    fn constraints(&self) -> Constraints;
+    /// Return a reference to the contained [resource](mod@crate::resource)'s [`NamespacedId`]
+    fn ident(&self) -> &NamespacedIdRef;
+    /// Returns a set of channels that this loader "owns".
+    ///
+    /// These channels will automatically be added to the [registry](Registry), but special care
+    /// should be taken to make sure that a specific channel isn't added multiple times.
+    #[must_use]
+    fn channels(&self) -> Channels {
+        Channels::new()
+    }
+}
+/// A [resource](mod@crate::resource) that has already been loaded into a [`Registry`]
+#[allow(clippy::module_name_repetitions)] // without Loaded, it would conflict with Resource
+pub trait LoadedResource: Identifiable + Send + Sync {
+    /// Optionally provide a [`Runner`] to run in the main loop
+    ///
+    /// This runner is joined alongside every other runner, if it is given
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`Err(Self)`] if this resource doesn't provide a runner
+    fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>>;
+    /// Obtain a reference to the original resource within a trait object
+    fn resource(&self) -> &dyn Resource;
+    /// Obtain a reference to the original resource within a trait object
+    fn resource_mut(&mut self) -> &mut dyn Resource;
+}
+
+/// An object that can run a simple async function, see [`LoadedResource::runner`]
+#[async_trait]
+pub trait Runner: Identifiable + Send {
+    async fn run(self: Box<Self>);
+}
+
 // TODO: separate NamespacedId into ResourceId and BundleId
-
-struct BundledLoader {
-    loader: Box<dyn Loader>,
-    bundle: NamespacedId,
-}
-
-pub(crate) struct BuiltBundle {
-    pub constraints: Constraints,
-    pub parent: Option<NamespacedId>,
-    pub resources: Arc<[NamespacedId]>,
-    pub bundles: Arc<[NamespacedId]>,
-    #[cfg(feature = "runtime-loading")]
-    pub init: Option<bundle::SharedInitFn>,
-}
-
-#[derive(Debug)]
-struct BuiltChannel {
-    channel: TypedAnyChannel,
-    bundle: NamespacedId,
-}
 
 /// The main entry-point for the application: the thing that runs resources
 ///
@@ -125,6 +150,26 @@ pub struct App {
     loading_loaders: HashMap<NamespacedId, NamespacedId>,
     // TODO: check if adding App events is a good idea
     events: Vec<RegistryEvent>,
+}
+
+struct BundledLoader {
+    loader: Box<dyn Loader>,
+    bundle: NamespacedId,
+}
+
+pub(crate) struct BuiltBundle {
+    pub constraints: Constraints,
+    pub parent: Option<NamespacedId>,
+    pub resources: Arc<[NamespacedId]>,
+    pub bundles: Arc<[NamespacedId]>,
+    #[cfg(feature = "runtime-loading")]
+    pub init: Option<bundle::SharedInitFn>,
+}
+
+#[derive(Debug)]
+struct BuiltChannel {
+    channel: TypedAnyChannel,
+    bundle: NamespacedId,
 }
 
 impl App {

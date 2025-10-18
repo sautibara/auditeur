@@ -41,7 +41,7 @@ pub mod prelude {
         app::{
             App, Constraints, Registry,
             channels::{Channels, ChannelsRef, Shouter, Stopper},
-            event::RegistryEvent,
+            event::{ComponentId, ComponentIdRef, RegistryEvent},
         },
         bundle::Bundle,
         input::get::Get,
@@ -53,8 +53,9 @@ pub mod prelude {
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
-            Create, Runnable, Watcher,
+            Create, Runnable,
             listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
+            watcher::Watcher,
         },
     };
 

@@ -8,9 +8,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::{Message, prelude::*};
+use crate::{Message, prelude::*, resource};
 
-use crate::app::{BuiltBundle, Constraint, Loader, loader};
+use crate::app::{BuiltBundle, Constraint, Loader};
 
 /// Create a new bundle with the given identifier
 ///
@@ -113,7 +113,9 @@ impl Bundle {
     /// Resources are never run, they only provide themselves to [listeners](Listener),
     /// [watchers](Watcher), or other resources with [`input::Get<_>`](crate::input::get::Get)
     pub fn with_resource<R: Resource + Create>(self, external_input: R::ExternalInput) -> Self {
-        self.with(loader::Resource::<R>::new(external_input))
+        self.with(resource::non_runnable::NonRunnableLoader::<R>::new(
+            external_input,
+        ))
     }
 
     /// Add a [`Listener`] to this bundle
@@ -121,13 +123,11 @@ impl Bundle {
     /// Listeners run in the main loop, listening to their
     /// [`Component`](crate::resource::listener::Component)s. Like watchers, they
     /// can use [inputs](Input) to reference and talk to other [resources](mod@crate::resource).
-    pub fn with_listener<L: crate::resource::listener::Listener + Create>(
+    pub fn with_listener<L: resource::listener::Listener + Create>(
         self,
         external_input: L::ExternalInput,
     ) -> Self {
-        self.with(crate::resource::listener::ListenerLoader::<L>::new(
-            external_input,
-        ))
+        self.with(resource::listener::ListenerLoader::<L>::new(external_input))
     }
 
     /// Add a [`Watcher`] to this bundle
@@ -136,7 +136,7 @@ impl Bundle {
     /// they can send to it). Like listeners, they can use [inputs](Input) to reference and talk to
     /// other [resources](mod@crate::resource).
     pub fn with_watcher<W: Watcher + Create>(self, external_input: W::ExternalInput) -> Self {
-        self.with(loader::Watcher::<W>::new(external_input))
+        self.with(resource::watcher::WatcherLoader::<W>::new(external_input))
     }
 
     /// Add another bundle to this bundle
