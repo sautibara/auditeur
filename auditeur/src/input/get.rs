@@ -71,7 +71,7 @@ pub trait GetRef {
 ///
 /// This can be automatically implemented for all types using autoderef-based specialization,
 /// allowing types that don't know if they even implement [`GetRef`] to try to create a
-/// synchronized reference. See [`crate::app::GetRequest`] for why this is necessary.
+/// synchronized reference. See [`crate::app::event::GetRequest`] for why this is necessary.
 ///
 /// To implement the trait, use [`#[resource]`](macro@resource) or
 /// [`#[derive(MaybeGetRef)]`](macro@crate::MaybeGetRef)
@@ -128,7 +128,7 @@ pub mod maybe_get_ref {
 /// A trait that allows for [cloning](Clone) within a trait object and dynamic typing
 ///
 /// This trait is used only in [`MaybeGetRef`] and is implemented for all types that implement
-/// [`Clone`] and [`Any`]
+/// [`Clone`] and [`Any`](crate::Any).
 #[cfg(feature = "runtime-loading")]
 pub trait ResourceRef: CloneAs + crate::Any + Send + Sync {
     #[must_use]

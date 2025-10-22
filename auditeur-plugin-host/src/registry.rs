@@ -31,9 +31,10 @@ use auditeur_plugin::loading::Plugin;
 
 /// A registry of all of the currently loaded plugins in the [`App`]
 ///
-/// This registry keeps a [`LibraryHandle`] of all loaded plugins, keeping their dynamic libraries
-/// loaded. The registry only drops the handle when [`RegistryEvent::BundleUnloaded`] is received
-/// for the plugin's bundle, so that the library isn't held for forever.
+/// This registry keeps a [`LibraryHandle`](auditeur_plugin::LibraryHandle) of all loaded plugins,
+/// keeping their dynamic libraries loaded. The registry only drops the handle when
+/// [`RegistryEvent::Unloaded`] is received for the plugin's bundle, so that the library isn't
+/// held for forever.
 #[must_use = "if the registry isn't added to an app, the libraries that are loaded will be leaked"]
 #[derive(Runnable, Default)]
 #[listener(

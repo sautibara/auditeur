@@ -9,6 +9,13 @@ use tokio::sync::oneshot;
 use crate::bundle;
 use crate::prelude::*;
 
+#[cfg(doc)]
+use crate::app::Runner;
+#[cfg(doc)]
+use crate::app::resource_map::ResourceMap;
+#[cfg(doc)]
+use crate::resource::{listener::Listener, watcher::Watcher};
+
 /// Messages from the [`Registry`] about different events, such as loading or unloading resources
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -20,7 +27,8 @@ pub enum RegistryEvent {
     /// Stop `id`, making it exit
     ///
     /// Note: this is automatically handled for both
-    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher),
+    /// [listeners](crate::resource::listener::Listener) and
+    /// [watchers](crate::resource::watcher::Watcher),
     /// but custom [`Runner`]s will have to listen to this message themselves.
     ///
     /// This message can be sent using [`Stopper`].
@@ -48,17 +56,16 @@ pub enum RegistryEvent {
     Loaded(NamespacedId),
     /// `id` has started running
     ///
-    /// Note: this only is emitted for resources that have [`Runner`]s, like
-    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher).
-    /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
-    /// message.
+    /// Note: this only is emitted for resources that have [`Runner`]s, like [listeners](Listener)
+    /// and [watchers](Watcher). As simple [Resources](crate::resource::Resource) are never run,
+    /// they never emit this message.
     Running(NamespacedId),
     /// `id` has stopped running
     ///
-    /// Note: this only is emitted for resources that are [`Runner`]s, like
-    /// [listeners](crate::resource::listener::Listener) and [watchers](crate::resource::Watcher).
-    /// As simple [Resources](crate::resource::Resource) are never run, they never emit this
-    /// message - see [`Self::Unloaded`] instead, if that information is needed.
+    /// Note: this only is emitted for resources that are [`Runner`]s, like [listeners](Listener)
+    /// and [watchers](Watcher). As simple [Resources](crate::resource::Resource) are never run,
+    /// they never emit this message - see [`Self::Unloaded`] instead, if that information is
+    /// needed.
     Stopped(NamespacedId),
     /// `id` has been unloaded from the app.
     ///
@@ -99,7 +106,7 @@ pub enum RegistryEvent {
     /// Resource `dependent` now depends on `dependency` in some way. This should be called
     /// whenever one resources uses another resource's code in any way. For example, this is
     /// emitted when [get](crate::input::get::Get) requests are fulfilled and when
-    /// [respond](crate::macros::respond) connections are created. Note that this also means
+    /// [respond] connections are created. Note that this also means
     /// that this should be emitted when resources accept trait objects or function pointers
     /// from other resources.
     ///
@@ -110,7 +117,7 @@ pub enum RegistryEvent {
     /// This may be emitted multiple times for a single dependency, but it also must be paired with
     /// the same amount of [`DecrementDependency`](Self::DecrementDependency) events. To
     /// automatically handle this, you may use [`DependencyHandle`], which emits this on creation
-    /// and [`DecrementDependency`] on drop.
+    /// and [`DecrementDependency`](Self::DecrementDependency) on drop.
     IncrementDependency(DependencyFull),
     /// Resource `dependent` now depends on `dependency` in some way.
     ///
@@ -130,7 +137,7 @@ pub enum RegistryEvent {
     /// For example, if one resource A uses a library resource B's connection to send a trait
     /// object, A would depend on B through its connection, while B would depend on A through the
     /// object. In this case, B should mark the dependency coming from the object as
-    /// [removable](Self::Dependency::removable) and listen to the registry message stream for
+    /// [removable](DependencyFull::removable) and listen to the registry message stream for
     /// [`RemoveDependency`](Self::RemoveDependency) messages.
     ///
     /// This message can be sent using [`Stopper`].

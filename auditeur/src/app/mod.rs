@@ -1,8 +1,8 @@
 //! The main entry-point for the application: loading and running [resources](mod@crate::resource)
 //!
 //! The main [`App`] handles loading [resources](crate::resource::Resource),
-//! [listeners](crate::resource::listener::Listener), and [watchers](crate::resource::Watcher) from
-//! [bundles](Bundle) given by the user.
+//! [listeners](crate::resource::listener::Listener), and
+//! [watchers](crate::resource::watcher::Watcher) from [bundles](Bundle) given by the user.
 //!
 //! # The Loading Process
 //!
@@ -131,7 +131,7 @@ pub trait Runner: Identifiable + Send {
 /// The main entry-point for the application: the thing that runs resources
 ///
 /// The app handles loading [resources](crate::resource::Resource),
-/// [listeners](crate::resource::listener::Listener), and [watchers](crate::resource::Watcher),
+/// [listeners](Listener), and [watchers](Watcher),
 /// giving them the correct [inputs](crate::input::Input) (including
 /// [each other](crate::input::get::Get)), and [running them](Self::run) asynchronously. It also
 /// makes sure they are loaded in the correct order, through [constraints](Constraints), allowing
@@ -826,7 +826,7 @@ impl Debug for RunningRegistry {
 /// There are many bundled channels for notification passing:
 /// - To tell only one resource or the entire program to stop, use a [`Stopper`] through [`Self::stopper`]
 /// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
-/// - To listen to messages, use [`Self::message_receiver`]
+/// - To listen to messages, use [`Self::channels`]
 #[derive(Debug)]
 #[cfg_attr(feature = "runtime-loading", derive(PathAny))]
 pub struct Registry {
@@ -1047,10 +1047,10 @@ impl Registry {
     }
 
     /// Get a [synchronized reference](GetRef) to a loaded resource, using `reference_holder` as
-    /// the designated holder of the reference for [`RegistryEvent::Reference`] (see
+    /// the designated holder of the reference for [`RegistryEvent::IncrementDependency`] (see
     /// [`ResourceMap`] for why this information is necessary).
     ///
-    /// This uses [`Any`] in order to get the contained object, if it exists.
+    /// This uses [`Any`](crate::Any) in order to get the contained object, if it exists.
     ///
     /// # Errors
     ///
@@ -1185,7 +1185,7 @@ impl Registry {
         self.state.loaded_bundles().await
     }
 
-    /// Returns a set of the [`NamespacedId`]s of each [`Message`] that is currently loaded
+    /// Returns a set of the [`NamespacedId`]s of each [`Message`](crate::Message) that is currently loaded
     #[must_use]
     pub async fn loaded_messages(&self) -> HashSet<NamespacedId> {
         self.state.loaded_messages().await

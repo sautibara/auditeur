@@ -488,10 +488,10 @@ impl LoadedMessage {
 /// A dependency tree of the [resources](mod@crate::resource) and [bundles](crate::Bundle) that are
 /// currently loaded
 ///
-/// This tree is necessary for telling when [resources](RegistryEvent::Unloaded) or
-/// [bundles](RegistryEvent::BundleUnloaded) are unloaded. While running resources can be
-/// [stopped](RegistryEvent::Stopped), they only unload when every reference to them also unloads.
-/// As such, the map keeps track of these [references](RegistryEvent::Reference)
+/// This tree is necessary for telling when resources, bundles, and messages are unloaded. While
+/// running resources can be [stopped](RegistryEvent::Stopped), they only unload when every
+/// dependency to them also unloads. As such, the map keeps track of these
+/// [dependencies](RegistryEvent::IncrementDependency).
 ///
 /// Similarly, bundles only unload when all of its child resources and bundles also unload
 ///
@@ -921,7 +921,7 @@ impl ResourceMap {
             .collect()
     }
 
-    /// Returns a set of the [`NamespacedId`]s of each [`Message`] loaded in the [`Registry`]
+    /// Returns a set of the [`NamespacedId`]s of each [`Message`](crate::Message) loaded in the [`Registry`]
     #[must_use]
     pub fn loaded_messages(&self, (): ()) -> HashSet<NamespacedId> {
         self.messages

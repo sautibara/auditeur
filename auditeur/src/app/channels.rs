@@ -133,6 +133,9 @@ impl Channels {
         any_channel.giver()
     }
 
+    /// Adds all channels in `other` to `self`.
+    ///
+    /// This is equivalent to [`Self::add`], but takes `self` by ownership rather than by reference.
     pub fn add(&mut self, other: Self) {
         self.listen.extend(other.listen);
         self.take.extend(other.take);
@@ -207,7 +210,7 @@ impl<'a> ChannelsRef<'a> {
     /// # Errors
     ///
     /// - [`crate::Error::ListenMessageNotFound`] if `M` hasn't been
-    ///   [added](Self::with_listen_channel) yet.
+    ///   [added](Channels::with_listen_channel) yet.
     pub async fn listener<M: ListenMessage>(
         &self,
         dependent: ComponentIdRef<'_>,
@@ -227,7 +230,7 @@ impl<'a> ChannelsRef<'a> {
     /// # Errors
     ///
     /// - [`crate::Error::ListenMessageNotFound`] if `M` hasn't been
-    ///   [added](Self::with_listen_channel) yet.
+    ///   [added](Channels::with_listen_channel) yet.
     pub async fn shouter<M: ListenMessage>(
         &self,
         dependent: ComponentIdRef<'_>,
@@ -250,7 +253,7 @@ impl<'a> ChannelsRef<'a> {
     /// # Errors
     ///
     /// - [`crate::Error::TakeMessageNotFound`] if `M` hasn't been
-    ///   [added](Self::with_take_channel) yet.
+    ///   [added](Channels::with_take_channel) yet.
     /// - [`crate::Error::TakeTakerTaken`] if the taker for `M` has already been taken.
     pub async fn taker<M: Message>(
         &self,
@@ -271,7 +274,7 @@ impl<'a> ChannelsRef<'a> {
     /// # Errors
     ///
     /// - [`crate::Error::TakeMessageNotFound`] if `M` hasn't been
-    ///   [added](Self::with_take_channel) yet.
+    ///   [added](Channels::with_take_channel) yet.
     pub async fn giver<M: Message>(
         &self,
         dependent: ComponentIdRef<'_>,
@@ -337,8 +340,8 @@ impl<'a> ChannelsRefMut<'a> {
 
     /// Adds all channels in `other` to `self`.
     ///
-    /// This is equivalent to [`Self::combine_with`], but takes `self` by reference rather than by
-    /// ownership.
+    /// This is equivalent to [`Channels::combine_with`], but takes `self` by reference rather than
+    /// by ownership.
     pub async fn add(&mut self, other: Channels) {
         match &mut self.inner {
             ChannelsRefMutEnum::Building(building) => building.add(other),
@@ -907,7 +910,7 @@ impl Input for EventSender {
 ///
 /// This will always hold the entire history of events, even ones that happened before the receiver
 /// was created. This allows receivers to make models of the [`Registry`] using its entire state,
-/// like [`ResourceMap`].
+/// like [`ResourceMap`](crate::app::resource_map::ResourceMap).
 #[derive(Debug)]
 #[cfg_attr(feature = "path-any", derive(PathAny))]
 pub struct EventReceiver {

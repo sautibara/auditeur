@@ -27,7 +27,8 @@ pub use auditeur_macros::ident;
 
 /// Implements [`Resource`] for any type.
 ///
-/// This automatically implements [`Identifiable`], [`Any`], and if necessary, [`MaybeGetRef`].
+/// This automatically implements [`Identifiable`], [`Any`](crate::Any), and if necessary,
+/// [`MaybeGetRef`].
 ///
 /// # Examples
 ///
@@ -69,9 +70,9 @@ pub use auditeur_macros::resource;
 /// ```
 pub use auditeur_macros::identifiable;
 
-/// Implements [`Message`] for any type.
+/// Implements [`Message`](crate::Message) for any type.
 ///
-/// This automatically implements [`Identifiable`] and [`Any`].
+/// This automatically implements [`Identifiable`] and [`Any`](crate::Any).
 ///
 /// Note that you will have to annotate [`#[derive(Clone)]`](macro@Clone) yourself to make it more
 /// obvious that a [`Clone`](trait@Clone) implementation is required.
@@ -240,7 +241,7 @@ pub use auditeur_macros::expand_listener;
 ///
 /// ## `ListenToRegistry`
 ///
-/// To listen to the [registry message stream](crate::app::EventReceiver), use the flag
+/// To listen to the [registry message stream](crate::app::channels::EventReceiver), use the flag
 /// `listen_to_registry`. To manually provide inputs, use `listen_to_registry(input = <inputs>)`.
 ///
 /// ## Components
@@ -317,7 +318,7 @@ pub use auditeur_macros::expand_listener;
 ///
 /// All listeners by default have a [`RegistryComponent`], which automatically handles exiting when
 /// a [`Stopper`] tells it to. If the `runtime-loading` feature is enabled, it also fulfils
-/// [`GetRequest`](crate::app::GetRequest)s. As such, only disable it if there is already
+/// [`GetRequest`](crate::app::event::GetRequest)s. As such, only disable it if there is already
 /// another component that handles these two things.
 ///
 /// To disable adding a [`RegistryComponent`], specify `registry_component = false`.
