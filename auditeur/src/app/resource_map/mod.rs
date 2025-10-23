@@ -16,12 +16,10 @@ use crate::{
         channels::{
             AnyListenChannel, AnyTakeChannel, EventReceiver, EventSender, Giver, TypedAnyChannel,
         },
-        event::{
-            self, BundleInit, ComponentId, ComponentIdRef, DependencyFull, DependencyHandle,
-            DependencyLink, Removable,
-        },
+        event::BundleInit,
     },
     bundle,
+    input::dependency::{self, Removable},
     prelude::*,
     resource::listener,
 };
@@ -119,9 +117,9 @@ struct DependencyInfoRes<'a> {
 impl ComponentDependencies {
     fn dependency_info<'a>(
         map: &'a mut ResourceMap,
-        link: &DependencyLink,
+        link: &dependency::Link,
     ) -> anyhow::Result<Option<DependencyInfoRes<'a>>> {
-        let DependencyLink {
+        let dependency::Link {
             dependency,
             dependent,
         } = link;
@@ -154,7 +152,7 @@ impl ComponentDependencies {
         }))
     }
 
-    fn add_dependency(map: &mut ResourceMap, dependency: DependencyFull) -> anyhow::Result<()> {
+    fn add_dependency(map: &mut ResourceMap, dependency: dependency::Full) -> anyhow::Result<()> {
         let Some(DependencyInfoRes {
             dependency_counts,
             dependent_counts,
@@ -182,7 +180,10 @@ impl ComponentDependencies {
         Ok(())
     }
 
-    fn remove_dependency(map: &mut ResourceMap, dependency: DependencyFull) -> anyhow::Result<()> {
+    fn remove_dependency(
+        map: &mut ResourceMap,
+        dependency: dependency::Full,
+    ) -> anyhow::Result<()> {
         let Some(DependencyInfoRes {
             dependency_counts,
             dependent_counts,
@@ -731,12 +732,12 @@ impl ResourceMap {
             .ok_or_else(|| anyhow!("failed to get {id}"))
     }
 
-    fn add_dependency(&mut self, dependency: DependencyFull) -> Result<()> {
+    fn add_dependency(&mut self, dependency: dependency::Full) -> Result<()> {
         // implementation is in [`ComponentDependencies`] to make determining references its issue
         ComponentDependencies::add_dependency(self, dependency)
     }
 
-    fn remove_dependency(&mut self, dependency: DependencyFull) -> Result<()> {
+    fn remove_dependency(&mut self, dependency: dependency::Full) -> Result<()> {
         // same thing as above
         ComponentDependencies::remove_dependency(self, dependency)
     }
@@ -982,16 +983,16 @@ impl ResourceMapConnection {
         giver: Giver<ResourceMapQuery>,
     ) -> Self {
         Self {
-            dependency_handle: DependencyHandle::new(
+            dependency_handle: dependency::Handle::new(
                 event_sender,
-                DependencyFull {
-                    link: DependencyLink {
+                dependency::Full {
+                    link: dependency::Link {
                         dependency: ComponentIdRef::Resource(ResourceMap::const_ident())
                             .into_owned(),
                         dependent: ComponentIdRef::Resource(ident!("auditeur:registry"))
                             .into_owned(),
                     },
-                    removable: Removable::Inherit,
+                    removable: dependency::Removable::Inherit,
                 },
             ),
             giver,
@@ -1438,7 +1439,7 @@ impl SubMap {
         }
 
         for (dependent, dependency) in &dependencies_to_remove {
-            stopper.remove_dependency(event::DependencyLink {
+            stopper.remove_dependency(dependency::Link {
                 dependent: ComponentId::Resource(dependent.clone()),
                 dependency: dependency.clone(),
             });
@@ -1462,7 +1463,7 @@ impl SubMap {
                         return;
                     }
                 }
-                RegistryEvent::NewDependency(DependencyLink {
+                RegistryEvent::NewDependency(dependency::Link {
                     dependency,
                     dependent: ComponentId::Resource(dependent),
                 }) => {
@@ -1471,7 +1472,7 @@ impl SubMap {
                         loaded_dependencies.insert(entry);
                     }
                 }
-                RegistryEvent::RemovedDependency(DependencyLink {
+                RegistryEvent::RemovedDependency(dependency::Link {
                     dependency,
                     dependent: ComponentId::Resource(dependent),
                 }) => {

@@ -356,9 +356,9 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
             async fn get_ref(
                 &self,
                 _: &#auditeur::app::Registry,
-                dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                dependent: #auditeur::app::ComponentIdRef<'_>,
             ) -> Result<Self, #auditeur::Error> {
-                Ok(<Self as #auditeur::app::event::CloneAs>::clone_as(self, dependent))
+                Ok(<Self as #auditeur::input::CloneAs>::clone_as(self, dependent))
             }
         }
     }

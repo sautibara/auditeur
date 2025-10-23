@@ -19,7 +19,7 @@ pub fn maybe_get_ref(ident: &Ident, generics: &CustomGenerics) -> proc_macro2::T
             async fn maybe_get_ref(
                 &self,
                 registry: &#auditeur::app::Registry,
-                dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                dependent: #auditeur::app::ComponentIdRef<'_>,
             ) -> Result<Box<dyn #auditeur::input::get::ResourceRef>, #auditeur::Error> {
                 use #auditeur::input::get::maybe_get_ref::Specialization as _;
                 (&mut &*self).specialization(registry, dependent).await

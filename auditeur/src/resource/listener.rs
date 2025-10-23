@@ -7,7 +7,6 @@ use crate::{
     app::{
         LoadedResource, Loader, Runner,
         channels::{self, EventReceiver, EventSender, Taker},
-        event::ComponentIdRef,
     },
     input::subset::Subset,
     prelude::*,

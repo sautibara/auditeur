@@ -11,12 +11,12 @@ pub fn clone_as_struct<'i>(
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     quote! {
-        impl #impl_generics #auditeur::app::event::CloneAs for #ident #type_generics #where_clause {
-            fn clone_as(&self, dependent: #auditeur::app::event::ComponentIdRef<'_>) -> Self
+        impl #impl_generics #auditeur::input::CloneAs for #ident #type_generics #where_clause {
+            fn clone_as(&self, dependent: #auditeur::app::ComponentIdRef<'_>) -> Self
             where
                 Self: Sized
             {
-                use #auditeur::app::event::clone_as::Specialization as _;
+                use #auditeur::input::clone_as::Specialization as _;
                 Self {
                     #(#fields: (&mut &self.#fields).specialization(dependent)),*
                 }
@@ -71,12 +71,12 @@ pub fn clone_as_enum(enm: &ItemEnum) -> proc_macro2::TokenStream {
     let ident = &enm.ident;
 
     quote! {
-        impl #impl_generics #auditeur::app::event::CloneAs for #ident #type_generics #where_clause {
-            fn clone_as(&self, dependent: #auditeur::app::event::ComponentIdRef<'_>) -> Self
+        impl #impl_generics #auditeur::input::CloneAs for #ident #type_generics #where_clause {
+            fn clone_as(&self, dependent: #auditeur::app::ComponentIdRef<'_>) -> Self
             where
                 Self: Sized
             {
-                use #auditeur::app::event::clone_as::Specialization as _;
+                use #auditeur::input::clone_as::Specialization as _;
                 match self {
                     #variants
                 }

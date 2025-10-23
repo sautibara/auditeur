@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -7,6 +7,7 @@ use tokio::sync::oneshot;
 
 #[cfg(feature = "runtime-loading")]
 use crate::bundle;
+use crate::input::dependency;
 use crate::prelude::*;
 
 #[cfg(doc)]
@@ -118,7 +119,7 @@ pub enum RegistryEvent {
     /// the same amount of [`DecrementDependency`](Self::DecrementDependency) events. To
     /// automatically handle this, you may use [`DependencyHandle`], which emits this on creation
     /// and [`DecrementDependency`](Self::DecrementDependency) on drop.
-    IncrementDependency(DependencyFull),
+    IncrementDependency(dependency::Full),
     /// Resource `dependent` now depends on `dependency` in some way.
     ///
     /// This is sent by [`ResourceMap`] exactly once, right when `dependent` first depends on
@@ -127,7 +128,7 @@ pub enum RegistryEvent {
     /// [`DecrementDependency`](Self::DecrementDependency) events happen, sending this when the
     /// dependency level goes from zero to one.
     #[cfg(feature = "resource-map")]
-    NewDependency(DependencyLink),
+    NewDependency(dependency::Link),
     /// Asks `dependent` to remove its dependency on `dependency`.
     ///
     /// If resources accept external dependencies through their api (for example, by accepting
@@ -141,7 +142,7 @@ pub enum RegistryEvent {
     /// [`RemoveDependency`](Self::RemoveDependency) messages.
     ///
     /// This message can be sent using [`Stopper`].
-    RemoveDependency(DependencyLink),
+    RemoveDependency(dependency::Link),
     /// Resource `dependent` has successfully removed its dependency on `dependency`.
     ///
     /// This may be sent multiple times, but each decrement event must correspond to another
@@ -149,7 +150,7 @@ pub enum RegistryEvent {
     /// more decrement events than increment events for a single dependency link.
     ///
     /// This can be automatically sent by [`DependencyHandle`].
-    DecrementDependency(DependencyFull),
+    DecrementDependency(dependency::Full),
     /// Resource `dependent` has fully removed its dependency on `dependency`.
     ///
     /// This is sent by [`ResourceMap`] when `dependent` no longer depends on `dependency` in any
@@ -157,7 +158,7 @@ pub enum RegistryEvent {
     /// been emitted, there was also a corresponding
     /// [`DecrementDependency`](Self::DecrementDependency) event.
     #[cfg(feature = "resource-map")]
-    RemovedDependency(DependencyLink),
+    RemovedDependency(dependency::Link),
     /// There is a [`Get<_>`](crate::input::get::Get) request that must be fulfilled
     ///
     /// Note: this will only ever be sent if the `runtime-loading` feature is enabled
@@ -442,256 +443,5 @@ impl BundleInit {
     #[cfg(feature = "runtime-loading")]
     pub fn init(&self) -> Option<bundle::SharedInitFn> {
         Some(self.init.clone())
-    }
-}
-
-/// An id of a specific part of an [`App`].
-///
-/// This also shows the different namespaces that exist in `auditeur`. For example, it is okay if a
-/// [`Resource`] and a [`Bundle`] have the same [`NamespacedId`], but not for a [`Listen`] message
-/// and a [`Take`] message.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ComponentId {
-    /// A [`Resource`]
-    Resource(NamespacedId),
-    /// A [`Bundle`]
-    Bundle(NamespacedId),
-    /// A [`Listen`] or [`Take`] [`Message`](crate::Message).
-    Message(NamespacedId),
-}
-
-impl ComponentId {
-    /// Returns a [`ComponentIdRef`] referencing this id.
-    #[must_use]
-    pub fn as_ref(&self) -> ComponentIdRef<'_> {
-        match self {
-            Self::Resource(id) => ComponentIdRef::Resource(id),
-            Self::Bundle(id) => ComponentIdRef::Bundle(id),
-            Self::Message(id) => ComponentIdRef::Message(id),
-        }
-    }
-
-    /// Returns [`Some`] with the resource id if this is a [`Resource`](Self::Resource), or
-    /// [`None`] otherwise.
-    #[must_use]
-    pub fn as_resource(&self) -> Option<&NamespacedIdRef> {
-        if let Self::Resource(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    /// Returns [`Some`] with the bundle id if this is a [`Bundle`](Self::Bundle), or
-    /// [`None`] otherwise.
-    #[must_use]
-    pub fn as_bundle(&self) -> Option<&NamespacedIdRef> {
-        if let Self::Bundle(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    /// Returns [`Some`] with the message id if this is a [`Message`](Self::Message), or
-    /// [`None`] otherwise.
-    #[must_use]
-    pub fn as_message(&self) -> Option<&NamespacedIdRef> {
-        if let Self::Message(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    /// Returns the inner [`NamespacedIdRef`], no matter what type of component this is.
-    #[must_use]
-    pub fn inner(&self) -> &NamespacedIdRef {
-        match self {
-            Self::Resource(id) | Self::Bundle(id) | Self::Message(id) => id,
-        }
-    }
-
-    /// Returns the inner [`NamespacedId`], no matter what type of component this is.
-    #[must_use]
-    pub fn into_inner(self) -> NamespacedId {
-        match self {
-            Self::Resource(id) | Self::Bundle(id) | Self::Message(id) => id,
-        }
-    }
-}
-
-impl Display for ComponentId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_ref().fmt(f)
-    }
-}
-
-/// A reference to a [`ComponentId`].
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-pub enum ComponentIdRef<'a> {
-    Resource(&'a NamespacedIdRef),
-    Bundle(&'a NamespacedIdRef),
-    Message(&'a NamespacedIdRef),
-}
-
-impl<'a> ComponentIdRef<'a> {
-    /// Converts this into an owned [`ComponentId`] by cloning.
-    #[must_use]
-    pub fn into_owned(self) -> ComponentId {
-        match self {
-            Self::Resource(id) => ComponentId::Resource(id.to_owned()),
-            Self::Bundle(id) => ComponentId::Bundle(id.to_owned()),
-            Self::Message(id) => ComponentId::Message(id.to_owned()),
-        }
-    }
-
-    /// Returns the inner [`NamespacedIdRef`], no matter what type of component this is.
-    #[must_use]
-    pub const fn inner(self) -> &'a NamespacedIdRef {
-        match self {
-            Self::Resource(id) | Self::Bundle(id) | Self::Message(id) => id,
-        }
-    }
-}
-
-impl hashbrown::Equivalent<ComponentId> for ComponentIdRef<'_> {
-    fn equivalent(&self, key: &ComponentId) -> bool {
-        key.as_ref() == *self
-    }
-}
-
-impl<'a> From<&'a ComponentIdRef<'a>> for ComponentId {
-    fn from(value: &'a ComponentIdRef) -> Self {
-        value.into_owned()
-    }
-}
-
-impl Display for ComponentIdRef<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Resource(id) => write!(f, "resource '{id}'"),
-            Self::Bundle(id) => write!(f, "bundle '{id}'"),
-            Self::Message(id) => write!(f, "message '{id}'"),
-        }
-    }
-}
-
-impl From<ComponentIdRef<'_>> for ComponentId {
-    fn from(value: ComponentIdRef<'_>) -> Self {
-        value.into_owned()
-    }
-}
-
-impl<'a> From<&'a Self> for ComponentId {
-    fn from(value: &'a Self) -> Self {
-        value.clone()
-    }
-}
-
-/// A link that `dependent` depends on `dependency` in some way.
-///
-/// Both `dependent` and `dependency` can be any type of component in an [`App`]. For example, a
-/// resource may depend on a message, or a resource could depend on a bundle. This is used to
-/// determine when a component loads or unloads.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DependencyLink {
-    pub dependency: ComponentId,
-    pub dependent: ComponentId,
-}
-
-/// A value that determines if a [`DependencyLink`] can be removed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Removable {
-    Inherit,
-    Set(bool),
-}
-
-/// A combination of a [`DependencyLink`] and [`Removable`] flag.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DependencyFull {
-    pub link: DependencyLink,
-    pub removable: Removable,
-}
-
-/// A handle that keeps a [`DependencyLink`] alive.
-///
-/// Specifically, this sends [`RegistryEvent::IncrementDependency`] when it is created and
-/// [`RegistryEvent::DecrementDependency`] when it is dropped.
-#[derive(Debug)]
-pub struct DependencyHandle {
-    sender: EventSender,
-    dep: DependencyFull,
-}
-
-impl DependencyHandle {
-    /// Create a new handle, listing that `dep` should be maintained as long as this handle is
-    /// alive. The necessary events are sent through `sender`.
-    #[must_use]
-    pub fn new(sender: EventSender, dep: DependencyFull) -> Self {
-        sender.send(RegistryEvent::IncrementDependency(dep.clone()));
-        Self { sender, dep }
-    }
-}
-
-impl Drop for DependencyHandle {
-    fn drop(&mut self) {
-        self.sender
-            .send(RegistryEvent::DecrementDependency(self.dep.clone()));
-    }
-}
-
-impl CloneAs for DependencyHandle {
-    fn clone_as(&self, dependent: ComponentIdRef<'_>) -> Self
-    where
-        Self: Sized,
-    {
-        let sender = self.sender.clone();
-        let dep = DependencyFull {
-            link: DependencyLink {
-                dependency: self.dep.link.dependency.clone(),
-                dependent: dependent.into_owned(),
-            },
-            removable: self.dep.removable,
-        };
-        Self::new(sender, dep)
-    }
-}
-
-// TODO: docs
-pub trait CloneAs {
-    #[must_use]
-    fn clone_as(&self, dependent: ComponentIdRef<'_>) -> Self
-    where
-        Self: Sized;
-}
-
-impl<T: CloneAs> CloneAs for Option<T> {
-    fn clone_as(&self, dependent: ComponentIdRef<'_>) -> Self
-    where
-        Self: Sized,
-    {
-        self.as_ref().map(|val| val.clone_as(dependent))
-    }
-}
-
-#[doc(hidden)]
-pub mod clone_as {
-    use crate::app::event::ComponentIdRef;
-
-    pub trait Specialization<T> {
-        fn specialization(&self, dependent: ComponentIdRef<'_>) -> T;
-    }
-
-    impl<T: Clone + Send + Sync> Specialization<T> for &T {
-        fn specialization(&self, _: ComponentIdRef<'_>) -> T {
-            (*self).clone()
-        }
-    }
-
-    impl<T: super::CloneAs> Specialization<T> for &mut &T {
-        fn specialization(&self, dependent: ComponentIdRef<'_>) -> T {
-            self.clone_as(dependent)
-        }
     }
 }

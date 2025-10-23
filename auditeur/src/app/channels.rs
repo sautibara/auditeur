@@ -5,11 +5,10 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::info_span;
 
-use crate::app::event::{ComponentIdRef, DependencyFull, DependencyHandle, DependencyLink, Error};
+use crate::app::event::Error;
 use crate::app::resource_map::ResourceMapConnection;
+use crate::input::dependency;
 use crate::{Message, prelude::*};
-
-use super::event::{ComponentId, Removable};
 
 /// The default buffer size for a [`Listen`] or [`Take`] channel.
 // TODO: we could allow changing this at runtime, it wouldn't be terrible
@@ -583,15 +582,18 @@ impl ChannelsRefRunning<'_> {
     }
 }
 
-fn dependency<M: Message>(sender: &EventSender, dependent: ComponentIdRef<'_>) -> DependencyHandle {
-    DependencyHandle::new(
+fn dependency<M: Message>(
+    sender: &EventSender,
+    dependent: ComponentIdRef<'_>,
+) -> dependency::Handle {
+    dependency::Handle::new(
         sender.clone(),
-        DependencyFull {
-            link: DependencyLink {
+        dependency::Full {
+            link: dependency::Link {
                 dependency: ComponentId::Message(M::const_ident().to_owned()),
                 dependent: dependent.into_owned(),
             },
-            removable: Removable::Inherit,
+            removable: dependency::Removable::Inherit,
         },
     )
 }
@@ -606,7 +608,7 @@ fn dependency<M: Message>(sender: &EventSender, dependent: ComponentIdRef<'_>) -
 #[derive(PathAny, CloneAs)]
 pub struct Shouter<M: ListenMessage> {
     sender: broadcast::Sender<M>,
-    _dependency: Option<DependencyHandle>,
+    _dependency: Option<dependency::Handle>,
 }
 
 impl<M: ListenMessage> Shouter<M> {
@@ -677,7 +679,7 @@ impl<M: ListenMessage> Debug for Shouter<M> {
 #[derive(PathAny)]
 pub struct Listener<M: ListenMessage> {
     receiver: broadcast::Receiver<M>,
-    _dependency: Option<DependencyHandle>,
+    _dependency: Option<dependency::Handle>,
 }
 
 impl<M: ListenMessage> Listener<M> {
@@ -727,7 +729,7 @@ impl<M: ListenMessage> Debug for Listener<M> {
 #[derive(PathAny, CloneAs)]
 pub struct Giver<M: Message> {
     sender: mpsc::Sender<M>,
-    _dependency: Option<DependencyHandle>,
+    _dependency: Option<dependency::Handle>,
 }
 
 impl<M: Message> Giver<M> {
@@ -790,7 +792,7 @@ impl<M: Message> Input for Giver<M> {
 pub struct Taker<M: Message> {
     receiver: mpsc::Receiver<M>,
     source: TakeReceiverCell<M>,
-    _dependency: Option<DependencyHandle>,
+    _dependency: Option<dependency::Handle>,
 }
 
 impl<M: Message> Taker<M> {
@@ -1040,7 +1042,7 @@ impl Stopper {
         self.sender.send(RegistryEvent::Stop(id));
     }
 
-    pub fn remove_dependency(&self, link: DependencyLink) {
+    pub fn remove_dependency(&self, link: dependency::Link) {
         self.sender.send(RegistryEvent::RemoveDependency(link));
     }
 }

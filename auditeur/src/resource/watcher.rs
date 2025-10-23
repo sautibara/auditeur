@@ -163,7 +163,7 @@ impl<W: Watcher> Runner for LoadedWatcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
-        let ident = crate::app::event::ComponentIdRef::Resource(W::const_ident());
+        let ident = crate::app::ComponentIdRef::Resource(W::const_ident());
         #[cfg(feature = "runtime-loading")]
         let reference = self.inner.maybe_get_ref(&self.registry, ident).await;
 

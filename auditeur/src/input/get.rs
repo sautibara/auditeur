@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 #[cfg(feature = "runtime-loading")]
-use crate::app::event::{CloneAs, ComponentIdRef};
+use crate::input::CloneAs;
 use crate::prelude::*;
 
 pub struct Get<T: Resource + GetRef>(T::Ref);
@@ -88,7 +88,7 @@ pub trait MaybeGetRef {
 #[doc(hidden)]
 #[cfg(feature = "runtime-loading")]
 pub mod maybe_get_ref {
-    use crate::app::{Registry, event::ComponentIdRef};
+    use crate::app::{ComponentIdRef, Registry};
 
     use super::ResourceRef;
 

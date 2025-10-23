@@ -39,12 +39,12 @@ pub mod prelude {
     pub use crate::resource::Identifiable as _;
     pub use crate::{
         app::{
-            App, Constraints, Registry,
+            App, ComponentId, ComponentIdRef, Registry,
             channels::{Channels, ChannelsRef, Shouter, Stopper},
-            event::{ComponentId, ComponentIdRef, RegistryEvent},
+            event::RegistryEvent,
         },
         bundle::Bundle,
-        input::get::Get,
+        input::{Constraints, get::Get},
         macros::{
             Create, GetRef, Input, Runnable, component, create, has_input, ident, identifiable,
             listener, message, resource, respond,
@@ -69,7 +69,9 @@ pub mod prelude {
     pub use crate::resource::Identifiable as _;
 
     pub(crate) use tracing::Instrument as _;
-    pub(crate) use tracing::{error, instrument, trace, warn};
+    pub use tracing::{
+        error, error_span, info, info_span, instrument, trace, trace_span, warn, warn_span,
+    };
 
     pub use anyhow;
     pub use anyhow::Result;

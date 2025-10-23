@@ -8,9 +8,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::input::Constraint;
 use crate::{Message, prelude::*, resource};
 
-use crate::app::{BuiltBundle, Constraint, Loader};
+use crate::app::{BuiltBundle, Loader};
 
 /// Create a new bundle with the given identifier
 ///

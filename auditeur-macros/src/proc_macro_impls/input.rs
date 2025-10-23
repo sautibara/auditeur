@@ -31,7 +31,7 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
             quote! {
                 async fn create<'a>(
                     registry: &'a #auditeur::app::Registry,
-                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                    dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> Result<Self, #auditeur::Error> {
                     let ( #(#members,)* ) = #auditeur::try_join!(
                         #( <#types as #input_mod::Input>::create(registry, dependent) ),*
@@ -39,8 +39,8 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
                     Ok(Self { #(#members),* })
                 }
 
-                fn constraints() -> #auditeur::app::Constraints {
-                    #auditeur::app::Constraints::empty()
+                fn constraints() -> #auditeur::input::Constraints {
+                    #auditeur::input::Constraints::empty()
                         #(.extend(<#types as #input_mod::Input>::constraints()))*
                 }
             }
@@ -55,7 +55,7 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
             quote! {
                 async fn create(
                     registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                    dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> Result<Self, #auditeur::Error> {
                     let ( #(#members,)* ) = #auditeur::try_join!(
                         #( <#types as #input_mod::Input>::create(registry, dependent) ),*
@@ -63,8 +63,8 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
                     Ok(Self( #(#members),* ))
                 }
 
-                fn constraints() -> #auditeur::app::Constraints {
-                    #auditeur::app::Constraints::empty()
+                fn constraints() -> #auditeur::input::Constraints {
+                    #auditeur::input::Constraints::empty()
                         #(.extend(<#types as #input_mod::Input>::constraints()))*
                 }
             }
@@ -72,13 +72,13 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
         syn::Fields::Unit => quote! {
             async fn create(
                 _: &#auditeur::app::Registry,
-                _: #auditeur::app::event::ComponentIdRef<'_>,
+                _: #auditeur::app::ComponentIdRef<'_>,
             ) -> Result<Self, #auditeur::Error> {
                 Self
             }
 
-            fn constraints() -> #auditeur::app::Constraints {
-                #auditeur::app::Constraints::empty()
+            fn constraints() -> #auditeur::input::Constraints {
+                #auditeur::input::Constraints::empty()
             }
         },
     };

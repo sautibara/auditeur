@@ -485,20 +485,20 @@ impl Respond {
         quote! {
             #hidden
             pub struct #ref_ident {
-                dependency_handle: #auditeur::app::event::DependencyHandle,
+                dependency_handle: #auditeur::input::dependency::Handle,
                 #(#field_idents: #field_types),*
             }
 
             impl #auditeur::input::Input for #ref_ident {
                 async fn create(
                     registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                    dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> Result<Self, #auditeur::Error> {
                     Self::new(registry, dependent).await
                 }
 
-                fn constraints() -> #auditeur::app::Constraints {
-                    #auditeur::app::Constraints::empty()
+                fn constraints() -> #auditeur::input::Constraints {
+                    #auditeur::input::Constraints::empty()
                         .after_resource(<#item_ident as #auditeur::resource::Identifiable>::const_ident())
                         #(.extend(<#field_types as #auditeur::input::Input>::constraints()))*
                 }
@@ -517,19 +517,19 @@ impl Respond {
                 #[doc = #new_docs]
                 pub async fn new(
                     registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                    dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> ::std::result::Result<Self, #auditeur::Error> {
                     let event_sender = registry.event_sender();
                     let id = <#item_ident as #auditeur::resource::Identifiable>::const_ident()
                         .to_owned();
-                    let dependency = #auditeur::app::event::DependencyFull {
-                        link: #auditeur::app::event::DependencyLink {
-                            dependency: #auditeur::app::event::ComponentId::Resource(id),
+                    let dependency = #auditeur::input::dependency::Full {
+                        link: #auditeur::input::dependency::Link {
+                            dependency: #auditeur::app::ComponentId::Resource(id),
                             dependent: dependent.into_owned(),
                         },
-                        removable: #auditeur::app::event::Removable::Inherit,
+                        removable: #auditeur::input::dependency::Removable::Inherit,
                     };
-                    let dependency_handle = #auditeur::app::event::DependencyHandle::new(
+                    let dependency_handle = #auditeur::input::dependency::Handle::new(
                         event_sender,
                         dependency,
                     );
@@ -742,7 +742,7 @@ impl Respond {
                 async fn get_ref(
                     &self,
                     registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::event::ComponentIdRef<'_>,
+                    dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> Result<Self::Ref, #auditeur::Error> {
                     #connection::new(registry, dependent).await
                 }
