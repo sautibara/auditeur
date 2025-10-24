@@ -247,6 +247,22 @@ impl Bundle {
             .collect();
         self
     }
+
+    /// Keep only the messages whose ids are contained in `accepted`.
+    pub(crate) fn filter_messages(mut self, accepted: &HashSet<NamespacedId>) -> Self {
+        self.channels
+            .listen
+            .retain(|ident, _| accepted.contains(ident));
+        self.channels
+            .take
+            .retain(|ident, _| accepted.contains(ident));
+        self.bundles = self
+            .bundles
+            .into_iter()
+            .map(|bundle| bundle.filter_messages(accepted))
+            .collect();
+        self
+    }
 }
 
 /// Any way to supply a [`Bundle`] to an [`App`]
