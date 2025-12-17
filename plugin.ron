@@ -1,45 +1,6 @@
 (
   workspace: [
     "auditeur-plugin",
-    (
-      path: "tokio_rubicon/tokio",
-      plugin: (
-        name: "tokio",
-        version: "0.1.0",
-      ),
-      export: (
-        builtin: true,
-      ),
-    ),
-    (
-      path: "parking_lot_rubicon",
-      plugin: (
-        name: "parking_lot",
-        version: "0.1.0",
-      ),
-      export: (
-        builtin: true,
-      ),
-    ),
-    (
-      path: "tracing_rubicon/tracing",
-      plugin: (
-        name: "tracing",
-        version: "0.1.0",
-      ),
-      export: (
-        builtin: true,
-      ),
-    ),
-    (
-      path: "tracing_rubicon/tracing-subscriber",
-      plugin: (
-        name: "tracing-subscriber",
-        version: "0.1.0",
-      ),
-      export: (
-        builtin: true,
-      ),
-    ),
+    "deps",
   ],
 )

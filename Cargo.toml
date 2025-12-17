@@ -34,9 +34,9 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [patch.crates-io]
-tokio = { path = "tokio_rubicon/tokio" }
-parking_lot = { path = "parking_lot_rubicon" }
-parking_lot_core = { path = "auditeur/parking_lot_rubicon/core" }
-lock_api = { path = "auditeur/parking_lot_rubicon/lock_api" }
-tracing = { path = "tracing_rubicon/tracing" }
-tracing-subscriber = { path = "tracing_rubicon/tracing-subscriber" }
+tokio = { path = "deps/tokio_rubicon/tokio" }
+parking_lot = { path = "deps/parking_lot_rubicon" }
+parking_lot_core = { path = "deps/auditeur/parking_lot_rubicon/core" }
+lock_api = { path = "deps/auditeur/parking_lot_rubicon/lock_api" }
+tracing = { path = "deps/tracing_rubicon/tracing" }
+tracing-subscriber = { path = "deps/tracing_rubicon/tracing-subscriber" }
