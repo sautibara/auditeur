@@ -6,6 +6,7 @@
 //! documentation](Bundle) for more
 
 use std::collections::HashSet;
+use std::fmt::{self, Debug};
 use std::sync::Arc;
 
 use crate::input::Constraint;
@@ -47,6 +48,30 @@ pub struct Bundle {
     channels: Channels,
     #[cfg(feature = "runtime-loading")]
     init: Option<SharedInitFn>,
+}
+
+impl Debug for Bundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut bundle = f.debug_struct("Bundle");
+        bundle
+            .field("id", &self.id)
+            .field("loaders", &DebugLoaders(&self.loaders))
+            .field("bundles", &self.bundles)
+            .field("constraints", &self.constraints)
+            .field("channels", &self.channels);
+        #[cfg(feature = "runtime-loading")]
+        bundle.field("init", &self.init);
+        bundle.finish()
+    }
+}
+
+struct DebugLoaders<'a>(&'a [Box<dyn Loader>]);
+impl Debug for DebugLoaders<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|loader| loader.ident()))
+            .finish()
+    }
 }
 
 impl Bundle {

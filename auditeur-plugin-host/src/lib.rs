@@ -23,6 +23,7 @@ use std::{
 use arena::Arena;
 use auditeur_plugin::auditeur::app::App;
 use futures::Future;
+use ron::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::error;
@@ -45,6 +46,10 @@ use prelude::*;
 
 pub use auditeur_plugin;
 
+// make sure the shared library is loaded
+#[expect(clippy::single_component_path_imports, unused_imports)]
+use auditeur_plugin_export;
+
 /// Spawn a blocking closure in [`tokio`], resuming any panics from the closure if they occur
 async fn spawn_blocking<F, R>(func: F) -> R
 where
@@ -57,6 +62,10 @@ where
     }
 }
 
+fn ron_options() -> ron::Options {
+    ron::Options::default().with_default_extension(Extensions::IMPLICIT_SOME)
+}
+
 /// Serialize `value` to the file at `path`, using [`ron`]
 async fn serialize<T: Serialize + Send + Sync + 'static>(
     path: PathBuf,
@@ -64,7 +73,8 @@ async fn serialize<T: Serialize + Send + Sync + 'static>(
 ) -> Result<(), Error> {
     spawn_blocking(move || {
         let file = std::fs::File::create(&path)?;
-        ron::ser::to_writer(file, &value)
+        ron_options()
+            .to_writer(file, &value)
             .map_err(|error| Error::Serialization { error, file: path })?;
         Ok(())
     })
@@ -77,7 +87,8 @@ async fn deserialize<T: for<'de> Deserialize<'de> + Send + 'static>(
 ) -> Result<T, Error> {
     spawn_blocking(move || {
         let file = std::fs::File::open(&path)?;
-        let value = ron::de::from_reader(file)
+        let value = ron_options()
+            .from_reader(file)
             .map_err(|error| Error::Deserialization { error, file: path })?;
         Ok(value)
     })

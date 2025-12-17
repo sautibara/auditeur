@@ -24,6 +24,8 @@ cargo_metadata = "0.18.1"
 # config-related types
 directories = "5.0.1"
 semver = { version = "1.0.23", features = ["serde"] }
+# rubicon
+auditeur-plugin-export = { path = "../auditeur-plugin-export/" }
 # other
 tracing = "0.1.40"
 thiserror = "1.0.58"

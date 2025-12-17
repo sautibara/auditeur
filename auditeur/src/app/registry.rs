@@ -187,7 +187,6 @@ impl BuildingRegistry {
         self.bundles.insert(bundle);
     }
 
-    #[must_use]
     #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
@@ -241,7 +240,6 @@ impl RunningRegistry {
         let _ = self.resource_sender.send(resource).await;
     }
 
-    #[must_use]
     #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
     async fn get_as<R: Resource + GetRef>(
         &self,

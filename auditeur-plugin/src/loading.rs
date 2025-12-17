@@ -7,6 +7,7 @@ use auditeur::{
 };
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
+use tracing::trace;
 
 use crate::{LibraryHandle, PluginContext};
 
@@ -60,6 +61,7 @@ impl Plugin {
         let init = bundle::SharedInitFn::new(move || main(context.clone()));
 
         let bundle = init.call();
+        trace!("{bundle:?}");
         let bundle_id = bundle.id().to_owned();
         app.add_bundle(bundle);
 

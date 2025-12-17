@@ -22,19 +22,13 @@ pub mod prelude {
 #[derive(Clone)]
 pub struct PluginContext {
     library_handle: LibraryHandle,
-    runtime_handle: tokio::runtime::Handle,
 }
 
 impl PluginContext {
     #[cfg(feature = "loading")]
+    #[allow(clippy::missing_const_for_fn)]
     fn new(library_handle: LibraryHandle) -> Self {
-        // NOTE: This function should only ever be called by the parent process, so the tokio
-        // runtime should alredy be loaded.
-        let runtime_handle = tokio::runtime::Handle::current();
-        Self {
-            library_handle,
-            runtime_handle,
-        }
+        Self { library_handle }
     }
 
     /// Get an owned handle to the plugin's dynamic library
@@ -49,12 +43,9 @@ impl PluginContext {
     ///
     /// **NOTE: This is automatically called when using [`#[export]`]**. Repeated calls shouldn't
     /// break the runtime, but they also aren't necessary.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn init(&self) {
-        // We have to initialize the tokio runtime within the plugins, since the runtime is loaded
-        // in a thread_local and those don't spread across FFI.
-        // WARN: By leaking the EnterGuard, the runtime may never exit...
-        // TODO: Find out how to reaquire and drop the EnterGuard when the library is unloaded
-        std::mem::forget(self.runtime_handle.enter());
+        // Currently doesn't need anything...
     }
 }
 

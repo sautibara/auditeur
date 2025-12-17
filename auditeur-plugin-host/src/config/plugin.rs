@@ -31,30 +31,113 @@ use crate::prelude::*;
 /// # "#; ron::de::from_str::<auditeur_plugin_host::config::Plugin>(file).map(drop) }
 ///  ```
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum Config {
-    Workspace(Workspace),
-    Single(Single),
+#[serde(try_from = "Fields", into = "Fields")]
+pub struct Config {
+    pub offset: PathBuf,
+    pub children: Vec<Child>,
+    pub plugin: Option<Plugin>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Workspace {
-    #[serde(rename = "workspace")]
-    pub paths: Vec<PathBuf>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Single {
-    pub plugin: PluginInfo,
-    #[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plugin {
+    pub info: PluginInfo,
+    pub export: Option<Export>,
     pub dependencies: HashMap<PluginName, Dependency>,
 }
 
-impl Single {
+impl Plugin {
     #[must_use]
     pub const fn name(&self) -> &PluginName {
-        &self.plugin.name
+        &self.info.name
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Fields {
+    #[serde(rename = "path", default, skip_serializing_if = "is_default")]
+    pub offset: PathBuf,
+    #[serde(rename = "workspace", default, skip_serializing_if = "is_default")]
+    pub children: Vec<Child>,
+    #[serde(rename = "plugin")]
+    pub plugin_info: Option<PluginInfo>,
+    pub export: Option<Export>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub dependencies: HashMap<PluginName, Dependency>,
+}
+
+impl From<Config> for Fields {
+    fn from(value: Config) -> Self {
+        let Config {
+            offset,
+            children,
+            plugin,
+        } = value;
+
+        let (plugin_info, export, dependencies) = plugin.map_or_else(Default::default, |plugin| {
+            (Some(plugin.info), plugin.export, plugin.dependencies)
+        });
+
+        Self {
+            offset,
+            children,
+            plugin_info,
+            export,
+            dependencies,
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum ConfigTryFromFieldsError {
+    #[error("expected key `plugin` to be present, since `export` is specified")]
+    ExportWithoutPluginInfo,
+    #[error("expected key `plugin` to be present, since `dependencies` is specified")]
+    DependenciesWithoutPluginInfo,
+}
+
+impl TryFrom<Fields> for Config {
+    type Error = ConfigTryFromFieldsError;
+    fn try_from(value: Fields) -> Result<Self, Self::Error> {
+        let Fields {
+            offset,
+            children,
+            plugin_info,
+            export,
+            dependencies,
+        } = value;
+
+        let plugin = if let Some(info) = plugin_info {
+            Some(Plugin {
+                info,
+                export,
+                dependencies,
+            })
+        } else if export.is_some() {
+            return Err(ConfigTryFromFieldsError::ExportWithoutPluginInfo);
+        } else if !dependencies.is_empty() {
+            return Err(ConfigTryFromFieldsError::DependenciesWithoutPluginInfo);
+        } else {
+            None
+        };
+
+        Ok(Self {
+            offset,
+            children,
+            plugin,
+        })
+    }
+}
+
+// TODO: make it not untagged and just use fields
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    untagged,
+    expecting = "expected a path or inline plugin in the form of {...}"
+)]
+pub enum Child {
+    Path(PathBuf),
+    Inline(Config),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -62,6 +145,12 @@ impl Single {
 pub struct PluginInfo {
     pub name: PluginName,
     pub version: semver::Version,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Export {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub builtin: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -74,7 +163,7 @@ pub struct Dependency {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(untagged)]
 #[serde(
-    expecting = r#"expected dependency options in the form of "<version>" or { version = "<version", ... } "#
+    expecting = r#"expected dependency options in the form of "<version>" or ( version = "<version", ... ) "#
 )]
 enum DependencySerialized {
     VersionOnly(semver::VersionReq),

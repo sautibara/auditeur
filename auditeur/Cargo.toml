@@ -10,7 +10,7 @@ edition = "2024"
 anyhow = "1.0.82"
 thiserror = "1.0.58"
 # async support
-tokio = { version = "1.41.1", features = ["full"] }
+tokio = { version = "1.48.0", features = ["full"] }
 async-trait = "0.1.80"
 async-recursion = "1.1.1"
 futures = "0.3.30"
@@ -19,7 +19,7 @@ auditeur-macros = { version = "0.1.0", path = "../auditeur-macros" }
 # others
 bevy_utils_proc_macros = "0.13.2"
 dashmap = { version = "6.0.1" }
-tracing = "0.1.40"
+tracing = "0.1.41"
 send-future = "0.1.0"
 slice-dst = "1.5.1"
 serde = "1.0.219"

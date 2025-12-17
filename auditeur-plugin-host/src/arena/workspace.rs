@@ -58,6 +58,7 @@ struct Crate {
     package_name: PackageName,
     library_name: LibraryName,
     plugin_name: PluginName,
+    export: Option<config::plugin::Export>,
 }
 
 #[derive(Default)]
@@ -150,10 +151,25 @@ impl Workspace {
         let path_list = self
             .crates
             .values()
+            .filter(|crt| crt.export.is_none())
             .map(|crt| crt.mirror.to_string_lossy())
             .fold('\n'.to_string(), |mut string, path| {
                 // NOTE: can't return an error
                 let _ = writeln!(string, "  \"{path}\",");
+                string
+            });
+        let patches = self
+            .crates
+            .values()
+            .filter(|crt| crt.export.is_some())
+            .map(|crt| (&crt.package_name, &crt.source))
+            .fold(String::new(), |mut string, (package, path)| {
+                let _ = writeln!(
+                    string,
+                    "{} = {{ path = \"{}\" }}",
+                    &package.0,
+                    path.display()
+                );
                 string
             });
         let opt_level = &self.opts.opt_level;
@@ -169,12 +185,19 @@ impl Workspace {
             [profile.{profile}]
             inherits = "release"
             opt-level = {opt_level}
-            debug = {debug}"#
+            debug = {debug}
+
+            [patch.crates-io]
+            {patches}"#
         );
         tokio::fs::File::create(self.path.join("Cargo.toml"))
             .await?
             .write_all(workspace_toml.as_bytes())
             .await?;
+
+        // TODO: we know auditeur-plugin will be one of the plugins,
+        // so we could use it to import parking_lot, tokio, and tracing
+
         Ok(())
     }
 
@@ -183,6 +206,7 @@ impl Workspace {
         source: PathBuf,
         dependencies: &HashSet<&PluginName>,
         plugin_name: PluginName,
+        export: Option<config::plugin::Export>,
     ) -> Result<PackageName, Error> {
         let manifest = Manifest::load_dir(&source).await?;
 
@@ -214,6 +238,10 @@ impl Workspace {
                 self.create_dependency_link(&plugin_name, dependency, &manifest)?;
             manifest.dependencies.insert(package.0, dependency);
         }
+
+        let (rubicon_key, rubicon_dep) = Self::rubicon_dependency();
+        manifest.dependencies.insert(rubicon_key, rubicon_dep);
+
         manifest.save().await?;
 
         let workspace_crate = Crate {
@@ -222,6 +250,7 @@ impl Workspace {
             package_name: package_name.clone(),
             library_name,
             plugin_name: plugin_name.clone(),
+            export,
         };
         self.crates.insert(plugin_name, workspace_crate);
 
@@ -262,6 +291,17 @@ impl Workspace {
             ..prev_dependency
         }));
         Ok((crt.package_name.clone(), dependency))
+    }
+
+    fn rubicon_dependency() -> (String, Dependency) {
+        (
+            "rubicon".to_string(),
+            Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                version: Some("3.0".to_string()),
+                features: vec!["import-globals".to_string()],
+                ..Default::default()
+            })),
+        )
     }
 
     pub async fn compile<'a, F, I>(&'a self, plugins_iter: F) -> Result<BuildArtifacts, Error>

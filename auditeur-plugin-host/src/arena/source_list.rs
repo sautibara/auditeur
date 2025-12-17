@@ -41,7 +41,7 @@ impl LoadedSource {
 pub struct LoadedPlugin {
     pub path: PathBuf,
     pub source: SourceId,
-    pub config: config::plugin::Single,
+    pub config: config::plugin::Plugin,
 }
 
 impl LoadedPlugin {
@@ -154,27 +154,43 @@ impl SourceList {
         // avoid recursion by using a queue
         // (recursion with async is iffy - it requires [`Box`]ing futures)
         let mut paths = vec![path];
-        while let Some(path) = paths.pop() {
-            let config_path = path.join("plugin.ron");
-            if !config_path.exists() {
-                return Err(Error::PluginFileNotFound(config_path));
-            }
-            let config = crate::deserialize::<config::Plugin>(config_path).await?;
-            match config {
-                config::Plugin::Single(config) => plugins.push(LoadedPlugin {
-                    source: source.id().clone(),
-                    config,
-                    path,
-                }),
-                config::Plugin::Workspace(workspace) => {
-                    // while we could try to load all of the paths in a workspace at the same time
-                    // in an aim to improve performance, it's needlessly complex and there's a good
-                    // chance that it wouldn't improve performance by much anyways: we're mostly
-                    // constrainted by interacting with the disk (which can't be multithreaded) and
-                    // this is a fairly quick thing to do in the scheme of the whole application
-                    // anyways
-                    paths.extend(workspace.paths.iter().map(|child| path.join(child)));
+        let mut configs = vec![];
+        loop {
+            if let Some(path) = paths.pop() {
+                let config_path = path.join("plugin.ron");
+                if !config_path.exists() {
+                    return Err(Error::PluginFileNotFound(config_path));
                 }
+                let mut config = crate::deserialize::<config::Plugin>(config_path).await?;
+                config.offset = path.join(config.offset);
+                configs.push(config);
+            } else if let Some(config) = configs.pop() {
+                println!("{config:?}");
+                let config::Plugin {
+                    offset,
+                    children,
+                    plugin,
+                } = config;
+                for child in children {
+                    match child {
+                        config::plugin::Child::Path(path) => {
+                            paths.push(offset.join(path));
+                        }
+                        config::plugin::Child::Inline(mut config) => {
+                            config.offset = offset.join(config.offset);
+                            configs.push(config);
+                        }
+                    }
+                }
+                if let Some(config) = plugin {
+                    plugins.push(LoadedPlugin {
+                        source: source.id().clone(),
+                        config,
+                        path: offset,
+                    });
+                }
+            } else {
+                break;
             }
         }
         Ok(plugins)

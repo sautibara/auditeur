@@ -175,16 +175,27 @@ impl PluginRegistry {
     ///
     /// Each of these plugins must adhere to the safety contract specified in
     /// [`PluginRegistry::load_plugin_from_file_unchecked`]
-    pub async unsafe fn load_binaries(&mut self, plugins: Vec<Binary>, registry: &mut Registry) {
+    pub async unsafe fn load_binaries(
+        &mut self,
+        plugins: Vec<Binary>,
+        registry: &mut Registry,
+    ) -> Result<(), Vec<Error>> {
+        let mut errors = Vec::new();
+
         trace!("recieved plugins: {plugins:?}");
         let mut app = registry.new_app();
+
         // FIXME: check for necessary unloads
         // (when a plugin is updated, for example)
         for plugin in plugins {
             // TODO: handle this error
             // SAFETY: safety must be upheld by the caller of PluginSender::send
-            let _ = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
+            let res = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
+            if let Err(err) = res {
+                errors.push(err);
+            }
         }
+
         if let Err((app, _)) = app.add_to_registry(registry).await {
             for unloaded_bundle in app.unloaded_bundles() {
                 // FIXME: If only part of a bundle is loaded, the registry gets put
@@ -200,6 +211,12 @@ impl PluginRegistry {
                     std::mem::forget(library);
                 }
             }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 }

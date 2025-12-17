@@ -157,6 +157,8 @@ impl Arena {
         if errs.is_empty() { Ok(()) } else { Err(errs) }
     }
 
+    #[allow(clippy::too_many_lines)] // TODO: break into functions
+    #[allow(clippy::cognitive_complexity)]
     async fn run_action(
         &mut self,
         action: Action,
@@ -203,10 +205,17 @@ impl Arena {
                 if let Some(plugin) = self.source_list.get_plugin(&plugin_name) {
                     let dependencies = plugin.config.dependencies.keys().collect();
                     self.workspace
-                        .add(plugin.path.clone(), &dependencies, plugin_name.clone())
+                        .add(
+                            plugin.path.clone(),
+                            &dependencies,
+                            plugin_name.clone(),
+                            plugin.config.export.clone(),
+                        )
                         .await?;
                     self.state.mark_added(&plugin.source, &plugin_name);
-                    self.state.queue_compile(&plugin.source, plugin_name);
+                    if plugin.config.export.is_none() {
+                        self.state.queue_compile(&plugin.source, plugin_name);
+                    }
                 }
             }
             Action::CompileAll => {
@@ -265,7 +274,7 @@ impl Arena {
 
                 debug!("loading {binaries:?} into the registry");
                 // SAFETY: See Self::add_to_plugin_registry for justification
-                unsafe { plugin_registry.load_binaries(binaries).await };
+                unsafe { plugin_registry.load_binaries(binaries).await }?;
             }
         }
         // TODO: serialize

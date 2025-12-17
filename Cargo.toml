@@ -1,0 +1,42 @@
+[workspace]
+
+members = [
+  "auditeur",
+  "auditeur-macros",
+  "auditeur-plugin",
+  "auditeur-plugin-host",
+  "auditeur-plugin-macros",
+  "auditeur-plugin-export",
+]
+resolver = "2"
+
+[workspace.lints.clippy]
+enum_glob_use = "warn"
+pedantic = "warn"
+nursery = "warn"
+
+# copy below this line
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(fuzzing)',
+  'cfg(loom)',
+  'cfg(mio_unsupported_force_poll_poll)',
+  'cfg(tokio_allow_from_blocking_fd)',
+  'cfg(tokio_internal_mt_counters)',
+  'cfg(tokio_no_parking_lot)',
+  'cfg(tokio_no_tuning_tests)',
+  'cfg(tokio_unstable)',
+  'cfg(target_os, values("cygwin"))',
+  "cfg(flaky_tests)",
+  "cfg(tracing_unstable)",
+  "cfg(unsound_local_offset)",
+] }
+
+[patch.crates-io]
+tokio = { path = "tokio_rubicon/tokio" }
+parking_lot = { path = "parking_lot_rubicon" }
+parking_lot_core = { path = "auditeur/parking_lot_rubicon/core" }
+lock_api = { path = "auditeur/parking_lot_rubicon/lock_api" }
+tracing = { path = "tracing_rubicon/tracing" }
+tracing-subscriber = { path = "tracing_rubicon/tracing-subscriber" }
