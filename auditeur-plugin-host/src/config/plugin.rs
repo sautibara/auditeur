@@ -144,7 +144,7 @@ pub enum Child {
 #[allow(clippy::module_name_repetitions)]
 pub struct PluginInfo {
     pub name: PluginName,
-    pub version: semver::Version,
+    // pub version: semver::Version,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

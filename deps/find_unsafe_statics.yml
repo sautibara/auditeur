@@ -12,6 +12,14 @@ rule:
             kind: scoped_identifier
             regex: "std::thread_local"
     - kind: macro_invocation
+      any:
+        - has:
+            kind: identifier
+            pattern: lazy_static
+        - has:
+            kind: scoped_identifier
+            regex: "lazy_static::lazy_static"
+    - kind: macro_invocation
       all:
         - has:
             kind: identifier

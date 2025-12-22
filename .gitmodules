@@ -7,3 +7,21 @@
 [submodule "parking_lot_rubicon"]
 	path = deps/parking_lot_rubicon
 	url = git@github.com:sautibara/parking_lot_rubicon.git
+[submodule "deps/async-io_rubicon"]
+	path = deps/async-io_rubicon
+	url = git@github.com:sautibara/async-io_rubicon.git
+[submodule "deps/crossbeam_rubicon"]
+	path = deps/crossbeam_rubicon
+	url = git@github.com:sautibara/crossbeam_rubicon.git
+[submodule "deps/sharded-slab_rubicon"]
+	path = deps/sharded-slab_rubicon
+	url = git@github.com:sautibara/sharded-slab_rubicon.git
+[submodule "deps/blocking_rubicon"]
+	path = deps/blocking_rubicon
+	url = git@github.com:sautibara/blocking_rubicon.git
+[submodule "deps/futures-rs_rubicon"]
+	path = deps/futures-rs_rubicon
+	url = git@github.com:sautibara/futures-rs_rubicon.git
+[submodule "deps/rubicon"]
+	path = deps/rubicon
+	url = git@github.com:sautibara/rubicon.git

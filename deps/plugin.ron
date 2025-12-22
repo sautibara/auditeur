@@ -1,10 +1,18 @@
 (
   workspace: [
     (
+      path: "rubicon/rubicon",
+      plugin: (
+        name: "rubicon",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
       path: "tokio_rubicon/tokio",
       plugin: (
         name: "tokio",
-        version: "0.1.0",
       ),
       export: (
         builtin: true,
@@ -14,7 +22,6 @@
       path: "parking_lot_rubicon",
       plugin: (
         name: "parking_lot",
-        version: "0.1.0",
       ),
       export: (
         builtin: true,
@@ -24,7 +31,6 @@
       path: "parking_lot_rubicon/core",
       plugin: (
         name: "parking_lot_core",
-        version: "0.1.0",
       ),
       export: (
         builtin: true,
@@ -34,7 +40,6 @@
       path: "parking_lot_rubicon/lock_api",
       plugin: (
         name: "lock_api",
-        version: "0.1.0",
       ),
       export: (
         builtin: true,
@@ -44,7 +49,6 @@
       path: "tracing_rubicon/tracing",
       plugin: (
         name: "tracing",
-        version: "0.1.0",
       ),
       export: (
         builtin: true,
@@ -54,7 +58,168 @@
       path: "tracing_rubicon/tracing-subscriber",
       plugin: (
         name: "tracing-subscriber",
-        version: "0.1.0",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "async-io_rubicon",
+      plugin: (
+        name: "async-io",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "crossbeam_rubicon",
+      plugin: (
+        name: "crossbeam",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "crossbeam_rubicon/crossbeam-channel",
+      plugin: (
+        name: "crossbeam-channel",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "crossbeam_rubicon/crossbeam-deque",
+      plugin: (
+        name: "crossbeam-deque",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "crossbeam_rubicon/crossbeam-epoch",
+      plugin: (
+        name: "crossbeam-epoch",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "crossbeam_rubicon/crossbeam-queue",
+      plugin: (
+        name: "crossbeam-queue",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "crossbeam_rubicon/crossbeam-utils",
+      plugin: (
+        name: "crossbeam-utils",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "sharded-slab_rubicon",
+      plugin: (
+        name: "sharded-slab",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "blocking_rubicon",
+      plugin: (
+        name: "blocking",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures",
+      plugin: (
+        name: "futures",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-channel",
+      plugin: (
+        name: "futures-channel",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-core",
+      plugin: (
+        name: "futures-core",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-executor",
+      plugin: (
+        name: "futures-executor",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-io",
+      plugin: (
+        name: "futures-io",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-macro",
+      plugin: (
+        name: "futures-macro",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-sink",
+      plugin: (
+        name: "futures-sink",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-task",
+      plugin: (
+        name: "futures-task",
+      ),
+      export: (
+        builtin: true,
+      ),
+    ),
+    (
+      path: "futures-rs_rubicon/futures-util",
+      plugin: (
+        name: "futures-util",
       ),
       export: (
         builtin: true,

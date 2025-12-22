@@ -36,7 +36,27 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [patch.crates-io]
 tokio = { path = "deps/tokio_rubicon/tokio" }
 parking_lot = { path = "deps/parking_lot_rubicon" }
-parking_lot_core = { path = "deps/auditeur/parking_lot_rubicon/core" }
-lock_api = { path = "deps/auditeur/parking_lot_rubicon/lock_api" }
+parking_lot_core = { path = "deps/parking_lot_rubicon/core" }
+lock_api = { path = "deps/parking_lot_rubicon/lock_api" }
 tracing = { path = "deps/tracing_rubicon/tracing" }
 tracing-subscriber = { path = "deps/tracing_rubicon/tracing-subscriber" }
+async-io = { path = "deps/async-io_rubicon" }
+crossbeam = { path = "deps/crossbeam_rubicon" }
+crossbeam-channel = { path = "deps/crossbeam_rubicon/crossbeam-channel" }
+crossbeam-deque = { path = "deps/crossbeam_rubicon/crossbeam-deque" }
+crossbeam-epoch = { path = "deps/crossbeam_rubicon/crossbeam-epoch" }
+crossbeam-queue = { path = "deps/crossbeam_rubicon/crossbeam-queue" }
+# crossbeam-skiplist = { path = "deps/crossbeam_rubicon/crossbeam-skiplist" }
+crossbeam-utils = { path = "deps/crossbeam_rubicon/crossbeam-utils" }
+sharded-slab = { path = "deps/sharded-slab_rubicon" }
+blocking = { path = "deps/blocking_rubicon" }
+futures = { path = "deps/futures-rs_rubicon/futures" }
+futures-channel = { path = "deps/futures-rs_rubicon/futures-channel" }
+futures-core = { path = "deps/futures-rs_rubicon/futures-core" }
+futures-executor = { path = "deps/futures-rs_rubicon/futures-executor" }
+futures-io = { path = "deps/futures-rs_rubicon/futures-io" }
+futures-macro = { path = "deps/futures-rs_rubicon/futures-macro" }
+futures-sink = { path = "deps/futures-rs_rubicon/futures-sink" }
+futures-task = { path = "deps/futures-rs_rubicon/futures-task" }
+# futures-test = { path = "deps/futures-rs_rubicon/futures-test" }
+futures-util = { path = "deps/futures-rs_rubicon/futures-util" }
