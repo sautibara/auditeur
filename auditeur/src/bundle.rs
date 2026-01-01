@@ -103,13 +103,17 @@ impl Bundle {
             .into_iter()
             .map(|loader| app.add_loader(loader, this_id))
             .collect();
+        let messages: Arc<[NamespacedId]> = (self.channels.listen.keys().cloned())
+            .chain(self.channels.take.keys().cloned())
+            .collect();
         app.add_channels(self.channels, this_id);
         app.add_bundle_inner(
             self.id.clone(),
             BuiltBundle {
                 constraints: self.constraints,
-                bundles,
                 resources,
+                messages,
+                bundles,
                 parent: parent.map(NamespacedIdRef::to_owned),
                 #[cfg(feature = "runtime-loading")]
                 init: self.init.clone(),

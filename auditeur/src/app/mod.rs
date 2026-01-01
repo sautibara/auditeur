@@ -132,6 +132,21 @@ impl ComponentId {
         }
     }
 
+    /// Returns a [`Resource`] id with id `id`.
+    pub fn resource(id: impl Into<NamespacedId>) -> Self {
+        Self::Resource(id.into())
+    }
+
+    /// Returns a [`Bundle`] id with id `id`.
+    pub fn bundle(id: impl Into<NamespacedId>) -> Self {
+        Self::Bundle(id.into())
+    }
+
+    /// Returns a [`Message`](crate::Message) id with id `id`.
+    pub fn message(id: impl Into<NamespacedId>) -> Self {
+        Self::Message(id.into())
+    }
+
     /// Returns [`Some`] with the resource id if this is a [`Resource`](Self::Resource), or
     /// [`None`] otherwise.
     #[must_use]

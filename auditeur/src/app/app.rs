@@ -48,6 +48,7 @@ pub struct BuiltBundle {
     pub constraints: Constraints,
     pub parent: Option<NamespacedId>,
     pub resources: Arc<[NamespacedId]>,
+    pub messages: Arc<[NamespacedId]>,
     pub bundles: Arc<[NamespacedId]>,
     #[cfg(feature = "runtime-loading")]
     pub init: Option<bundle::SharedInitFn>,
@@ -304,6 +305,7 @@ impl App {
                 id: id.to_owned(),
                 parent: bundle.parent.clone(),
                 resources: bundle.resources.clone(),
+                messages: bundle.messages.clone(),
                 bundles: bundle.bundles.clone(),
             });
         // then the constraints also have to be resolved

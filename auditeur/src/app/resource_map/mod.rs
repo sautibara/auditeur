@@ -12,6 +12,7 @@ use anyhow::{anyhow, bail};
 use tracing::{instrument, trace};
 
 use crate::{
+    Either,
     app::{
         channels::{
             AnyListenChannel, AnyTakeChannel, EventReceiver, EventSender, Giver, TypedAnyChannel,
@@ -27,6 +28,9 @@ use crate::{
 #[cfg(feature = "runtime-loading")]
 use crate::app::{channels::Channels, event::GetRequest};
 
+mod query;
+pub use query::*;
+
 pub(crate) fn init() -> Bundle {
     new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(())
 }
@@ -35,6 +39,15 @@ pub(crate) fn init() -> Bundle {
 
 const RESERVED_IDENTS: &[&NamespacedIdRef] = &[ident!("auditeur:registry")];
 
+/// Holds the amount of dependencies a component has from a specific other component, separated by
+/// the type of the dependency.
+///
+/// For example, a component "foo" could use another component "bar" as a [`Get`] input. Suppose
+/// that "bar" also implements [`GetRef`] through [`respond`], and lastly that "foo" additionally holds
+/// a removable [`dependency::Handle`] for "bar". In this case, the `inherit` count would be `1`
+/// from the [`respond`] handle, the `set_true` count would be `1` from the [`dependency::Handle`],
+/// and `set_false` would also be `1` from the [`GetRef`] handle.
+// TODO: make a test for the above situation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct RemovableCounts {
     inherit: usize,
@@ -43,15 +56,24 @@ pub struct RemovableCounts {
 }
 
 impl RemovableCounts {
+    /// Returns `true` if this dependency, as a whole, is removable.
+    ///
+    /// A dependency is deemed removable if it has at least one `set_true` dependency and exactly
+    /// zero `set_false` dependencies (that is, `set_false` overrides `set_true`).
     const fn removable(&self) -> bool {
         // default is unremovable, and it also has priority
         self.set_true > 0 && self.set_false == 0
     }
 
+    /// Returns `true` if this dependency, as a whole, is empty.
+    ///
+    /// That is, that there are no dependencies in this direction - every count is zero.
     const fn is_empty(&self) -> bool {
         self.inherit == 0 && self.set_true == 0 && self.set_false == 0
     }
 
+    /// Returns the entrywise subtraction of `other` from `self`, or `None` if any of the
+    /// subtractions would overflow below `0`.
     fn checked_sub(self, other: Self) -> Option<Self> {
         Some(Self {
             inherit: self.inherit.checked_sub(other.inherit)?,
@@ -97,9 +119,14 @@ impl AddAssign for RemovableCounts {
     }
 }
 
+// Lists all dependencies and dependents for a specific component as well as the count of how many
+// things are keeping this component alive.
 #[derive(Default, Debug)]
 struct ComponentDependencies {
-    // number of strong references keeping this resource alive
+    // The number of strong references keeping this resource alive.
+    //
+    // Strong references could come from dependents, child components for a bundle, or if this is a
+    // running resource.
     strong_count: usize,
 
     // STRONG: want to keep dependencies alive - we're still using them
@@ -108,6 +135,8 @@ struct ComponentDependencies {
     dependents: hashbrown::HashMap<ComponentId, RemovableCounts>,
 }
 
+/// Holds mutable references to the bookkeeping of the two sides of a dependency link in a
+/// [`ResourceMap`]. This is included mainly to reduce repeated code.
 struct DependencyInfoRes<'a> {
     dependency_counts: &'a mut RemovableCounts,
     dependent_counts: &'a mut RemovableCounts,
@@ -115,6 +144,16 @@ struct DependencyInfoRes<'a> {
 }
 
 impl ComponentDependencies {
+    /// Reads the [`DependencyInfoRes`] of a [`dependency::Link`] from a [`ResourceMap`].
+    ///
+    /// Returns [`None`] if the dependency and dependent are the same component, or if the
+    /// dependent is not in the map. Note that the dependent not being in the map is not an error
+    /// since dependents can unload at any time - components do not hold strong references to their
+    /// dependents.
+    ///
+    /// # Errors
+    ///
+    /// - If the dependency is not in the map
     fn dependency_info<'a>(
         map: &'a mut ResourceMap,
         link: &dependency::Link,
@@ -137,7 +176,6 @@ impl ComponentDependencies {
 
         let Some(dependent_info) = dependent_opt else {
             return Ok(None);
-            // bail!("could not find dependent '{dependent}'");
         };
 
         let dependency_counts = dependent_info
@@ -153,6 +191,14 @@ impl ComponentDependencies {
         }))
     }
 
+    /// Adds `dependency` to `map`.
+    ///
+    /// Note that no error is returned if the dependency and dependent are the same component, or
+    /// if the dependent is not in the map (but the map will not be changed).
+    ///
+    /// # Errors
+    ///
+    /// - If the dependency is not in the map.
     fn add_dependency(map: &mut ResourceMap, dependency: dependency::Full) -> anyhow::Result<()> {
         let Some(DependencyInfoRes {
             dependency_counts,
@@ -181,6 +227,14 @@ impl ComponentDependencies {
         Ok(())
     }
 
+    /// Removes `dependency` from `map`.
+    ///
+    /// Note that no error is returned if the dependency and dependent are the same component, or
+    /// if the dependent is not in the map (but the map will not be changed).
+    ///
+    /// # Errors
+    ///
+    /// - If the dependency is not in the map.
     fn remove_dependency(
         map: &mut ResourceMap,
         dependency: dependency::Full,
@@ -213,18 +267,43 @@ impl ComponentDependencies {
 
         Ok(())
     }
+
+    fn dependents(&self) -> impl Iterator<Item = (ComponentIdRef<'_>, &RemovableCounts)> {
+        self.dependents
+            .iter()
+            .filter(|(_, counts)| !counts.is_empty())
+            .map(|(id, counts)| (id.as_ref(), counts))
+    }
 }
 
+/// A trait for structs that hold bookkeeping data for components in the map.
+///
+/// Included to reduce repeated code.
 trait LoadedComponent: Sized {
+    /// Initializes any references that this component has by default.
+    ///
+    /// For example, a resource always holds a reference to its parent bundle.
+    ///
+    /// # Errors
+    ///
+    /// - If an required reference is not in the map.
     fn init_references(&self, map: &mut ResourceMap) -> anyhow::Result<()>;
+    /// Drops any references that this component has by default.
+    ///
+    /// Note that this doesn't drop any dependencies - those are removed automatically through
+    /// [`dependency::Handle`].
     fn drop_references(&self, map: &mut ResourceMap);
 
+    /// Returns the unique id for this component in its namespace.
     fn id(&self) -> &NamespacedIdRef;
+    /// Wraps any namespaced id into the correct variant of [`ComponentId`] for this component.
     fn wrap_id(id: &NamespacedIdRef) -> ComponentIdRef<'_>;
+    /// Returns the [`ComponentId`] of this component.
     fn component_id(&self) -> ComponentIdRef<'_> {
         Self::wrap_id(self.id())
     }
 
+    /// Returns the dependency info of this component from `map`.
     fn dependencies<'a>(&'a self, map: &'a ResourceMap) -> &'a ComponentDependencies {
         // debug_assert!(map.get_resource(&self.id).is_some());
 
@@ -233,6 +312,8 @@ trait LoadedComponent: Sized {
         &map.dependencies[&self.component_id()]
     }
 
+    /// Accesses both the map that holds instances of this component's bookkeeping and the
+    /// one that holds all generic dependency info from `map`.
     fn maps_mut(
         map: &mut ResourceMap,
     ) -> (
@@ -241,6 +322,7 @@ trait LoadedComponent: Sized {
     );
 }
 
+/// The bookkeeping for a resource component.
 struct LoadedResource {
     id: NamespacedId,
 
@@ -303,6 +385,7 @@ impl Debug for LoadedResource {
 
 #[cfg(feature = "runtime-loading")]
 impl LoadedResource {
+    /// Supply an owned resource to us so we could handle its get requests.
     fn supply_owned(&mut self, resource: Box<dyn super::LoadedResource>) {
         tracing::trace!(
             "adding {} to the ResourceMap as a NonRunnable",
@@ -311,7 +394,7 @@ impl LoadedResource {
         self.resource = Some(resource);
     }
 
-    /// Runs `func` on the contained owned resource, if it exists
+    /// Checks a [`GetRequest`] on our owned resource, if it exists.
     async fn check_get_request(&self, get_request: &GetRequest, registry: &Registry) {
         let resource_option = &self.resource;
         if let Some(resource) = resource_option.as_deref() {
@@ -320,6 +403,7 @@ impl LoadedResource {
     }
 }
 
+/// The bookkeeping for a bundle component.
 #[derive(Debug)]
 struct LoadedBundle {
     id: NamespacedId,
@@ -381,6 +465,8 @@ impl LoadedBundle {
         }
     }
 
+    /// Replace this bundle's parent bundle with another, adding a strong reference to the new
+    /// bundle, and removing our previous strong reference to the old bundle.
     fn replace_parent(
         &mut self,
         map: &mut ResourceMap,
@@ -395,24 +481,61 @@ impl LoadedBundle {
         Ok(())
     }
 
+    /// Update the info about this bundle, including its child components
     fn add_properties(
         &mut self,
         resources: impl IntoIterator<Item = NamespacedId>,
+        messages: impl IntoIterator<Item = NamespacedId>,
         bundles: impl IntoIterator<Item = NamespacedId>,
         #[cfg(feature = "runtime-loading")] init: Option<bundle::SharedInitFn>,
     ) {
         self.resources.extend(resources);
+        self.messages.extend(messages);
         self.bundles.extend(bundles);
         if cfg!(feature = "runtime-loading") {
-            self.init = init.or_else(|| self.init.take());
+            self.init = init.or_else(|| Option::take(&mut self.init));
         }
     }
 
+    /// Returns the info of the parent bundle, or [`None`] if it doesn't exist.
     fn parent<'a>(&self, map: &'a ResourceMap) -> Option<&'a Self> {
         self.parent.as_deref().and_then(|id| map.get_bundle(id))
     }
+
+    /// Returns the ids of all loaded child resources.
+    fn resources(&self, map: &ResourceMap) -> impl Iterator<Item = &NamespacedIdRef> {
+        self.resources.iter().map(|id| &**id).filter(|id| {
+            map.get_resource(id)
+                .is_some_and(|resource| resource.bundle == self.id)
+        })
+    }
+
+    /// Returns the ids of all loaded child bundles.
+    fn bundles(&self, map: &ResourceMap) -> impl Iterator<Item = &NamespacedIdRef> {
+        self.bundles.iter().map(|id| &**id).filter(|id| {
+            map.get_bundle(id).is_some_and(|bundle| {
+                bundle
+                    .parent
+                    .as_ref()
+                    .is_some_and(|bundle| *bundle == self.id)
+            })
+        })
+    }
+
+    /// Returns the ids of all loaded child messages.
+    fn messages(&self, map: &ResourceMap) -> impl Iterator<Item = &NamespacedIdRef> {
+        self.messages.iter().map(|id| &**id).filter(|id| {
+            map.get_message(id).is_some_and(|message| {
+                message
+                    .bundle
+                    .as_ref()
+                    .is_some_and(|bundle| *bundle == self.id)
+            })
+        })
+    }
 }
 
+/// The bookkeeping for a message component.
 #[derive(Debug)]
 struct LoadedMessage {
     id: NamespacedId,
@@ -463,6 +586,8 @@ impl LoadedMessage {
         }
     }
 
+    /// Replace this message's parent bundle with another, adding a strong reference to the new
+    /// bundle, and removing our previous strong reference to the old bundle.
     fn replace_bundle(
         &mut self,
         map: &mut ResourceMap,
@@ -487,28 +612,18 @@ impl LoadedMessage {
     }
 }
 
-/// A dependency tree of the [resources](mod@crate::resource) and [bundles](crate::Bundle) that are
-/// currently loaded
+/// A dependency tree of the [resources](mod@crate::resource), [messages](crate::app::channels) and
+/// [bundles](crate::Bundle) that are currently loaded
 ///
 /// This tree is necessary for telling when resources, bundles, and messages are unloaded. While
 /// running resources can be [stopped](RegistryEvent::Stopped), they only unload when every
 /// dependency to them also unloads. As such, the map keeps track of these
-/// [dependencies](RegistryEvent::IncrementDependency).
+/// [dependencies](crate::input::dependency).
 ///
 /// Similarly, bundles only unload when all of its child resources and bundles also unload
 ///
 /// This listener is automatically loaded to every [`App`] that is constructed
 /// when the `resource-map` feature is specified.
-// The way that the map works is that each resource and bundle is stored in an Arc. When resources
-// or bundles are dropped, they send messages to the Registry that they get unloaded, so that their
-// lifetimes become the lifetime of what they represent. As such, the underlying functionality of
-// the Arc is leveraged to count our references for us. To provide a basis for ownership, the map
-// owns a list of the currently running resources which become the roots of what remains loaded - a
-// running resource never unloads. Then, each shared resource holds a strong reference to each of
-// its dependencies and its parent bundle, keeping them all alive while it's loaded. Bundles, too,
-// keep their parents alive, if they exist. From this, dependencies are always kept alive at least
-// as long as their dependents.
-// TODO: add methods to actually view the entire map
 #[derive(Runnable, Debug)]
 #[listener(
     "auditeur:resource_map",
@@ -626,6 +741,7 @@ impl ResourceMap {
         id: &NamespacedIdRef,
         parent: Option<NamespacedId>,
         resources: &[NamespacedId],
+        messages: &[NamespacedId],
         bundles: &[NamespacedId],
         #[cfg(feature = "runtime-loading")] init: Option<bundle::SharedInitFn>,
     ) -> Result<()> {
@@ -635,7 +751,12 @@ impl ResourceMap {
             bundle.replace_parent(self, parent)?;
         }
 
-        bundle.add_properties(resources.iter().cloned(), bundles.iter().cloned(), init);
+        bundle.add_properties(
+            resources.iter().cloned(),
+            bundles.iter().cloned(),
+            messages.iter().cloned(),
+            init,
+        );
 
         self.replace_component(bundle);
 
@@ -803,18 +924,21 @@ impl listener::Component<ResourceMap> for MainComponent {
                 id,
                 parent,
                 resources,
+                messages,
                 bundles,
             }
             | RegistryEvent::BundleLoading {
                 id,
                 parent,
                 resources,
+                messages,
                 bundles,
             } => {
                 map.add_bundle(
                     &id,
                     parent,
                     &resources,
+                    &messages,
                     &bundles,
                     #[cfg(feature = "runtime-loading")]
                     None,
@@ -893,6 +1017,7 @@ impl Listen<BundleInit> for ResourceMap {
         self.add_bundle(
             message.id(),
             None,
+            &[],
             &[],
             &[],
             #[cfg(feature = "runtime-loading")]
@@ -998,792 +1123,5 @@ impl ResourceMapConnection {
             ),
             giver,
         }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug, Hash)]
-pub enum ResourceSource {
-    Query,
-    DependentBundle,
-    Dependent {
-        dependency: ComponentId,
-        info: RemovableCounts,
-    },
-}
-
-impl ResourceSource {
-    #[must_use]
-    pub const fn is_removable_dependency(&self) -> bool {
-        matches!(self, Self::Dependent { info, .. } if info.removable())
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-#[non_exhaustive]
-pub struct SubMapBundle {
-    pub resources: HashMap<NamespacedId, HashSet<ResourceSource>>,
-    pub messages: HashMap<NamespacedId, HashSet<ResourceSource>>,
-    pub bundles: HashMap<NamespacedId, SubMapBundle>,
-    pub complete: bool,
-    #[cfg(feature = "runtime-loading")]
-    pub init: Option<bundle::SharedInitFn>,
-}
-
-impl SubMapBundle {
-    fn visit_bundles_mut(&mut self, func: &mut impl FnMut(&NamespacedIdRef, &mut Self)) {
-        for (key, value) in &mut self.bundles {
-            value.visit_bundles_mut(func);
-            func(key, value);
-        }
-    }
-
-    pub fn combine(&mut self, other: Self) {
-        self.resources.extend(other.resources);
-        for (key, value) in other.bundles {
-            self.bundles.entry(key).or_default().combine(value);
-        }
-        self.complete |= other.complete;
-        self.init = other.init.or_else(|| std::mem::take(&mut self.init));
-    }
-
-    pub fn descendent_resources(
-        &self,
-    ) -> impl Iterator<Item = (&NamespacedId, &HashSet<ResourceSource>)> {
-        DescendentComponents {
-            iter: self.resources.iter().chain(self.bundles.values().flat_map(
-                (|bundles| Box::new(bundles.descendent_resources()))
-                    as fn(&Self) -> Box<DescendentComponents>,
-            )),
-        }
-    }
-
-    pub fn descendent_messages(
-        &self,
-    ) -> impl Iterator<Item = (&NamespacedId, &HashSet<ResourceSource>)> {
-        DescendentComponents {
-            iter: self.messages.iter().chain(self.bundles.values().flat_map(
-                (|bundles| Box::new(bundles.descendent_messages()))
-                    as fn(&Self) -> Box<DescendentComponents>,
-            )),
-        }
-    }
-
-    pub fn descendent_bundle_ids(&self) -> impl Iterator<Item = &NamespacedId> {
-        DescendentBundleIds::InList {
-            current: Box::new(DescendentBundleIds::Empty),
-            rest: self.bundles.iter(),
-        }
-    }
-
-    fn from_loaded_bundle(bundle: &LoadedBundle, map: &ResourceMap) -> Self {
-        Self {
-            resources: bundle
-                .resources
-                .iter()
-                .cloned()
-                .map(|id| (id, HashSet::from_iter([ResourceSource::Query])))
-                .collect(),
-            messages: bundle
-                .messages
-                .iter()
-                .cloned()
-                .map(|id| (id, HashSet::from_iter([ResourceSource::Query])))
-                .collect(),
-            bundles: bundle
-                .bundles
-                .iter()
-                .filter_map(|id| map.get_bundle(id))
-                .map(|bundle| (bundle.id.clone(), Self::from_loaded_bundle(bundle, map)))
-                .collect(),
-            complete: true,
-            #[cfg(feature = "runtime-loading")]
-            init: bundle.init.clone(),
-        }
-    }
-
-    fn load_plan(&self, id: &NamespacedIdRef, parents: &mut Vec<NamespacedId>) -> LoadResultFull {
-        let resources: HashSet<_> = self
-            .descendent_resources()
-            .map(|(id, _info)| id)
-            .cloned()
-            .collect();
-        let messages: HashSet<_> = self
-            .descendent_messages()
-            .map(|(id, _info)| id)
-            .cloned()
-            .collect();
-
-        if self.complete
-            && let Some(init) = &self.init
-        {
-            return LoadResultFull {
-                plans: vec![LoadPlan {
-                    init: init.clone(),
-                    load_type: LoadType::Complete,
-                    parent_bundles: parents.clone(),
-                }],
-                resource_result: LoadResult {
-                    loaded: resources,
-                    ..Default::default()
-                },
-                message_result: LoadResult {
-                    loaded: messages,
-                    ..Default::default()
-                },
-            };
-        }
-
-        let mut result = LoadResultFull::default();
-        result.resource_result.failed = resources;
-        result.message_result.failed = messages;
-
-        parents.push(id.to_owned());
-        for (child_id, child_bundle) in &self.bundles {
-            let child_result = child_bundle.load_plan(child_id, parents);
-            result.add(child_result);
-        }
-        parents.pop();
-
-        if !result.success()
-            && let Some(init) = &self.init
-        {
-            let resources = result.resource_result.load_failed();
-            let messages = result.message_result.load_failed();
-            result.plans.push(LoadPlan {
-                init: init.clone(),
-                load_type: LoadType::Partial {
-                    resources,
-                    messages,
-                },
-                parent_bundles: parents.clone(),
-            });
-        }
-
-        result
-    }
-}
-
-// rust has trouble finding out this type in [`SubMapBundle::descendent_resources`], so we have to
-// write the whole thing out ourselves ;-;
-#[allow(clippy::type_complexity)]
-struct DescendentComponents<'a> {
-    iter: std::iter::Chain<
-        std::collections::hash_map::Iter<'a, NamespacedId, HashSet<ResourceSource>>,
-        std::iter::FlatMap<
-            std::collections::hash_map::Values<'a, NamespacedId, SubMapBundle>,
-            Box<Self>,
-            fn(&'a SubMapBundle) -> Box<Self>,
-        >,
-    >,
-}
-
-impl<'a> Iterator for DescendentComponents<'a> {
-    type Item = (&'a NamespacedId, &'a HashSet<ResourceSource>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-// rust has trouble finding out this type in [`SubMapBundle::descendent_bundle_ids`], so we have to
-// write the whole thing out ourselves ;-;
-#[allow(clippy::type_complexity)]
-#[derive(Default)]
-enum DescendentBundleIds<'a> {
-    #[default]
-    Empty,
-    InList {
-        current: Box<Self>,
-        rest: std::collections::hash_map::Iter<'a, NamespacedId, SubMapBundle>,
-    },
-}
-
-impl<'a> Iterator for DescendentBundleIds<'a> {
-    type Item = &'a NamespacedId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match std::mem::take(self) {
-            Self::Empty => None,
-            Self::InList {
-                mut current,
-                mut rest,
-            } => current.next().or_else(|| {
-                rest.next().map(|(id, bundle)| {
-                    *self = Self::InList {
-                        current: Box::new(Self::default()),
-                        rest: bundle.bundles.iter(),
-                    };
-                    id
-                })
-            }),
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, None)
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-#[non_exhaustive]
-pub struct SubMap {
-    pub root_bundles: HashMap<NamespacedId, SubMapBundle>,
-}
-
-impl SubMap {
-    fn visit_bundles_mut(&mut self, func: &mut impl FnMut(&NamespacedIdRef, &mut SubMapBundle)) {
-        for (key, value) in &mut self.root_bundles {
-            value.visit_bundles_mut(func);
-            func(key, value);
-        }
-    }
-
-    pub fn add_bundle_loader<F: Fn() -> Bundle + Send + Sync + 'static>(
-        &mut self,
-        bundle: &NamespacedIdRef,
-        func: F,
-    ) {
-        #[cfg(feature = "runtime-loading")]
-        {
-            let shared_fn = bundle::SharedInitFn::new(func);
-            self.add_bundle_loader_shared(bundle, &shared_fn);
-        }
-    }
-
-    #[cfg(feature = "runtime-loading")]
-    pub fn add_bundle_loader_shared(
-        &mut self,
-        bundle: &NamespacedIdRef,
-        shared_fn: &bundle::SharedInitFn,
-    ) {
-        self.visit_bundles_mut(&mut |id, bundle_info| {
-            if id == bundle {
-                bundle_info.complete = true;
-                bundle_info.init = Some(shared_fn.clone());
-            }
-        });
-    }
-
-    pub fn combine(&mut self, other: Self) {
-        for (key, value) in other.root_bundles {
-            self.root_bundles
-                .entry(key.clone())
-                .or_default()
-                .combine(value);
-        }
-    }
-
-    pub fn resources(&self) -> impl Iterator<Item = (&NamespacedId, &HashSet<ResourceSource>)> {
-        self.root_bundles
-            .values()
-            .flat_map(SubMapBundle::descendent_resources)
-    }
-
-    pub fn messages(&self) -> impl Iterator<Item = (&NamespacedId, &HashSet<ResourceSource>)> {
-        self.root_bundles
-            .values()
-            .flat_map(SubMapBundle::descendent_messages)
-    }
-
-    pub fn bundle_ids(&self) -> impl Iterator<Item = &NamespacedId> {
-        self.root_bundles
-            .values()
-            .flat_map(SubMapBundle::descendent_bundle_ids)
-    }
-
-    fn get_bundle_mut(&mut self, map: &ResourceMap, bundle: &LoadedBundle) -> &mut SubMapBundle {
-        let mut parent_stack = Vec::from_iter(bundle.parent(map));
-
-        while let Some(parent) = parent_stack.last().and_then(|bundle| bundle.parent(map)) {
-            parent_stack.push(parent);
-        }
-
-        let mut parents = parent_stack
-            .into_iter()
-            .rev()
-            .chain(std::iter::once(bundle));
-
-        let root = parents
-            .next()
-            .expect("there should always be a root bundle");
-
-        let mut bundle = self
-            .root_bundles
-            .entry(root.id.clone())
-            .or_insert_with(|| SubMapBundle {
-                #[cfg(feature = "runtime-loading")]
-                init: root.init.clone(),
-                ..Default::default()
-            });
-
-        for parent in parents {
-            bundle = bundle
-                .bundles
-                .entry(parent.id.clone())
-                .or_insert_with(|| SubMapBundle {
-                    #[cfg(feature = "runtime-loading")]
-                    init: parent.init.clone(),
-                    ..Default::default()
-                });
-        }
-
-        bundle
-    }
-
-    fn add_resource(
-        &mut self,
-        map: &ResourceMap,
-        resource: &NamespacedIdRef,
-        source: ResourceSource,
-    ) {
-        let Some(bundle) =
-            (map.get_resource(resource)).and_then(|resource| map.get_bundle(&resource.bundle))
-        else {
-            return;
-        };
-
-        let sub_bundle = self.get_bundle_mut(map, bundle);
-        let source_set = sub_bundle.resources.entry(resource.to_owned()).or_default();
-        source_set.insert(source);
-    }
-
-    fn add_message(
-        &mut self,
-        map: &ResourceMap,
-        message: &NamespacedIdRef,
-        source: ResourceSource,
-    ) {
-        let Some(bundle) = map
-            .get_message(message)
-            .and_then(|message| message.bundle.as_deref())
-            .and_then(|bundle| map.get_bundle(bundle))
-        else {
-            return;
-        };
-
-        let sub_bundle = self.get_bundle_mut(map, bundle);
-        let source_set = sub_bundle.resources.entry(message.to_owned()).or_default();
-        source_set.insert(source);
-    }
-
-    fn add_bundle(&mut self, map: &ResourceMap, bundle: &NamespacedIdRef) {
-        let Some(bundle) = map.get_bundle(bundle) else {
-            return;
-        };
-
-        let current = self.get_bundle_mut(map, bundle);
-        let to_add = SubMapBundle::from_loaded_bundle(bundle, map);
-        current.combine(to_add);
-    }
-
-    fn add_all_dependents(&mut self, map: &ResourceMap) {
-        let mut entry_queue: Vec<(ComponentId, Option<ResourceSource>)> = (self
-            .resources()
-            .map(|(id, _)| (ComponentId::Resource(id.clone()), None)))
-        .chain(
-            self.messages()
-                .map(|(id, _)| (ComponentId::Message(id.clone()), None)),
-        )
-        .collect();
-        let mut dependent_entries = HashSet::new();
-
-        while let Some(entry) = entry_queue.pop() {
-            let (dependency_id, source) = &entry;
-
-            if !dependent_entries.contains(&entry)
-                && let Some(dependencies) = map.dependencies.get(dependency_id)
-            {
-                if source
-                    .as_ref()
-                    .is_none_or(|source| !source.is_removable_dependency())
-                {
-                    entry_queue.extend(dependencies.dependents.iter().map(|(id, info)| {
-                        (
-                            id.to_owned(),
-                            Some(ResourceSource::Dependent {
-                                dependency: dependency_id.clone(),
-                                info: *info,
-                            }),
-                        )
-                    }));
-                }
-
-                if let ComponentId::Bundle(bundle_id) = &dependency_id {
-                    let bundle = &map.bundles[bundle_id];
-                    entry_queue.extend(bundle.resources.iter().map(|resource_id| {
-                        (
-                            ComponentId::Resource(resource_id.to_owned()),
-                            Some(ResourceSource::DependentBundle),
-                        )
-                    }));
-                    entry_queue.extend(bundle.messages.iter().map(|resource_id| {
-                        (
-                            ComponentId::Message(resource_id.to_owned()),
-                            Some(ResourceSource::DependentBundle),
-                        )
-                    }));
-                    entry_queue.extend(bundle.bundles.iter().map(|bundle_id| {
-                        (
-                            ComponentId::Bundle(bundle_id.to_owned()),
-                            Some(ResourceSource::DependentBundle),
-                        )
-                    }));
-                }
-
-                if source.is_some() {
-                    dependent_entries.insert(entry);
-                }
-            }
-        }
-
-        for (dependent, info) in dependent_entries {
-            match (dependent, info) {
-                (ComponentId::Resource(resource), Some(info)) => {
-                    self.add_resource(map, &resource, info);
-                }
-                (ComponentId::Message(message), Some(info)) => {
-                    self.add_message(map, &message, info);
-                }
-                _ => (),
-            }
-        }
-    }
-
-    /// Unloads all resources in this map. This waits until all resources are unloaded, and as such
-    /// may never return if a resource can't be unloaded or a dependent isn't specified.
-    pub async fn unload_in(&self, registry: &Registry) {
-        self.unload_inner(&registry.stopper(), &mut registry.event_receiver())
-            .await;
-    }
-
-    /// Unloads all resources in this map. This waits until all resources are unloaded, and as such
-    /// may never return if a resource can't be unloaded or a dependent isn't specified.
-    pub async fn unload_with(&self, stopper: &Stopper, events: &EventReceiver) {
-        self.unload_inner(stopper, &mut events.resubscribe()).await;
-    }
-
-    async fn unload_inner(&self, stopper: &Stopper, events: &mut EventReceiver) {
-        let mut components_to_unload = hashbrown::HashSet::new();
-        let mut dependencies_to_remove = hashbrown::HashSet::new();
-
-        let resources = self
-            .resources()
-            .map(|(id, sources)| (ComponentIdRef::Resource(id).into_owned(), sources));
-        let messages = self
-            .messages()
-            .map(|(id, sources)| (ComponentIdRef::Message(id).into_owned(), sources));
-        for (resource, sources) in resources.chain(messages) {
-            let mut current_dependencies = Vec::new();
-            let mut should_unload = false;
-
-            for source in sources {
-                if let ResourceSource::Dependent { dependency, info } = source
-                    && info.removable()
-                {
-                    current_dependencies.push((resource.clone(), dependency.to_owned()));
-                } else {
-                    should_unload = true;
-                    break;
-                }
-            }
-
-            if should_unload || sources.is_empty() {
-                components_to_unload.insert(resource.clone());
-            } else {
-                dependencies_to_remove.extend(current_dependencies);
-            }
-        }
-
-        if components_to_unload.is_empty() && dependencies_to_remove.is_empty() {
-            return;
-        }
-
-        events.mark_seen();
-
-        for component in &components_to_unload {
-            if let ComponentId::Resource(resource) = component {
-                stopper.stop_id(resource);
-            }
-        }
-
-        for (dependent, dependency) in &dependencies_to_remove {
-            stopper.remove_dependency(dependency::Link {
-                dependent: dependent.clone(),
-                dependency: dependency.clone(),
-            });
-        }
-
-        let mut loaded_components = components_to_unload.clone();
-        let mut loaded_dependencies = dependencies_to_remove.clone();
-        while let Some(event) = events.recv().await {
-            match event {
-                RegistryEvent::Loaded(id) => {
-                    let id = ComponentId::Resource(id);
-                    if components_to_unload.contains(&id) {
-                        loaded_components.insert(id);
-                    }
-                }
-                RegistryEvent::TakeMessageLoaded { id, .. }
-                | RegistryEvent::ListenMessageLoaded { id, .. } => {
-                    let id = ComponentId::Message(id);
-                    if components_to_unload.contains(&id) {
-                        loaded_components.insert(id);
-                    }
-                }
-                RegistryEvent::Unloaded(id) => {
-                    loaded_components.remove(&id);
-
-                    if loaded_components.is_empty() && loaded_dependencies.is_empty() {
-                        return;
-                    }
-                }
-                RegistryEvent::NewDependency(dependency::Link {
-                    dependency,
-                    dependent,
-                }) => {
-                    let entry = (dependent, dependency);
-                    if dependencies_to_remove.contains(&entry) {
-                        loaded_dependencies.insert(entry);
-                    }
-                }
-                RegistryEvent::RemovedDependency(dependency::Link {
-                    dependency,
-                    dependent,
-                }) => {
-                    loaded_dependencies.remove(&(dependent, dependency));
-
-                    if loaded_components.is_empty() && loaded_dependencies.is_empty() {
-                        return;
-                    }
-                }
-                // just in case
-                RegistryEvent::Exit => {
-                    return;
-                }
-                _ => (),
-            }
-        }
-    }
-
-    /// Loads all resources in the map with their `init` functions, and returns which resources in
-    /// this map had `init` functions.
-    ///
-    /// # Errors
-    ///
-    /// - If a resource could not be added to the registry
-    ///     - Note that this doesn't update the load result, as the result only tracks which
-    ///       resources have init functions.
-    pub async fn reload(&self, registry: &mut Registry) -> Result<LoadResults, Error> {
-        let mut app = registry.new_app();
-
-        let LoadResultFull {
-            plans,
-            resource_result,
-            message_result,
-        } = self.load_plans();
-
-        for plan in plans {
-            let bundle = plan.build();
-            app = app.with_bundle(bundle);
-        }
-
-        app.add_to_registry(registry)
-            .await
-            .map_err(|(_, err)| err)?;
-
-        Ok(LoadResults {
-            resource_result,
-            message_result,
-        })
-    }
-
-    fn load_plans(&self) -> LoadResultFull {
-        let mut result = LoadResultFull::default();
-
-        let mut parents = Vec::new();
-        for (id, bundle) in &self.root_bundles {
-            let new_result = bundle.load_plan(id, &mut parents);
-            result.add(new_result);
-        }
-
-        result
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-#[derive(Debug)]
-struct LoadPlan {
-    init: bundle::SharedInitFn,
-    load_type: LoadType,
-    parent_bundles: Vec<NamespacedId>,
-}
-
-#[derive(Debug)]
-enum LoadType {
-    Partial {
-        resources: HashSet<NamespacedId>,
-        messages: HashSet<NamespacedId>,
-    },
-    Complete,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl LoadPlan {
-    fn build(self) -> Bundle {
-        let mut bundle = self.init.call();
-
-        // TODO: filter channels as well
-        if let LoadType::Partial {
-            resources,
-            messages,
-        } = &self.load_type
-        {
-            bundle = bundle.filter_resources(resources);
-            bundle = bundle.filter_messages(messages);
-            bundle = bundle.without_reload();
-        } else {
-            bundle = bundle.reload_with_shared(self.init);
-        }
-
-        for parent in self.parent_bundles.into_iter().rev() {
-            bundle = Bundle::new(parent).with_bundle(bundle);
-        }
-
-        bundle
-    }
-}
-
-#[derive(Default, Debug)]
-#[cfg(feature = "runtime-loading")]
-pub struct LoadResult {
-    pub loaded: HashSet<NamespacedId>,
-    pub failed: HashSet<NamespacedId>,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl LoadResult {
-    fn extend(&mut self, other: &Self) {
-        self.loaded = &self.loaded | &other.loaded;
-        self.failed = &self.failed | &other.failed;
-        self.failed = &self.failed - &self.loaded;
-    }
-
-    fn load_failed(&mut self) -> HashSet<NamespacedId> {
-        let failed = std::mem::take(&mut self.failed);
-        self.loaded = &self.loaded | &failed;
-        failed
-    }
-}
-
-#[derive(Default, Debug)]
-#[cfg(feature = "runtime-loading")]
-struct LoadResultFull {
-    plans: Vec<LoadPlan>,
-    resource_result: LoadResult,
-    message_result: LoadResult,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl LoadResultFull {
-    fn add(&mut self, other: Self) {
-        self.plans.extend(other.plans);
-        self.resource_result.extend(&other.resource_result);
-        self.message_result.extend(&other.message_result);
-    }
-
-    fn success(&self) -> bool {
-        self.resource_result.failed.is_empty() && self.message_result.failed.is_empty()
-    }
-}
-
-#[derive(Default, Debug)]
-#[cfg(feature = "runtime-loading")]
-pub struct LoadResults {
-    pub resource_result: LoadResult,
-    pub message_result: LoadResult,
-}
-
-#[derive(Clone)]
-#[non_exhaustive]
-pub enum Query {
-    Resource(NamespacedId),
-    Message(NamespacedId),
-    Bundle(NamespacedId),
-    AndDependents(Box<Self>),
-    List(Vec<Self>),
-}
-
-impl Default for Query {
-    fn default() -> Self {
-        Self::List(Vec::new())
-    }
-}
-
-impl Query {
-    pub fn resource(ident: impl Into<NamespacedId>) -> Self {
-        Self::Resource(ident.into())
-    }
-
-    pub fn bundle(ident: impl Into<NamespacedId>) -> Self {
-        Self::Bundle(ident.into())
-    }
-
-    #[must_use]
-    pub fn and_dependents(self) -> Self {
-        Self::AndDependents(Box::new(self))
-    }
-
-    #[must_use]
-    pub fn and(self, item: Self) -> Self {
-        match self {
-            Self::List(mut list) => {
-                list.push(item);
-                Self::List(list)
-            }
-            other => Self::List(vec![other, item]),
-        }
-    }
-
-    fn get(self, map: &ResourceMap) -> SubMap {
-        match self {
-            Self::Resource(id) => {
-                let mut sub_map = SubMap::default();
-                sub_map.add_resource(map, &id, ResourceSource::Query);
-                sub_map
-            }
-            Self::Message(id) => {
-                let mut sub_map = SubMap::default();
-                sub_map.add_message(map, &id, ResourceSource::Query);
-                sub_map
-            }
-            Self::Bundle(id) => {
-                let mut sub_map = SubMap::default();
-                sub_map.add_bundle(map, &id);
-                sub_map
-            }
-            Self::AndDependents(query) => {
-                let mut sub_map = query.get(map);
-                sub_map.add_all_dependents(map);
-                sub_map
-            }
-            Self::List(list) => {
-                let mut sub_map = SubMap::default();
-                for query in list {
-                    let query_map = query.get(map);
-                    sub_map.combine(query_map);
-                }
-                sub_map
-            }
-        }
-    }
-}
-
-impl FromIterator<Self> for Query {
-    fn from_iter<T: IntoIterator<Item = Self>>(iter: T) -> Self {
-        Self::List(Vec::from_iter(iter))
     }
 }

@@ -521,6 +521,7 @@ impl Registry {
             id,
             parent: bundle.parent,
             resources: bundle.resources,
+            messages: bundle.messages,
             bundles: bundle.bundles,
         });
         self

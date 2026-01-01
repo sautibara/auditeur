@@ -86,6 +86,7 @@ pub enum RegistryEvent {
         id: NamespacedId,
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
+        messages: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
     },
     /// A bundle has started loading into the registry
@@ -93,6 +94,7 @@ pub enum RegistryEvent {
         id: NamespacedId,
         parent: Option<NamespacedId>,
         resources: Arc<[NamespacedId]>,
+        messages: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
     },
     // TODO: actually emit these
