@@ -349,6 +349,21 @@ impl<L: Listener> Component<L> for RegistryComponent {
     }
 }
 
+pub struct Unbiased;
+pub struct Biased;
+
+impl Input for Unbiased {
+    async fn create(_: &Registry, _: ComponentIdRef<'_>) -> Result<Self, Error> {
+        Ok(Self)
+    }
+}
+
+impl Input for Biased {
+    async fn create(_: &Registry, _: ComponentIdRef<'_>) -> Result<Self, Error> {
+        Ok(Self)
+    }
+}
+
 #[allow(private_bounds)]
 pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send + Sync {
     fn run(
@@ -365,8 +380,12 @@ pub(crate) trait Sealed<L> {}
 
 macro_rules! impl_component_list {
     ($(($T:tt, $C:tt, $c:tt)),*) => {
+        impl_component_list!((Unbiased) () $(($T, $C, $c)),*);
+        impl_component_list!((Biased) (biased;) $(($T, $C, $c)),*);
+    };
+    (($bias_marker:ident) ($($bias:tt)*) $(($T:tt, $C:tt, $c:tt)),*) => {
         #[allow(unused_parens)]
-        impl<L, $($T,)* $($C,)*> ComponentList<L> for ((), $($T),*)
+        impl<L, $($T,)* $($C,)*> ComponentList<L> for ($bias_marker, $($T),*)
         where
             Self: Input,
             $($T: Component<L>,)*
@@ -375,10 +394,10 @@ macro_rules! impl_component_list {
                 $(+ for<'s> Subset<$C, SubsetMut<'s> = $T::UserInput<'s>>)*
         {
             async fn run(&mut self, listener: &mut L, input: &mut L::Input, sender: &EventSender) {
-                let ((), $($c),*) = self;
+                let (_, $($c),*) = self;
 
                 loop {
-                    select! { $(
+                    select! { $($bias)* $(
                         res = $c.wait(&listener) => {
                             let Some(val) = sender.handle_error(res, listener.ident()) else { continue; };
                             let ControlFlow::Continue(val) = val else { break; };
@@ -400,7 +419,7 @@ macro_rules! impl_component_list {
         }
 
         #[allow(unused_parens)]
-        impl<L, $($T,)* $($C,)*> Sealed<L> for ((), $($T),*)
+        impl<L, $($T,)* $($C,)*> Sealed<L> for ($bias_marker, $($T),*)
         where
             Self: Input,
             $($T: Component<L>,)*

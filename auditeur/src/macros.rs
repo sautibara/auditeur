@@ -366,6 +366,13 @@ pub use auditeur_macros::expand_listener;
 /// {}
 /// ```
 ///
+/// ## Bias
+///
+/// All listeners by default try to poll their components fairly by randomly checking a component
+/// to poll each time. However, if the `biased` parameter is used, the listener will check the
+/// components in order instead. That is, the listener will always choose earlier components over
+/// later components, if they have new things to do.
+///
 /// # Errors
 ///
 /// Most errors are caught directly by the macro and have dedicated error messages, but some

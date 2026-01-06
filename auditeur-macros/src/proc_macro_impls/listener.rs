@@ -242,8 +242,13 @@ impl Intermediate {
             // the first input must be () because of Subset
             inputs.push_front(parse_quote!(()));
 
-            let unit_type = parse_quote!(());
-            let components = std::iter::once(&unit_type)
+            let auditeur = &*crate::AUDITEUR;
+            let bias = if self.listener.value.biased() {
+                parse_quote!(#auditeur::resource::listener::Biased)
+            } else {
+                parse_quote!(#auditeur::resource::listener::Unbiased)
+            };
+            let components = std::iter::once(&bias)
                 .chain(registry_component.as_ref())
                 .chain(with_input.iter().map(|component| component.component));
 
@@ -477,6 +482,10 @@ impl Listener {
         )
     }
 
+    fn biased(&self) -> bool {
+        self.parameters.iter().any(Parameter::is_biased_flag)
+    }
+
     pub fn expand(self, ident: Ident, generics: Generics) -> syn::Result<proc_macro2::TokenStream> {
         let intermediate = Intermediate::new(ident, generics, self);
         intermediate.expand_simple()
@@ -514,6 +523,7 @@ enum Parameter {
     RespondFlag(Ident),
     Respond(Ident, Parenthesized<super::RespondMeta>),
     ListenToRegistry(Box<BuiltinComponent>),
+    BiasedFlag(Ident),
 }
 
 impl Parameter {
@@ -560,6 +570,14 @@ impl Parameter {
         };
         (list.into_iter().flatten()).chain(single.into_iter().map(DerefMut::deref_mut))
     }
+
+    /// Returns `true` if the parameter is [`BiasedFlag`].
+    ///
+    /// [`BiasedFlag`]: Parameter::BiasedFlag
+    #[must_use]
+    const fn is_biased_flag(&self) -> bool {
+        matches!(self, Self::BiasedFlag(..))
+    }
 }
 
 impl Parse for Parameter {
@@ -597,13 +615,16 @@ impl Parse for Parameter {
             )
             .map(Box::new)
             .map(Self::ListenToRegistry),
+            "biased" => {
+                Ok(Self::BiasedFlag(ident))
+            }
             "id" => Err(syn::Error::new_spanned(
                 ident,
                 "'id' is only accepted as the first parameter",
             )),
             _ => Err(syn::Error::new_spanned(
                 ident,
-                "expected one of 'listen', 'take', 'respond', 'on_load', 'registry_component', 'listen_to_registry', or 'components'",
+                "expected one of 'listen', 'take', 'respond', 'on_load', 'registry_component', 'listen_to_registry', 'components', or 'biased'",
             )),
         }
     }
@@ -622,6 +643,9 @@ impl ToTokens for Parameter {
             }
             Self::ListenToRegistry(component) => {
                 component.to_tokens(tokens);
+            }
+            Self::BiasedFlag(ident) => {
+                ident.to_tokens(tokens);
             }
         }
     }
