@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use auditeur_plugin::auditeur::{
     app::{App, channels::EventSender, resource_map::ResourceMapConnection},
     path_any::PathAnyConst,
+    resource::listener::Component,
 };
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -149,8 +150,11 @@ enum Action {
     LoadAll,
 }
 
-#[derive(Serialize)]
-#[resource("plugin_host:arena")]
+#[derive(Serialize, Runnable)]
+#[listener("plugin_host:arena", biased, components((
+    component = MainComponent,
+    input = (ResourceMapConnection, PluginRegistryConnection, Registry, EventSender),
+)))]
 pub struct Arena<O: Opts> {
     source_list: SourceList,
     workspace: Workspace,
@@ -632,31 +636,6 @@ impl<O: Opts> Arena<O> {
     }
 }
 
-impl<O: Opts> Watcher for Arena<O> {
-    type Input = (
-        EventSender,
-        ResourceMapConnection,
-        PluginRegistryConnection,
-        Registry,
-    );
-
-    async fn run(
-        &mut self,
-        (sender, resource_map, plugin_registry, registry): &mut Self::Input,
-    ) -> Result<()> {
-        // TODO: receive actions as well
-        while let Some(action) = self.actions.pop_front() {
-            let res = self
-                .run_action(action, resource_map, plugin_registry, registry)
-                .await;
-            if let Err(errors) = res {
-                sender.send_errors(Self::const_ident(), errors);
-            }
-        }
-        Ok(())
-    }
-}
-
 struct SourceTracker<'a, O: Opts> {
     arena: &'a Arena<O>,
     // value is if the plugin was enabled
@@ -744,4 +723,44 @@ enum PluginLoadResult {
     Success { enabled: bool },
     NotFound,
     HadError,
+}
+
+#[derive(Input)]
+#[doc(hidden)]
+pub struct MainComponent {}
+
+impl<O: Opts> Component<Arena<O>> for MainComponent {
+    type UserInput<'s> = (
+        &'s mut ResourceMapConnection,
+        &'s mut PluginRegistryConnection,
+        &'s mut Registry,
+        &'s mut EventSender,
+    );
+    type Value = ();
+
+    async fn wait(&mut self, listener: &Arena<O>) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        if listener.actions.is_empty() {
+            futures::future::pending().await
+        } else {
+            Ok(ControlFlow::Continue(()))
+        }
+    }
+
+    async fn handle(
+        &mut self,
+        (): (),
+        listener: &mut Arena<O>,
+        (resource_map, plugin_registry, registry, sender): Self::UserInput<'_>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        if let Some(action) = listener.actions.pop_front() {
+            let res = listener
+                .run_action(action, resource_map, plugin_registry, registry)
+                .await;
+            if let Err(errs) = res {
+                sender.send_errors(Arena::<O>::const_ident(), errs);
+            }
+        }
+
+        Ok(ControlFlow::Continue(()))
+    }
 }

@@ -143,7 +143,7 @@ impl AppExt for App {
         }
         self.add_bundle(
             new_bundle!("auditeur:plugin_host")
-                .with_watcher::<Arena<O>>(arena.map_err(Into::into))
+                .with_listener::<Arena<O>>(arena.map_err(Into::into))
                 .with_listener::<PluginRegistry>(registry),
         );
         self.add_errors(
