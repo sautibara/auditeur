@@ -1,5 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -16,19 +18,49 @@ pub enum Artifacts {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum LoadedSource {
     Plugins {
         path: PathBuf,
         names: Vec<PluginName>,
     },
     Binary {
-        binary: source::Binary,
+        binary: PluginName,
     },
 }
 
-impl LoadedSource {
-    pub const fn as_binary(&self) -> Option<&source::Binary> {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoadedPlugin {
+    pub source: SourceId,
+    pub artifacts: LoadedPluginArtifacts,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LoadedPluginArtifacts {
+    SourceCode {
+        path: PathBuf,
+        config: config::plugin::Plugin,
+    },
+    Binary {
+        binary: Binary,
+    },
+}
+
+impl LoadedPlugin {
+    pub fn name(&self) -> &PluginName {
+        match &self.artifacts {
+            LoadedPluginArtifacts::SourceCode { config, .. } => config.name(),
+            LoadedPluginArtifacts::Binary { binary } => &binary.name,
+        }
+    }
+
+    pub const fn id(&self) -> &SourceId {
+        &self.source
+    }
+}
+
+impl LoadedPluginArtifacts {
+    pub fn as_binary(&self) -> Option<&Binary> {
         if let Self::Binary { binary } = self {
             Some(binary)
         } else {
@@ -37,23 +69,7 @@ impl LoadedSource {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LoadedPlugin {
-    pub path: PathBuf,
-    pub source: SourceId,
-    pub config: config::plugin::Plugin,
-}
-
-impl LoadedPlugin {
-    pub const fn name(&self) -> &PluginName {
-        self.config.name()
-    }
-
-    pub const fn id(&self) -> &SourceId {
-        &self.source
-    }
-}
-
+#[derive(Serialize, Deserialize)]
 pub struct SourceList {
     path: PathBuf,
     sources: HashMap<SourceId, LoadedSource>,
@@ -62,13 +78,19 @@ pub struct SourceList {
 
 impl SourceList {
     pub async fn new(path: impl Into<PathBuf> + Send) -> Result<Self, Error> {
-        let path = path.into();
-        tokio::fs::create_dir_all(&path).await?;
-        Ok(Self {
-            path,
+        let this = Self {
+            path: path.into(),
             sources: HashMap::new(),
             plugins: HashMap::new(),
-        })
+        };
+        this.init().await?;
+        Ok(this)
+    }
+
+    pub async fn init(&self) -> Result<(), Error> {
+        tokio::fs::create_dir_all(&self.path)
+            .await
+            .map_err(Into::into)
     }
 
     pub fn get_plugin(&self, plugin: &PluginName) -> Option<&LoadedPlugin> {
@@ -76,9 +98,28 @@ impl SourceList {
     }
 
     pub fn binaries(&self) -> impl Iterator<Item = (&SourceId, &Binary)> + '_ {
-        self.sources
-            .iter()
-            .filter_map(|(id, source)| source.as_binary().map(|binary| (id, binary)))
+        self.plugins.values().filter_map(|plugin| {
+            plugin
+                .artifacts
+                .as_binary()
+                .map(|binary| (plugin.id(), binary))
+        })
+    }
+
+    pub fn plugins(&self) -> impl Iterator<Item = (&PluginName, &LoadedPlugin)> {
+        self.plugins.iter()
+    }
+
+    pub fn sources(&self) -> impl Iterator<Item = (&SourceId, &LoadedSource)> {
+        self.sources.iter()
+    }
+
+    pub fn contains_source(&self, source: &SourceId) -> bool {
+        self.sources.contains_key(source)
+    }
+
+    pub fn get(&self, id: &SourceId) -> Option<&LoadedSource> {
+        self.sources.get(id)
     }
 
     pub async fn remove_source(
@@ -86,8 +127,12 @@ impl SourceList {
         source: &SourceId,
     ) -> Result<Option<LoadedSource>, Error> {
         let source = self.sources.remove(source);
-        if let Some(LoadedSource::Plugins { path, .. }) = &source {
+        if let Some(LoadedSource::Plugins { path, names }) = &source {
             tokio::fs::remove_dir(path).await?;
+
+            for name in names {
+                self.plugins.remove(name);
+            }
         }
         Ok(source)
     }
@@ -121,10 +166,7 @@ impl SourceList {
                 source,
                 updated,
             } => {
-                let names = plugins
-                    .iter()
-                    .map(|plugin| plugin.config.name().clone())
-                    .collect();
+                let names = plugins.iter().map(|plugin| plugin.name().clone()).collect();
                 for plugin in plugins {
                     self.plugins.insert(plugin.name().clone(), plugin);
                 }
@@ -132,8 +174,21 @@ impl SourceList {
                 (source, updated)
             }
             Artifacts::Binary { source, binary } => {
-                let source = self.add_loaded_source(&source, LoadedSource::Binary { binary });
-                (source, Updated(false))
+                let plugin_name = binary.name.clone();
+                self.plugins.insert(
+                    binary.name.clone(),
+                    LoadedPlugin {
+                        source: source.clone(),
+                        artifacts: LoadedPluginArtifacts::Binary { binary },
+                    },
+                );
+                let loaded_source = self.add_loaded_source(
+                    &source,
+                    LoadedSource::Binary {
+                        binary: plugin_name,
+                    },
+                );
+                (loaded_source, Updated(false))
             }
         }
     }
@@ -185,8 +240,10 @@ impl SourceList {
                 if let Some(config) = plugin {
                     plugins.push(LoadedPlugin {
                         source: source.id().clone(),
-                        config,
-                        path: offset,
+                        artifacts: LoadedPluginArtifacts::SourceCode {
+                            path: offset,
+                            config,
+                        },
                     });
                 }
             } else {

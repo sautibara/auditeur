@@ -45,10 +45,6 @@ pub struct Config {
     pub arena: Arena,
     #[serde(default)]
     pub plugins: PluginGroupMap,
-    #[serde(skip)]
-    // TODO: store init fns in here too,
-    // so that things can be restarted
-    pub static_dependencies: HashMap<SourceId, Source>,
 }
 
 impl Config {
@@ -58,7 +54,6 @@ impl Config {
             directories: Directories::defaults(project_dirs),
             arena: Arena::default(),
             plugins: PluginGroupMap::default(),
-            static_dependencies: HashMap::new(),
         }
     }
 
@@ -67,11 +62,8 @@ impl Config {
         &self.directories
     }
 
-    #[must_use]
-    pub fn with_static_dependency(mut self, dependency: Source) -> Self {
-        self.static_dependencies
-            .insert(dependency.id().clone(), dependency);
-        self
+    pub fn source(&self, id: &SourceId) -> Option<&Source> {
+        self.plugins.get(id).map(|plugin| &plugin.source)
     }
 }
 

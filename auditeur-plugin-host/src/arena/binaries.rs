@@ -3,40 +3,32 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::prelude::*;
 
+#[derive(Serialize, Deserialize)]
 pub struct Binaries {
     path: PathBuf,
     binaries: HashMap<PluginName, Binary>,
 }
 
 impl Binaries {
-    const FILE_NAME: &'static str = "binaries.ron";
-
     pub async fn new(path: PathBuf) -> Result<Self, Error> {
-        tokio::fs::create_dir_all(&path).await?;
-        Ok(Self {
+        let this = Self {
             path,
             binaries: HashMap::new(),
-        })
+        };
+        this.init().await?;
+        Ok(this)
     }
 
-    pub async fn try_deserialize_from(path: PathBuf) -> Result<Self, Error> {
-        match crate::deserialize(path.join(Self::FILE_NAME)).await {
-            Ok(binaries) => {
-                tokio::fs::create_dir_all(&path).await?;
-                Ok(Self { path, binaries })
-            }
-            // TODO: report errors
-            Err(_) => Self::new(path).await,
-        }
+    pub async fn init(&self) -> Result<(), Error> {
+        tokio::fs::create_dir_all(&self.path).await?;
+        Ok(())
     }
 
-    pub async fn serialize(&self) -> Result<(), Error> {
-        crate::serialize(self.path.join(Self::FILE_NAME), self.binaries.clone()).await
-    }
-
-    async fn remove(&mut self, name: &PluginName) -> Result<(), Error> {
+    pub async fn remove(&mut self, name: &PluginName) -> Result<(), Error> {
         if let Some(binary) = self.binaries.remove(name) {
             tokio::fs::remove_file(binary.path).await?;
         }
@@ -54,7 +46,6 @@ impl Binaries {
         for plugin_name in plugins {
             self.remove(plugin_name).await?;
         }
-        self.serialize().await?;
         Ok(())
     }
 
@@ -91,7 +82,6 @@ impl Binaries {
                 name: name.clone(),
             },
         );
-        self.serialize().await?;
         Ok(&self.binaries[name])
     }
 }

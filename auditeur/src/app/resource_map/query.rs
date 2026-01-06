@@ -801,7 +801,7 @@ impl SubMap {
     /// - If a resource could not be added to the registry
     ///     - Note that this doesn't update the load result, as the result only tracks which
     ///       resources have init functions.
-    pub async fn reload_in(&self, registry: &mut Registry) -> Result<LoadResults, Error> {
+    pub async fn reload_in(&self, registry: &mut Registry) -> Result<LoadResults, (App, Error)> {
         let mut app = registry.new_app();
 
         let LoadState {
@@ -815,9 +815,7 @@ impl SubMap {
             app = app.with_bundle(bundle);
         }
 
-        app.add_to_registry(registry)
-            .await
-            .map_err(|(_, err)| err)?;
+        app.add_to_registry(registry).await?;
 
         Ok(LoadResults {
             resource_result,

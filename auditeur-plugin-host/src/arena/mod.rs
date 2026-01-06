@@ -1,19 +1,26 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
-use auditeur_plugin::auditeur::app::{App, channels::EventSender};
-use tokio::try_join;
-use tracing::{debug, trace, warn};
+use auditeur_plugin::auditeur::{
+    app::{App, channels::EventSender, resource_map::ResourceMapConnection},
+    path_any::PathAnyConst,
+};
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, trace};
 
-use crate::{arena::config_handler::ConfigHandler, prelude::*, registry::PluginRegistryConnection};
+use crate::{
+    arena::source_list::LoadedPluginArtifacts, prelude::*, registry::PluginRegistryConnection,
+};
 
 use self::{
     binaries::Binaries,
+    loader::Loader,
     source_list::{LoadedSource, SourceList},
     workspace::{BuildArtifacts, Workspace},
 };
 
 mod binaries;
-mod config_handler;
+mod loader;
 mod manifest;
 mod source_list;
 mod workspace;
@@ -38,93 +45,211 @@ mod workspace;
 //
 // State is held in multiple locations, and state "diff"ing happens at different times. This is
 // because we may not have all the information to know how to arrive at a future state until we
-// finish some of the beginnning actions. Specifically, state that comes from loading sources is
-// held in [`State`], and each of the sections of the Arena (such as the source list or workspace)
-// has their own state. Diffing happens once when changing config in [`State::diff`], and again
-// after loading all sources in [`Action::AddPlugins`] (which inspects source config that's kept in
-// [`State`] once it's loaded...). This is because we may have to add the plugins to the workspace
-// in a specific order because of dependencies.
+// finish some of the beginnning actions. Diffing happens once when changing config in
+// [`Arena::diff`], and again after loading all sources in [`Action::AddPlugins`]. This is because
+// we may have to add the plugins to the workspace in a specific order because of dependencies.
 //
 // (sorry for writing so much, I wrote it so I would understand it better and figured I'd leave it
 // in for the one or two people that will ever read this code).
 
-// TODO: serialize and deserialize all current state (State, SourceList, Binaries, etc.)
 // TODO: confirm deserialized state with file system
 // make sure the file system agrees with the state
-// TODO: serialize and change state after every action finishes
-// don't change the state immediately once config changes
-// instead, modify the state as actions are run
 // TODO: runtime config changing
 // when config changes, delete all upcoming actions and replace them with the new config
+// TODO: validate built info after deserializing binaries
+// TODO: move SourceId to a UUID
+
+pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
+    fn default_config(&self) -> config::Host;
+
+    fn static_dependencies(&self) -> &HashMap<SourceId, Source>;
+
+    fn read_config(&self) -> impl Future<Output = Result<config::Host, Error>> + Send + Sync;
+    fn write_config(
+        &self,
+        config: &config::Host,
+    ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
+
+    fn read_config_lock(&self) -> impl Future<Output = Result<Lockfile, Error>> + Send + Sync;
+    fn write_config_lock(
+        &self,
+        lock: &Arena<Self>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
+}
+
+#[derive(PathAny)]
+pub struct DefaultOpts {
+    project_dirs: ProjectDirs,
+    static_dependencies: HashMap<SourceId, Source>,
+}
+
+impl DefaultOpts {
+    #[must_use]
+    pub fn new(project_dirs: ProjectDirs) -> Self {
+        Self {
+            project_dirs,
+            static_dependencies: HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_static_dependency(mut self, source: Source) -> Self {
+        self.static_dependencies.insert(source.id().clone(), source);
+        self
+    }
+}
+
+impl Opts for DefaultOpts {
+    fn default_config(&self) -> config::Host {
+        config::Host::defaults(&self.project_dirs)
+    }
+
+    fn static_dependencies(&self) -> &HashMap<SourceId, Source> {
+        &self.static_dependencies
+    }
+
+    async fn read_config(&self) -> Result<config::Host, Error> {
+        let file = self.project_dirs.config_dir().join("config.ron");
+        crate::deserialize(file).await
+    }
+
+    async fn write_config(&self, config: &config::Host) -> Result<(), Error> {
+        tokio::fs::create_dir_all(self.project_dirs.config_dir()).await?;
+        let file = self.project_dirs.config_dir().join("config.ron");
+        crate::serialize(file, config)
+    }
+
+    async fn read_config_lock(&self) -> Result<Lockfile, Error> {
+        let file = self.project_dirs.config_dir().join("lock.ron");
+        crate::deserialize(file).await
+    }
+
+    async fn write_config_lock(&self, lock: &Arena<Self>) -> Result<(), Error> {
+        tokio::fs::create_dir_all(self.project_dirs.config_dir()).await?;
+        let file = self.project_dirs.config_dir().join("lock.ron");
+        crate::serialize(file, lock)
+    }
+}
 
 enum Action {
+    /// Add a source to the [`SourceList`]
     Load(SourceId),
+    /// Remove a source from the [`SourceList`]
     Remove(SourceId),
-    AddPlugins,
+    /// Resolve dependencies and find out how to load plugins into the workspace in the correct
+    /// order.
+    ResolveDependencies,
+    /// Copy a plugin's manifest into the workspace.
     AddToWorkspace(PluginName),
+    /// Compile all plugins in the workspace.
     CompileAll,
+    /// Unload all plugins that aren't meant to be loaded.
+    UnloadAll,
+    /// Load all plugin objects.
     LoadAll,
 }
 
+#[derive(Serialize)]
 #[resource("plugin_host:arena")]
-pub struct Arena {
+pub struct Arena<O: Opts> {
     source_list: SourceList,
     workspace: Workspace,
     binaries: Binaries,
+    #[serde(skip)]
+    loader: Loader,
+    #[serde(skip)]
     actions: VecDeque<Action>,
-    state: State,
-    config: ConfigHandler,
+    #[serde(skip)]
+    config: config::Host,
+    #[serde(skip)]
+    opts: O,
+}
+
+#[derive(Deserialize)]
+pub struct Lockfile {
+    source_list: SourceList,
+    workspace: Workspace,
+    binaries: Binaries,
 }
 
 #[create]
-impl Create for Arena {
+impl<O: Opts> Create for Arena<O> {
     async fn create(#[external] arena: Result<Self>) -> Result<Self> {
         arena
     }
 }
 
-impl Arena {
+impl<O: Opts> Arena<O> {
     /// Open or initialize an [`Arena`] using the specified `config`
     ///
     /// # Errors
     ///
     /// - If the directory structure cannot be created
-    pub async fn open_or_init(config: config::Host) -> (Result<Self, Error>, Vec<Error>) {
-        async fn open_or_init(config: config::Host) -> Result<Arena, Error> {
+    pub async fn open_or_init(opts: O) -> (Result<Self, Error>, Vec<Error>) {
+        async fn open_or_init<O: Opts>(opts: O) -> Result<Arena<O>, Error> {
             debug!("initializing plugin arena");
-            let (source_list, workspace, binaries) = try_join!(
-                SourceList::new(config.directories().source_dir()),
-                Workspace::new_from_build_info(
-                    config.directories().workspace_dir(),
-                    config.arena.retain_build_artifacts,
-                ),
-                async {
-                    let dir = config.directories().binary_dir();
-                    if config.arena.developer_mode {
-                        Binaries::new(dir).await
-                    } else {
-                        Binaries::try_deserialize_from(dir).await
-                    }
+
+            let config = match opts.read_config().await {
+                Ok(config) => config,
+                Err(Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                    let config = opts.default_config();
+                    opts.write_config(&config).await?;
+                    config
                 }
-            )?;
+                Err(err) => {
+                    return Err(err);
+                }
+            };
 
-            let config = ConfigHandler::new(config);
-
-            let goal_state = config.goal_state();
-            let state = goal_state.as_empty();
-            let actions = state.diff(&goal_state);
-
-            Ok(Arena {
+            let Lockfile {
                 source_list,
                 workspace,
                 binaries,
-                actions,
-                state,
+            } = match opts.read_config_lock().await {
+                Ok(lockfile) => {
+                    tokio::try_join!(
+                        lockfile.source_list.init(),
+                        lockfile.workspace.init(),
+                        lockfile.binaries.init(),
+                    )?;
+                    lockfile
+                }
+                Err(Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                    let (source_list, workspace, binaries) = tokio::try_join!(
+                        SourceList::new(config.directories().source_dir()),
+                        Workspace::new_from_build_info(
+                            config.directories().workspace_dir(),
+                            config.arena.retain_build_artifacts,
+                        ),
+                        Binaries::new(config.directories().binary_dir())
+                    )?;
+                    Lockfile {
+                        source_list,
+                        workspace,
+                        binaries,
+                    }
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            };
+
+            let loader = Loader::default();
+
+            let mut arena = Arena {
+                source_list,
+                workspace,
+                binaries,
+                loader,
                 config,
-            })
+                actions: VecDeque::new(),
+                opts,
+            };
+            arena.source_diff();
+            Ok(arena)
         }
 
-        let mut result = open_or_init(config).await;
+        let mut result = open_or_init(opts).await;
         let errors = if let Ok(arena) = result.as_mut() {
             arena.load_binaries().await.err().unwrap_or_default()
         } else {
@@ -157,213 +282,279 @@ impl Arena {
         if errs.is_empty() { Ok(()) } else { Err(errs) }
     }
 
-    #[allow(clippy::too_many_lines)] // TODO: break into functions
-    #[allow(clippy::cognitive_complexity)]
+    fn source_diff(&mut self) {
+        self.actions.clear();
+
+        for (source, _) in self.source_list.sources() {
+            if !self.config.plugins.contains_key(source)
+                && !self.opts.static_dependencies().contains_key(source)
+            {
+                self.actions.push_back(Action::Remove(source.clone()));
+            }
+        }
+
+        for source in (self.config.plugins.keys()).chain(self.opts.static_dependencies().keys()) {
+            if !self.source_list.contains_source(source) {
+                self.actions.push_back(Action::Load(source.clone()));
+            }
+        }
+
+        self.actions.push_back(Action::ResolveDependencies);
+    }
+
     async fn run_action(
         &mut self,
         action: Action,
-        plugin_registry: &mut PluginRegistryConnection,
+        resource_map: &ResourceMapConnection,
+        plugin_registry: &PluginRegistryConnection,
+        registry: &Registry,
     ) -> Result<(), Vec<Error>> {
         match action {
-            Action::Load(source) => self.load_source(source).await?,
-            Action::Remove(source) => {
-                let removed = self.source_list.remove_source(&source).await?;
-                debug!("removed source '{removed:?}'");
-                if let Some(LoadedSource::Plugins { names, .. }) = removed {
-                    self.binaries.remove_plugins(names.iter()).await?;
-                }
+            Action::Load(source) => {
+                self.load_source(&source).await?;
             }
-            Action::AddPlugins => {
-                let mut tracker = SourceTracker::new(self);
-
-                for plugin in self.state.to_add() {
-                    tracker.load(plugin);
-                }
-
-                let SourceTracker {
-                    sources_to_add,
-                    actions,
-                    errors,
-                    ..
-                } = tracker;
-
-                if sources_to_add.is_empty() {
-                    self.actions.extend(actions);
-                    self.actions.push_back(Action::CompileAll);
-                    self.actions.push_back(Action::LoadAll);
-                } else {
-                    self.add_sources(sources_to_add);
-                }
-
-                if !errors.is_empty() {
-                    return Err(errors);
-                }
+            Action::Remove(source) => {
+                self.remove_source(&source).await?;
+            }
+            Action::ResolveDependencies => {
+                self.resolve_dependencies().await?;
             }
             Action::AddToWorkspace(plugin_name) => {
-                debug!("adding `{plugin_name}` to the cargo workspace");
-                // TODO: check dependency versions
-                if let Some(plugin) = self.source_list.get_plugin(&plugin_name) {
-                    let dependencies = plugin.config.dependencies.keys().collect();
-                    self.workspace
-                        .add(
-                            plugin.path.clone(),
-                            &dependencies,
-                            plugin_name.clone(),
-                            plugin.config.export.clone(),
-                        )
-                        .await?;
-                    self.state.mark_added(&plugin.source, &plugin_name);
-                    if plugin.config.export.is_none() {
-                        self.state.queue_compile(&plugin.source, plugin_name);
-                    }
-                }
+                self.add_to_workspace(&plugin_name).await?;
             }
             Action::CompileAll => {
-                let plugin_names: Vec<&PluginName> = self
-                    .state
-                    .to_compile()
-                    .filter(|plugin| {
-                        self.source_list
-                            .get_plugin(plugin)
-                            // only compile plugin groups (no static sources)
-                            .and_then(|info| self.config.plugin_group(&info.source))
-                            .is_some_and(|group| group.enabled.get(plugin))
-                    })
-                    .collect();
-
-                debug!("compiling {plugin_names:?}, this may take a while...");
-
-                let plugin_names = || plugin_names.iter().copied();
-                let BuildArtifacts { artifacts, errors } =
-                    self.workspace.compile(plugin_names).await?;
-
-                let binaries = self.binaries.insert_copies(artifacts.into_iter()).await?;
-                for binary in binaries {
-                    if let Some(plugin) = self.source_list.get_plugin(&binary.name) {
-                        self.state.mark_compiled(&plugin.source, &binary.name);
-                        self.state.queue_load(&plugin.source, binary);
-                    } else {
-                        warn!(
-                            concat!(
-                                "compiled binary for plugin '{}', ",
-                                "but that plugin wasn't registered in the source list"
-                            ),
-                            binary.name
-                        );
-                    }
-                }
-
-                if !errors.is_empty() {
-                    return Err(errors.into_iter().map(Into::into).collect());
-                }
+                self.compile().await?;
+            }
+            Action::UnloadAll => {
+                self.unload(resource_map, registry).await?;
             }
             Action::LoadAll => {
-                // we can update state now because this load can't be cancelled
-                let binaries = self
-                    .state
-                    .extract_to_load_if(|binary| {
-                        self.source_list
-                            .get_plugin(&binary.name)
-                            .is_some_and(|info| {
-                                self.config
-                                    .plugin_group(&info.source)
-                                    .is_some_and(|group| group.enabled.get(&binary.name))
-                            })
-                    })
-                    .collect();
-
-                debug!("loading {binaries:?} into the registry");
-                // SAFETY: See Self::add_to_plugin_registry for justification
-                unsafe { plugin_registry.load_binaries(binaries).await }?;
+                self.load(plugin_registry).await?;
             }
         }
-        // TODO: serialize
+        self.serialize_lock().await?;
         Ok(())
     }
 
-    async fn load_source(&mut self, source_id: SourceId) -> Result<(), Error> {
-        let Some(source) = self.config.source(&source_id) else {
-            // TODO: return an error here
-            return Ok(());
+    async fn serialize_lock(&self) -> Result<(), Error> {
+        self.opts.write_config_lock(self).await?;
+        Ok(())
+    }
+
+    async fn load_source(&mut self, source_id: &SourceId) -> Result<(), Error> {
+        let Some(source) = (self.config.source(source_id))
+            .or_else(|| self.opts.static_dependencies().get(source_id))
+        else {
+            unreachable!("arena should not attempt to load a source that's not in the config");
         };
 
         debug!("loading source '{}'", source);
-        let (loaded_source, updated) = self.source_list.add_source(source).await?;
+        let (source, updated) = self.source_list.add_source(source).await?;
 
-        let queue = self.state.add_source(source_id);
-
-        // we don't care about loaded binaries, since we still check them in
-        // enabled_binaries
-        if let LoadedSource::Plugins { names, .. } = loaded_source {
-            if updated.has_updated() || self.config.goal().arena.developer_mode {
-                // if the source has updated, we have to reload everything
-                queue.add.extend(names.iter().cloned());
-            } else {
-                // otherwise, we may be able to reuse stuff
-                for name in names {
-                    if let Some(binary) = self.binaries.get(name) {
-                        queue.load.insert(binary.clone());
-                    } else if self.workspace.contains(name) {
-                        queue.compile.insert(name.clone());
-                    } else {
-                        queue.add.insert(name.clone());
+        match source {
+            LoadedSource::Plugins { names, .. } => {
+                if updated.0 || self.config.arena.developer_mode {
+                    for name in names {
+                        self.workspace.remove(name).await?;
                     }
                 }
             }
+            LoadedSource::Binary { binary } => {
+                let binary = binary.clone();
+                let binary = (self.source_list.get_plugin(&binary))
+                    .and_then(|plugin| plugin.artifacts.as_binary())
+                    .expect("binary should be included as a plugin in the source list");
+                self.binaries
+                    .insert_copy(&binary.name, &binary.path)
+                    .await?;
+            }
         }
 
+        Ok(())
+    }
+
+    async fn remove_source(&mut self, source_id: &SourceId) -> Result<(), Error> {
+        let removed = self.source_list.remove_source(source_id).await?;
+        debug!("removed source '{removed:?}'");
+        match removed {
+            Some(LoadedSource::Plugins { names, .. }) => {
+                self.binaries.remove_plugins(names.iter()).await?;
+                for name in names {
+                    self.workspace.remove(&name).await?;
+                }
+            }
+            Some(LoadedSource::Binary { binary }) => {
+                self.binaries.remove(&binary).await?;
+            }
+            _ => (),
+        }
+
+        Ok(())
+    }
+
+    async fn resolve_dependencies(&mut self) -> Result<(), Vec<Error>> {
+        let mut tracker = SourceTracker::new(self);
+
+        for plugin in self.source_list.plugins().map(|(name, _)| name) {
+            tracker.add(plugin);
+        }
+
+        let SourceTracker {
+            sources_to_add,
+            actions,
+            errors,
+            ..
+        } = tracker;
+
+        if sources_to_add.is_empty() {
+            self.actions.extend(actions);
+            self.actions.push_back(Action::UnloadAll);
+            self.actions.push_back(Action::CompileAll);
+            self.actions.push_back(Action::LoadAll);
+        } else {
+            self.add_sources(sources_to_add).await?;
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    async fn add_to_workspace(&mut self, plugin_name: &PluginName) -> Result<(), Error> {
+        debug!("adding `{plugin_name}` to the cargo workspace");
+
+        if let Some(plugin) = self.source_list.get_plugin(plugin_name)
+            && let LoadedPluginArtifacts::SourceCode { path, config } = &plugin.artifacts
+        {
+            let dependencies = config.dependencies.keys().collect();
+            self.workspace
+                .add(
+                    path.clone(),
+                    &dependencies,
+                    plugin_name.clone(),
+                    config.export.clone(),
+                )
+                .await?;
+            self.binaries.remove(plugin_name).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn compile(&mut self) -> Result<(), Vec<Error>> {
+        let plugin_names: Vec<&PluginName> = self
+            .source_list
+            .plugins()
+            .map(|(plugin, _)| plugin)
+            .filter(|plugin| {
+                self.source_list.get_plugin(plugin).is_some_and(|plugin| {
+                    !self.opts.static_dependencies().contains_key(&plugin.source)
+                })
+            })
+            .filter(|plugin| self.plugin_enabled(plugin).unwrap_or_default())
+            .filter(|plugin| {
+                self.workspace
+                    .get(plugin)
+                    .is_some_and(|crt| crt.export.is_none())
+            })
+            .filter(|plugin| self.binaries.get(plugin).is_none())
+            .collect();
+
+        debug!("compiling {plugin_names:?}, this may take a while...");
+
+        let plugin_names = || plugin_names.iter().copied();
+        let BuildArtifacts { artifacts, errors } = self.workspace.compile(plugin_names).await?;
+
+        self.binaries.insert_copies(artifacts.into_iter()).await?;
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.into_iter().map(Into::into).collect())
+        }
+    }
+
+    async fn unload(
+        &mut self,
+        resource_map: &ResourceMapConnection,
+        registry: &Registry,
+    ) -> Result<(), Error> {
+        let plugins = self
+            .loader
+            .loaded()
+            .keys()
+            .filter(|binary| !self.plugin_enabled(binary).unwrap_or_default())
+            .cloned()
+            .collect();
+
+        self.loader
+            .unload_all(plugins, resource_map, registry)
+            .await?;
+        Ok(())
+    }
+
+    async fn load(&mut self, plugin_registry: &PluginRegistryConnection) -> Result<(), Vec<Error>> {
+        let binaries = self
+            .enabled_binaries()
+            .filter(|binary| !self.loader.loaded().contains_key(&binary.name))
+            .cloned()
+            .collect();
+
+        self.loader.load_all(binaries, plugin_registry).await?;
         Ok(())
     }
 
     /// Returns `Some(true)` if the plugin is enabled, `Some(false)` if it was found and not
     /// enabled, and `None` if it was not found
     #[must_use]
-    pub fn plugin_enabled(&self, plugin: &PluginName) -> Option<bool> {
-        let source_id = self.source_list.get_plugin(plugin)?.id();
-        match self.config.source_type(source_id)? {
-            config_handler::SourceType::Static(_) => Some(true),
-            config_handler::SourceType::Plugin(group) => Some(group.enabled.get(plugin)),
+    pub fn plugin_enabled(&self, plugin_name: &PluginName) -> Option<bool> {
+        let source_id = self.source_list.get_plugin(plugin_name)?.id();
+        if self.opts.static_dependencies().get(source_id).is_some() {
+            Some(true)
+        } else {
+            self.config
+                .plugins
+                .get(source_id)
+                .map(|plugin| plugin.enabled.get(plugin_name))
         }
     }
 
     /// Returns `Some(true)` if the source is [all enabled](config::host::Enabled::all_enabled),
     /// `Some(false)` if it was found and not enabled, and `None` if it was not found
     #[must_use]
-    pub fn source_enabled(&self, source: &SourceId) -> Option<bool> {
-        match self.config.source_type(source)? {
-            config_handler::SourceType::Static(_) => Some(true),
-            config_handler::SourceType::Plugin(group) => Some(group.enabled.all_enabled()),
+    pub fn source_enabled(&self, source_id: &SourceId) -> Option<bool> {
+        if self.opts.static_dependencies().get(source_id).is_some() {
+            Some(true)
+        } else {
+            self.config
+                .plugins
+                .get(source_id)
+                .map(|source| source.enabled.all_enabled())
         }
     }
 
     pub fn binaries(&self) -> impl Iterator<Item = &Binary> + '_ {
-        (self.binaries.binaries().values())
-            .chain(self.source_list.binaries().map(|(_, binary)| binary))
+        self.binaries.binaries().values()
     }
 
     pub fn enabled_binaries(&self) -> impl Iterator<Item = &Binary> + '_ {
-        (self
-            .binaries
-            .binaries()
-            .values()
-            .filter(|binary| self.plugin_enabled(&binary.name).unwrap_or_default()))
-        .chain(
-            self.source_list
-                .binaries()
-                .filter(|(source_id, _)| self.source_enabled(source_id).unwrap_or_default())
-                .map(|(_, binary)| binary),
-        )
+        self.binaries()
+            .filter(|binary| self.plugin_enabled(&binary.name).unwrap_or_default())
     }
 
-    fn mutate_config(&mut self, func: impl FnOnce(&mut config::Host)) {
-        self.config.mutate(func);
-        self.actions.clear();
-        let goal_state = self.config.goal_state();
-        let actions = self.state.diff(&goal_state);
-        self.actions.extend(actions);
+    async fn mutate_config(&mut self, func: impl FnOnce(&mut config::Host)) -> Result<(), Error> {
+        (func)(&mut self.config);
+        self.source_diff();
+        self.opts.write_config(&self.config).await?;
+        Ok(())
     }
 
-    fn add_sources(&mut self, sources: impl IntoIterator<Item = Source>) {
+    async fn add_sources(
+        &mut self,
+        sources: impl IntoIterator<Item = Source>,
+    ) -> Result<(), Error> {
         self.mutate_config(|config| {
             config.plugins.extend(sources.into_iter().map(|source| {
                 (
@@ -374,7 +565,8 @@ impl Arena {
                     },
                 )
             }));
-        });
+        })
+        .await
     }
 
     /// # Safety
@@ -398,19 +590,30 @@ impl Arena {
             trace!("adding '{}' to the registry", binary.path.display());
             // SAFETY: these binaries either must be builtin or built from rust projects, so they
             // should be safe to run
-            unsafe { registry.load_plugin_from_file_unchecked(binary, app) }?;
+            let (_, bundle) = unsafe { registry.load_plugin_from_file_unchecked(binary) }?;
+            app.add_bundle(bundle);
         }
         Ok(())
     }
 }
 
-impl Watcher for Arena {
-    type Input = (EventSender, PluginRegistryConnection);
+impl<O: Opts> Watcher for Arena<O> {
+    type Input = (
+        EventSender,
+        ResourceMapConnection,
+        PluginRegistryConnection,
+        Registry,
+    );
 
-    async fn run(&mut self, (sender, plugin_registry): &mut Self::Input) -> Result<()> {
+    async fn run(
+        &mut self,
+        (sender, resource_map, plugin_registry, registry): &mut Self::Input,
+    ) -> Result<()> {
         // TODO: receive actions as well
         while let Some(action) = self.actions.pop_front() {
-            let res = self.run_action(action, plugin_registry).await;
+            let res = self
+                .run_action(action, resource_map, plugin_registry, registry)
+                .await;
             if let Err(errors) = res {
                 sender.send_errors(Self::const_ident(), errors);
             }
@@ -419,121 +622,8 @@ impl Watcher for Arena {
     }
 }
 
-#[derive(Default)]
-struct SourceQueue {
-    pub add: HashSet<PluginName>,
-    pub compile: HashSet<PluginName>,
-    pub load: HashSet<Binary>,
-}
-
-// TODO: serialize and deserialize this
-struct State {
-    // basic config
-    pub directories: config::host::Directories,
-    // loading sources
-    pub sources: HashMap<SourceId, SourceQueue>,
-}
-
-impl State {
-    #[must_use]
-    fn from_config(config: &config::Host) -> Self {
-        let mut state = Self {
-            directories: config.directories.clone(),
-            sources: HashMap::new(),
-        };
-        for source in (config.plugins.keys()).chain(config.static_dependencies.keys()) {
-            state.add_source(source.clone());
-        }
-        state
-    }
-
-    fn add_source(&mut self, source: SourceId) -> &mut SourceQueue {
-        self.sources.entry(source).or_default()
-    }
-
-    // TODO: handle directory changes
-    fn diff(&self, next: &Self) -> VecDeque<Action> {
-        let mut actions = VecDeque::new();
-
-        for source in self.sources.keys() {
-            if !next.sources.contains_key(source) {
-                actions.push_back(Action::Remove(source.clone()));
-            }
-        }
-
-        for source in next.sources.keys() {
-            if !self.sources.contains_key(source) {
-                actions.push_back(Action::Load(source.clone()));
-            }
-        }
-
-        actions.push_back(Action::AddPlugins);
-
-        actions
-    }
-
-    fn as_empty(&self) -> Self {
-        Self {
-            directories: self.directories.clone(),
-            sources: HashMap::new(),
-        }
-    }
-
-    fn source_queues(&self) -> impl Iterator<Item = &SourceQueue> {
-        self.sources.values()
-    }
-
-    fn source_queues_mut(&mut self) -> impl Iterator<Item = &mut SourceQueue> {
-        self.sources.values_mut()
-    }
-
-    fn source_queue_mut(&mut self, source: &SourceId) -> Option<&mut SourceQueue> {
-        self.sources.get_mut(source)
-    }
-
-    fn to_add(&self) -> impl Iterator<Item = &PluginName> {
-        self.source_queues().flat_map(|queue| &queue.add)
-    }
-
-    fn to_compile(&self) -> impl Iterator<Item = &PluginName> {
-        self.source_queues().flat_map(|queue| &queue.compile)
-    }
-
-    fn extract_to_load_if<F>(&mut self, func: F) -> impl Iterator<Item = Binary> + use<'_, F>
-    where
-        F: Fn(&Binary) -> bool + Clone + Copy,
-    {
-        self.source_queues_mut()
-            .flat_map(move |queue| queue.load.extract_if(func))
-    }
-
-    fn mark_added(&mut self, source: &SourceId, plugin: &PluginName) {
-        if let Some(queue) = self.source_queue_mut(source) {
-            queue.add.remove(plugin);
-        }
-    }
-
-    fn mark_compiled(&mut self, source: &SourceId, plugin: &PluginName) {
-        if let Some(queue) = self.source_queue_mut(source) {
-            queue.compile.remove(plugin);
-        }
-    }
-
-    fn queue_compile(&mut self, source: &SourceId, plugin: PluginName) {
-        if let Some(queue) = self.source_queue_mut(source) {
-            queue.compile.insert(plugin);
-        }
-    }
-
-    fn queue_load(&mut self, source: &SourceId, binary: Binary) {
-        if let Some(queue) = self.source_queue_mut(source) {
-            queue.load.insert(binary);
-        }
-    }
-}
-
-struct SourceTracker<'a> {
-    arena: &'a Arena,
+struct SourceTracker<'a, O: Opts> {
+    arena: &'a Arena<O>,
     // value is if the plugin was enabled
     already_added: HashMap<PluginName, bool>,
     errors: Vec<Error>,
@@ -541,8 +631,8 @@ struct SourceTracker<'a> {
     actions: Vec<Action>,
 }
 
-impl<'a> SourceTracker<'a> {
-    fn new(arena: &'a Arena) -> Self {
+impl<'a, O: Opts> SourceTracker<'a, O> {
+    fn new(arena: &'a Arena<O>) -> Self {
         Self {
             arena,
             already_added: HashMap::new(),
@@ -552,7 +642,7 @@ impl<'a> SourceTracker<'a> {
         }
     }
 
-    fn load(&mut self, plugin: &PluginName) -> PluginLoadResult {
+    fn add(&mut self, plugin: &PluginName) -> PluginLoadResult {
         if let Some(enabled) = self.already_added.get(plugin).copied() {
             return PluginLoadResult::Success { enabled };
         }
@@ -563,18 +653,16 @@ impl<'a> SourceTracker<'a> {
             return PluginLoadResult::NotFound;
         };
 
-        let Some(source) = self.arena.config.source_type(info.id()) else {
-            // this may happen if the plugin was once in the config but was later removed
-            return PluginLoadResult::NotFound;
+        let this_enabled = self.arena.plugin_enabled(plugin).unwrap_or_default();
+
+        let LoadedPluginArtifacts::SourceCode { config, .. } = &info.artifacts else {
+            return PluginLoadResult::Success {
+                enabled: this_enabled,
+            };
         };
 
-        let this_enabled = match source {
-            config_handler::SourceType::Static(_) => true,
-            config_handler::SourceType::Plugin(group) => group.enabled.get(plugin),
-        };
-
-        for (dependency, dep_info) in &info.config.dependencies {
-            match self.load(dependency) {
+        for (dependency, dep_info) in &config.dependencies {
+            match self.add(dependency) {
                 PluginLoadResult::Success { enabled } => {
                     if this_enabled && !enabled {
                         self.errors.push(Error::PluginDependencyNotEnabled {
@@ -584,7 +672,7 @@ impl<'a> SourceTracker<'a> {
                     }
                 }
                 PluginLoadResult::NotFound => {
-                    if self.arena.config.goal().arena.auto_add_dependencies
+                    if self.arena.config.arena.auto_add_dependencies
                         && let Some(source) = dep_info.source.as_ref()
                     {
                         self.sources_to_add.push(source.clone());
@@ -607,7 +695,9 @@ impl<'a> SourceTracker<'a> {
         if had_error {
             PluginLoadResult::HadError
         } else {
-            self.actions.push(Action::AddToWorkspace(plugin.clone()));
+            if !self.arena.workspace.contains(plugin) {
+                self.actions.push(Action::AddToWorkspace(plugin.clone()));
+            }
             PluginLoadResult::Success {
                 enabled: this_enabled,
             }

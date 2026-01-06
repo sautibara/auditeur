@@ -23,7 +23,7 @@ use std::{
 use arena::Arena;
 use auditeur_plugin::auditeur::app::App;
 use futures::Future;
-use ron::extensions::Extensions;
+use ron::{extensions::Extensions, ser::PrettyConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::error;
@@ -67,18 +67,14 @@ fn ron_options() -> ron::Options {
 }
 
 /// Serialize `value` to the file at `path`, using [`ron`]
-async fn serialize<T: Serialize + Send + Sync + 'static>(
-    path: PathBuf,
-    value: T,
-) -> Result<(), Error> {
-    spawn_blocking(move || {
+fn serialize<T: Serialize + Send + Sync + 'static>(path: PathBuf, value: &T) -> Result<(), Error> {
+    tokio::task::block_in_place(move || {
         let file = std::fs::File::create(&path)?;
         ron_options()
-            .to_writer(file, &value)
+            .to_writer_pretty(file, value, PrettyConfig::new())
             .map_err(|error| Error::Serialization { error, file: path })?;
         Ok(())
     })
-    .await
 }
 
 /// Deserialize `value` from to the file at `path`, using [`ron`]
@@ -132,13 +128,13 @@ pub trait AppExt {
     /// is from them having unsafe code or intentionally going past the safety checks, which isn't
     /// something that can be prevented. Thus, thus function isn't marked unsafe.
     #[allow(opaque_hidden_inferred_bound)] // I think this is a false positive?
-    fn with_plugin_system(self, config: config::Host) -> impl Future<Output = Self>;
+    fn with_plugin_system<O: arena::Opts>(self, opts: O) -> impl Future<Output = Self>;
 }
 
 impl AppExt for App {
-    async fn with_plugin_system(mut self, config: config::Host) -> Self {
+    async fn with_plugin_system<O: arena::Opts>(mut self, opts: O) -> Self {
         let mut registry = PluginRegistry::new();
-        let (mut arena, mut errors) = Arena::open_or_init(config).await;
+        let (mut arena, mut errors) = Arena::<O>::open_or_init(opts).await;
         if let Ok(arena) = &mut arena {
             let res = arena.add_to_plugin_registry(&mut registry, &mut self);
             if let Err(err) = res {
@@ -147,10 +143,13 @@ impl AppExt for App {
         }
         self.add_bundle(
             new_bundle!("auditeur:plugin_host")
-                .with_watcher::<Arena>(arena.map_err(Into::into))
+                .with_watcher::<Arena<O>>(arena.map_err(Into::into))
                 .with_listener::<PluginRegistry>(registry),
         );
-        self.add_errors(Arena::const_ident(), errors.into_iter().map(Into::into));
+        self.add_errors(
+            Arena::<O>::const_ident(),
+            errors.into_iter().map(Into::into),
+        );
         self
     }
 }

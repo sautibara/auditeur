@@ -11,6 +11,7 @@ use std::{
 
 use cargo_metadata::Message as CargoMessage;
 use cargo_toml::Dependency;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tracing::{trace, warn};
 
@@ -24,7 +25,7 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CompileOptions {
     target: String,
     version: String,
@@ -34,7 +35,7 @@ pub struct CompileOptions {
     incremental: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PackageName(String);
 
 impl Borrow<str> for PackageName {
@@ -43,8 +44,8 @@ impl Borrow<str> for PackageName {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct LibraryName(String);
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LibraryName(String);
 
 impl Borrow<str> for LibraryName {
     fn borrow(&self) -> &str {
@@ -52,14 +53,20 @@ impl Borrow<str> for LibraryName {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Crate {
-    source: PathBuf,
-    mirror: PathBuf,
-    package_name: PackageName,
-    library_name: LibraryName,
-    plugin_name: PluginName,
-    export: Option<config::plugin::Export>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Crate {
+    /// The crate folder in the `source` directory.
+    pub source: PathBuf,
+    /// The crate folder in the `workspace` directory.
+    pub mirror: PathBuf,
+    /// The name of the crate.
+    pub package_name: PackageName,
+    /// The name of the crate's library.
+    pub library_name: LibraryName,
+    /// The name of the plugin.
+    pub plugin_name: PluginName,
+    /// If this plugin is a `rubicon` library export.
+    pub export: Option<config::plugin::Export>,
 }
 
 #[derive(Default)]
@@ -90,6 +97,7 @@ impl BuildArtifacts {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Workspace {
     path: PathBuf,
     opts: CompileOptions,
@@ -100,15 +108,19 @@ impl Workspace {
     const PROFILE: &'static str = "auditeur";
 
     pub async fn new(path: impl Into<PathBuf> + Send, opts: CompileOptions) -> Result<Self, Error> {
-        let path = path.into();
-        tokio::fs::create_dir_all(&path).await?;
         let workspace = Self {
-            path,
+            path: path.into(),
             opts,
             crates: HashMap::new(),
         };
-        workspace.check_version().await?;
+        workspace.init().await?;
         Ok(workspace)
+    }
+
+    pub async fn init(&self) -> Result<(), Error> {
+        tokio::fs::create_dir_all(&self.path).await?;
+        self.check_version().await?;
+        Ok(())
     }
 
     pub async fn new_from_build_info(
@@ -128,6 +140,17 @@ impl Workspace {
 
     pub fn contains(&self, name: &PluginName) -> bool {
         self.crates.contains_key(name)
+    }
+
+    pub fn get(&self, name: &PluginName) -> Option<&Crate> {
+        self.crates.get(name)
+    }
+
+    pub async fn remove(&mut self, name: &PluginName) -> Result<(), Error> {
+        if let Some(crt) = self.crates.remove(name) {
+            tokio::fs::remove_dir_all(self.path.join(&crt.mirror)).await?;
+        }
+        Ok(())
     }
 
     async fn check_version(&self) -> Result<(), Error> {

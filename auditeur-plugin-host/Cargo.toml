@@ -30,6 +30,7 @@ auditeur-plugin-export = { path = "../auditeur-plugin-export/" }
 tracing = "0.1.40"
 thiserror = "1.0.58"
 regex = "1.10.6"
+base64 = "0.22"
 
 [build-dependencies]
 # for getting build information to be used to build plugins

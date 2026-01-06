@@ -35,8 +35,6 @@ pub(crate) fn init() -> Bundle {
     new_bundle!("auditeur:resource_map").with_listener::<ResourceMap>(())
 }
 
-// TODO: transient dependencies - dependencies that can be removed easily
-
 const RESERVED_IDENTS: &[&NamespacedIdRef] = &[ident!("auditeur:registry")];
 
 /// Holds the amount of dependencies a component has from a specific other component, separated by
@@ -171,7 +169,7 @@ impl ComponentDependencies {
             map.dependencies.get_many_mut([dependency, dependent]);
 
         let Some(dependency_info) = dependency_opt else {
-            bail!("could not find dependency '{dependency}'");
+            bail!("could not find dependency {dependency}");
         };
 
         let Some(dependent_info) = dependent_opt else {

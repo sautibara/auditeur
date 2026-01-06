@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
 };
 
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -173,7 +174,8 @@ impl From<Source> for Variant {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "OwnedIdBase64", try_from = "OwnedIdBase64")]
 #[repr(transparent)]
 pub struct OwnedId(Arc<[u8]>);
 
@@ -192,6 +194,37 @@ impl OwnedId {
 impl Debug for OwnedId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", &**self)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct OwnedIdBase64(String);
+
+impl From<&Id> for OwnedIdBase64 {
+    fn from(value: &Id) -> Self {
+        Self(BASE64_URL_SAFE.encode(&value.0))
+    }
+}
+
+impl From<OwnedId> for OwnedIdBase64 {
+    fn from(value: OwnedId) -> Self {
+        Self::from(&*value)
+    }
+}
+
+impl TryFrom<OwnedIdBase64> for OwnedId {
+    type Error = base64::DecodeError;
+
+    fn try_from(value: OwnedIdBase64) -> std::result::Result<Self, Self::Error> {
+        let bytes = BASE64_URL_SAFE.decode(value.0)?;
+        let Some(first) = bytes.first() else {
+            return Err(base64::DecodeError::InvalidLength(0));
+        };
+        if *first > 4 {
+            return Err(base64::DecodeError::InvalidByte(0, *first));
+        }
+        Ok(Self(Arc::from(bytes)))
     }
 }
 

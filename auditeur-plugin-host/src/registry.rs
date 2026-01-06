@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use auditeur_plugin::auditeur::{
-    app::{App, Registry, event::BundleInit, resource_map::ResourceMapConnection},
+    app::{
+        Registry,
+        event::BundleInit,
+        resource_map::{self, ResourceMapConnection},
+    },
     bundle,
     prelude::*,
 };
@@ -139,9 +143,8 @@ impl Listen<BundleInit> for PluginRegistry {
 
 impl PluginRegistry {
     /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
-    /// handle in the registry.
-    ///
-    /// Returns the [`NamespacedId`] of the bundle that is contained in the plugin.
+    /// handle in the registry. Note that this doesn't add it to any app yet - that is up to the
+    /// caller.
     ///
     /// # Safety
     ///
@@ -153,19 +156,25 @@ impl PluginRegistry {
     ///
     /// - If the library fails to load
     /// - If the library's main function fails to load
+    #[instrument(skip_all, fields(path = library.path.display().to_string()))]
     pub unsafe fn load_plugin_from_file_unchecked(
         &mut self,
         library: &Binary,
-        app: &mut App,
-    ) -> Result<NamespacedId, Error> {
-        trace!("loading binary at '{}' to app", library.path.display());
+    ) -> Result<(Plugin, Bundle), Error> {
+        trace!("loading binary to app");
         // SAFETY: upheld by caller
-        let plugin = unsafe { Plugin::load_from_file_unchecked(&library.path, app) }?;
-        self.libraries.insert(plugin.bundle.clone(), plugin.init);
-        self.bundles
-            .insert(library.name.clone(), plugin.bundle.clone());
-        self.plugins.insert(plugin.bundle.clone());
-        Ok(plugin.bundle)
+        let plugin = unsafe { Plugin::load_from_file_unchecked(&library.path) }?;
+
+        info!("calling library init function to get bundle");
+        let bundle = plugin.init.call();
+        let bundle_id = bundle.id().to_owned();
+
+        self.libraries
+            .insert(bundle_id.clone(), plugin.init.clone());
+        self.bundles.insert(library.name.clone(), bundle_id.clone());
+        self.plugins.insert(bundle_id);
+
+        Ok((plugin, bundle))
     }
 }
 
@@ -177,26 +186,49 @@ impl PluginRegistry {
     /// [`PluginRegistry::load_plugin_from_file_unchecked`]
     pub async unsafe fn load_binaries(
         &mut self,
-        plugins: Vec<Binary>,
-        registry: &mut Registry,
-    ) -> Result<(), Vec<Error>> {
+        binaries: Vec<Binary>,
+        (resource_map, registry): (&mut ResourceMapConnection, &mut Registry),
+    ) -> (HashMap<PluginName, NamespacedId>, Result<(), Vec<Error>>) {
         let mut errors = Vec::new();
 
-        trace!("recieved plugins: {plugins:?}");
-        let mut app = registry.new_app();
+        trace!("recieved plugin binaries: {binaries:?}");
 
-        // FIXME: check for necessary unloads
-        // (when a plugin is updated, for example)
-        for plugin in plugins {
-            // TODO: handle this error
+        // Load every binary and get their bundles.
+        let mut bundles = HashMap::new();
+        for binary in binaries {
             // SAFETY: safety must be upheld by the caller of PluginSender::send
-            let res = unsafe { self.load_plugin_from_file_unchecked(&plugin, &mut app) };
-            if let Err(err) = res {
-                errors.push(err);
+            match unsafe { Plugin::load_from_file_unchecked(&binary.path) } {
+                Ok(plugin) => {
+                    info!(
+                        "calling library init function to get bundle for binary at '{}'",
+                        binary.path.display()
+                    );
+                    let bundle = plugin.init.call();
+                    bundles.insert(bundle.id().to_owned(), (plugin.init, bundle, binary));
+                }
+                Err(err) => errors.push(Error::from(err)),
             }
         }
 
-        if let Err((app, _)) = app.add_to_registry(registry).await {
+        // Read the current state of these bundles in the ResourceMap.
+        let query: resource_map::Query = bundles
+            .values()
+            .map(|(_, bundle, _)| bundle.id().to_owned())
+            .map(resource_map::Query::Bundle)
+            .collect();
+        let query = query.and_dependents();
+        let mut sub_map = resource_map.query(query).await;
+
+        // Unload and reload in the new bundles.
+        sub_map.unload_in(registry).await;
+        for (init, bundle, _) in bundles.values() {
+            sub_map.add_bundle_loader_shared(bundle.id(), init);
+        }
+        let res = sub_map.reload_in(registry).await;
+
+        // Leak any bundles that were partially loaded.
+        if let Err((app, err)) = res {
+            error!("failed to load bundles: {err:?}");
             for unloaded_bundle in app.unloaded_bundles() {
                 // FIXME: If only part of a bundle is loaded, the registry gets put
                 // into a terrible situation. It can't just drop the library, since one
@@ -206,18 +238,44 @@ impl PluginRegistry {
                 // so it'll forever wait for it to unload before unloading the bundle.
                 // Instead, we use the hacky solution: just leak the library and keep
                 // it always loaded.
-                let library = self.libraries.remove(unloaded_bundle);
-                if let Some(library) = library {
-                    std::mem::forget(library);
+                let info = bundles.remove(unloaded_bundle);
+                if let Some((init, _, _)) = info {
+                    std::mem::forget(init);
                 }
             }
         }
 
-        if errors.is_empty() {
+        // Update our state to match the new bundles that were added.
+        for (init, bundle, binary) in bundles.values() {
+            let old_bundle_id = self
+                .bundles
+                .insert(binary.name.clone(), bundle.id().to_owned());
+
+            if let Some(old_bundle_id) = old_bundle_id {
+                self.plugins.remove(&old_bundle_id);
+                if let Some(old_library) = self.libraries.remove(&old_bundle_id) {
+                    debug!("unloading bundle `{old_bundle_id}`'s old library...");
+                    drop(old_library);
+                    debug!("unloaded bundle `{old_bundle_id}`'s old library...");
+                }
+            }
+
+            self.libraries.insert(bundle.id().to_owned(), init.clone());
+            self.plugins.insert(bundle.id().to_owned());
+        }
+
+        let map = bundles
+            .into_iter()
+            .map(|(id, (_, _, binary))| (binary.name, id))
+            .collect();
+
+        let res = if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
-        }
+        };
+
+        (map, res)
     }
 }
 

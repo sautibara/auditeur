@@ -1,22 +1,16 @@
 use std::{ffi::OsStr, path::PathBuf};
 
-use auditeur::{
-    app::App,
-    bundle::{self, Bundle},
-    namespaced_id::NamespacedId,
-};
+use auditeur::bundle::{self, Bundle};
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
-use tracing::trace;
 
 use crate::{LibraryHandle, PluginContext};
 
 type PluginFn = fn(PluginContext) -> Bundle;
 
-/// A plugin and its associated [`Bundle`] that has already been loaded into an [`App`]
+/// A plugin and its associated [`Bundle`] that has not been loaded into the app yet.
 pub struct Plugin {
     pub library: LibraryHandle,
-    pub bundle: NamespacedId,
     pub init: bundle::SharedInitFn,
 }
 
@@ -36,10 +30,7 @@ impl Plugin {
     ///
     /// - If the library fails to load
     /// - If the library's main function fails to load
-    pub unsafe fn load_from_file_unchecked(
-        path: impl AsRef<OsStr>,
-        app: &mut App,
-    ) -> Result<Self, Error> {
+    pub unsafe fn load_from_file_unchecked(path: impl AsRef<OsStr>) -> Result<Self, Error> {
         let path = path.as_ref();
 
         let library = libloading::Library::new(path)?;
@@ -60,14 +51,8 @@ impl Plugin {
         let context = PluginContext::new(handle.clone());
         let init = bundle::SharedInitFn::new(move || main(context.clone()));
 
-        let bundle = init.call();
-        trace!("{bundle:?}");
-        let bundle_id = bundle.id().to_owned();
-        app.add_bundle(bundle);
-
         Ok(Self {
             library: handle,
-            bundle: bundle_id,
             init,
         })
     }
