@@ -49,6 +49,7 @@ pub struct PluginRegistry {
     libraries: HashMap<NamespacedId, bundle::SharedInitFn>,
     bundles: HashMap<PluginName, NamespacedId>,
     plugins: HashSet<NamespacedId>,
+    protection: HashMap<NamespacedId, usize>,
     should_exit: bool,
 }
 
@@ -70,11 +71,19 @@ impl ListenToRegistry for PluginRegistry {
     async fn on(&mut self, message: RegistryEvent, (): ()) -> anyhow::Result<bool> {
         match message {
             RegistryEvent::Unloaded(ComponentId::Bundle(id)) => {
+                if let Some(val) = self.protection.get_mut(&id)
+                    && *val > 0
+                {
+                    *val -= 1;
+                    return Ok(false);
+                }
+
                 if let Some(library) = self.libraries.remove(&id) {
                     debug!("unloading bundle `{id}`'s library...");
                     drop(library);
                     debug!("unloaded bundle `{id}`'s library");
                 }
+
                 // we only should stop if all of the libraries are unloaded first
                 if self.should_exit && self.libraries.is_empty() {
                     return Ok(true);
@@ -184,6 +193,7 @@ impl PluginRegistry {
     ///
     /// Each of these plugins must adhere to the safety contract specified in
     /// [`PluginRegistry::load_plugin_from_file_unchecked`]
+    #[allow(clippy::cognitive_complexity)] // it's all too connected ;-;
     pub async unsafe fn load_binaries(
         &mut self,
         binaries: Vec<Binary>,
@@ -252,6 +262,15 @@ impl PluginRegistry {
                 .insert(binary.name.clone(), bundle.id().to_owned());
 
             if let Some(old_bundle_id) = old_bundle_id {
+                // Since we are already going to handle unloading the old bundle in this function,
+                // we need to stop ourselves from unloading it after receiving the Unload message
+                // above. This is simply done just by adding some "protection" that stops ourselves
+                // from unloading the bundle.
+                if *bundle.id() == old_bundle_id {
+                    let protection = self.protection.entry(bundle.id().to_owned()).or_default();
+                    *protection += 1;
+                }
+
                 self.plugins.remove(&old_bundle_id);
                 if let Some(old_library) = self.libraries.remove(&old_bundle_id) {
                     debug!("unloading bundle `{old_bundle_id}`'s old library...");

@@ -137,8 +137,8 @@ impl AppExt for App {
         let (mut arena, mut errors) = Arena::<O>::open_or_init(opts).await;
         if let Ok(arena) = &mut arena {
             let res = arena.add_to_plugin_registry(&mut registry, &mut self);
-            if let Err(err) = res {
-                errors.push(err);
+            if let Err(errs) = res {
+                errors.extend(errs);
             }
         }
         self.add_bundle(

@@ -47,7 +47,7 @@ pub enum LoadedPluginArtifacts {
 }
 
 impl LoadedPlugin {
-    pub fn name(&self) -> &PluginName {
+    pub const fn name(&self) -> &PluginName {
         match &self.artifacts {
             LoadedPluginArtifacts::SourceCode { config, .. } => config.name(),
             LoadedPluginArtifacts::Binary { binary } => &binary.name,
@@ -60,7 +60,7 @@ impl LoadedPlugin {
 }
 
 impl LoadedPluginArtifacts {
-    pub fn as_binary(&self) -> Option<&Binary> {
+    pub const fn as_binary(&self) -> Option<&Binary> {
         if let Self::Binary { binary } = self {
             Some(binary)
         } else {
@@ -93,17 +93,13 @@ impl SourceList {
             .map_err(Into::into)
     }
 
-    pub fn get_plugin(&self, plugin: &PluginName) -> Option<&LoadedPlugin> {
-        self.plugins.get(plugin)
+    #[allow(dead_code)] // cope
+    pub fn get(&self, id: &SourceId) -> Option<&LoadedSource> {
+        self.sources.get(id)
     }
 
-    pub fn binaries(&self) -> impl Iterator<Item = (&SourceId, &Binary)> + '_ {
-        self.plugins.values().filter_map(|plugin| {
-            plugin
-                .artifacts
-                .as_binary()
-                .map(|binary| (plugin.id(), binary))
-        })
+    pub fn get_plugin(&self, plugin: &PluginName) -> Option<&LoadedPlugin> {
+        self.plugins.get(plugin)
     }
 
     pub fn plugins(&self) -> impl Iterator<Item = (&PluginName, &LoadedPlugin)> {
@@ -116,10 +112,6 @@ impl SourceList {
 
     pub fn contains_source(&self, source: &SourceId) -> bool {
         self.sources.contains_key(source)
-    }
-
-    pub fn get(&self, id: &SourceId) -> Option<&LoadedSource> {
-        self.sources.get(id)
     }
 
     pub async fn remove_source(

@@ -462,6 +462,10 @@ impl<O: Opts> Arena<O> {
             .filter(|plugin| self.binaries.get(plugin).is_none())
             .collect();
 
+        if plugin_names.is_empty() {
+            return Ok(());
+        }
+
         debug!("compiling {plugin_names:?}, this may take a while...");
 
         let plugin_names = || plugin_names.iter().copied();
@@ -481,13 +485,19 @@ impl<O: Opts> Arena<O> {
         resource_map: &ResourceMapConnection,
         registry: &Registry,
     ) -> Result<(), Error> {
-        let plugins = self
+        let plugins: Vec<_> = self
             .loader
             .loaded()
             .keys()
             .filter(|binary| !self.plugin_enabled(binary).unwrap_or_default())
             .cloned()
             .collect();
+
+        if plugins.is_empty() {
+            return Ok(());
+        }
+
+        debug!("unloading {plugins:?} from registry");
 
         self.loader
             .unload_all(plugins, resource_map, registry)
@@ -496,11 +506,17 @@ impl<O: Opts> Arena<O> {
     }
 
     async fn load(&mut self, plugin_registry: &PluginRegistryConnection) -> Result<(), Vec<Error>> {
-        let binaries = self
+        let binaries: Vec<_> = self
             .enabled_binaries()
             .filter(|binary| !self.loader.loaded().contains_key(&binary.name))
             .cloned()
             .collect();
+
+        if binaries.is_empty() {
+            return Ok(());
+        }
+
+        debug!("loading {binaries:?} into registry");
 
         self.loader.load_all(binaries, plugin_registry).await?;
         Ok(())
@@ -582,18 +598,37 @@ impl<O: Opts> Arena<O> {
     ///
     /// If a plugin can't be loaded
     pub fn add_to_plugin_registry(
-        &self,
+        &mut self,
         registry: &mut PluginRegistry,
         app: &mut App,
-    ) -> Result<(), Error> {
-        for binary in self.enabled_binaries() {
+    ) -> Result<(), Vec<Error>> {
+        let binaries: Vec<_> = self.enabled_binaries().cloned().collect();
+
+        if binaries.is_empty() {
+            return Ok(());
+        }
+
+        debug!("adding {binaries:?} to the registry");
+
+        let mut errors = Vec::new();
+        for binary in binaries {
             trace!("adding '{}' to the registry", binary.path.display());
             // SAFETY: these binaries either must be builtin or built from rust projects, so they
             // should be safe to run
-            let (_, bundle) = unsafe { registry.load_plugin_from_file_unchecked(binary) }?;
-            app.add_bundle(bundle);
+            let res = unsafe { registry.load_plugin_from_file_unchecked(&binary) };
+            match res {
+                Ok((_, bundle)) => {
+                    self.loader.add_loaded(binary.name, bundle.id().to_owned());
+                    app.add_bundle(bundle);
+                }
+                Err(err) => errors.push(err),
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 }
 

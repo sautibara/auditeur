@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use auditeur_plugin::{
     auditeur::app::resource_map::{self, ResourceMapConnection},
@@ -54,7 +54,11 @@ impl Loader {
         Ok(())
     }
 
-    pub fn loaded(&self) -> &HashMap<PluginName, LoadedPlugin> {
+    pub const fn loaded(&self) -> &HashMap<PluginName, LoadedPlugin> {
         &self.loaded
+    }
+
+    pub fn add_loaded(&mut self, name: PluginName, bundle_id: NamespacedId) {
+        self.loaded.insert(name, LoadedPlugin { bundle_id });
     }
 }

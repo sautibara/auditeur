@@ -62,6 +62,7 @@ impl Config {
         &self.directories
     }
 
+    #[must_use]
     pub fn source(&self, id: &SourceId) -> Option<&Source> {
         self.plugins.get(id).map(|plugin| &plugin.source)
     }
