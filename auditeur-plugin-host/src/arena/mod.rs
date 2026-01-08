@@ -132,6 +132,7 @@ impl Opts for DefaultOpts {
     }
 }
 
+#[derive(Debug)]
 enum Action {
     /// Add a source to the [`SourceList`]
     Load(SourceId),
@@ -151,9 +152,9 @@ enum Action {
 }
 
 #[derive(Serialize, Runnable)]
-#[listener("plugin_host:arena", biased, components((
+#[listener("plugin_host:arena", biased, respond, components((
     component = MainComponent,
-    input = (ResourceMapConnection, PluginRegistryConnection, Registry, EventSender),
+    input = (EventSender, ResourceMapConnection, PluginRegistryConnection, Registry),
 )))]
 pub struct Arena<O: Opts> {
     source_list: SourceList,
@@ -180,6 +181,15 @@ pub struct Lockfile {
 impl<O: Opts> Create for Arena<O> {
     async fn create(#[external] arena: Result<Self>) -> Result<Self> {
         arena
+    }
+}
+
+#[respond("plugin_host:arena")]
+impl<O: Opts> Arena<O> {
+    pub async fn refresh(&mut self, event_sender: &mut EventSender) {
+        if let Err(err) = self.reload_config().await {
+            event_sender.send_error(Self::const_ident(), anyhow::Error::from(err));
+        }
     }
 }
 
@@ -306,6 +316,7 @@ impl<O: Opts> Arena<O> {
         self.actions.push_back(Action::ResolveDependencies);
     }
 
+    #[instrument(skip(self, resource_map, plugin_registry, registry))]
     async fn run_action(
         &mut self,
         action: Action,
@@ -313,6 +324,7 @@ impl<O: Opts> Arena<O> {
         plugin_registry: &PluginRegistryConnection,
         registry: &Registry,
     ) -> Result<(), Vec<Error>> {
+        trace!("running action...");
         match action {
             Action::Load(source) => {
                 self.load_source(&source).await?;
@@ -571,6 +583,13 @@ impl<O: Opts> Arena<O> {
         Ok(())
     }
 
+    async fn reload_config(&mut self) -> Result<(), Error> {
+        let config = self.opts.read_config().await?;
+        self.config = config;
+        self.source_diff();
+        Ok(())
+    }
+
     async fn add_sources(
         &mut self,
         sources: impl IntoIterator<Item = Source>,
@@ -731,10 +750,10 @@ pub struct MainComponent {}
 
 impl<O: Opts> Component<Arena<O>> for MainComponent {
     type UserInput<'s> = (
+        &'s mut EventSender,
         &'s mut ResourceMapConnection,
         &'s mut PluginRegistryConnection,
         &'s mut Registry,
-        &'s mut EventSender,
     );
     type Value = ();
 
@@ -750,7 +769,7 @@ impl<O: Opts> Component<Arena<O>> for MainComponent {
         &mut self,
         (): (),
         listener: &mut Arena<O>,
-        (resource_map, plugin_registry, registry, sender): Self::UserInput<'_>,
+        (sender, resource_map, plugin_registry, registry): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
         if let Some(action) = listener.actions.pop_front() {
             let res = listener
