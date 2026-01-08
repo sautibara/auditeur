@@ -234,6 +234,12 @@ pub enum Error {
         plugin: PluginName,
         artifact: PathBuf,
     },
+    #[error("failed to walk through folder ")]
+    Walk {
+        path: PathBuf,
+        #[source]
+        source: ignore::Error,
+    },
 }
 
 impl From<cargo_metadata::CompilerMessage> for Error {

@@ -120,7 +120,8 @@ impl SourceList {
     ) -> Result<Option<LoadedSource>, Error> {
         let source = self.sources.remove(source);
         if let Some(LoadedSource::Plugins { path, names }) = &source {
-            tokio::fs::remove_dir(path).await?;
+            trace!("removing directory '{}'", path.display());
+            tokio::fs::remove_dir_all(path).await?;
 
             for name in names {
                 self.plugins.remove(name);

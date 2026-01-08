@@ -148,7 +148,9 @@ impl Workspace {
 
     pub async fn remove(&mut self, name: &PluginName) -> Result<(), Error> {
         if let Some(crt) = self.crates.remove(name) {
-            tokio::fs::remove_dir_all(self.path.join(&crt.mirror)).await?;
+            let path = self.path.join(&crt.mirror);
+            trace!("removing directory '{}'", path.display());
+            tokio::fs::remove_dir_all(&path).await?;
         }
         Ok(())
     }

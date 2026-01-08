@@ -1,6 +1,7 @@
 use std::{
     borrow::Borrow,
     fmt::{Debug, Display},
+    fs::FileType,
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
@@ -101,10 +102,51 @@ impl Source {
             Updated(false)
         } else {
             trace!("copying '{}' to '{}'", source.display(), path.display());
-            tokio::fs::copy(source, &path).await?;
+            Self::copy_dir_recursive(source, &path).await?;
             Updated(true)
         };
         Ok(Artifact::Path { path, updated })
+    }
+
+    async fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), Error> {
+        let mut walk = ignore::WalkBuilder::new(source);
+        let walk = walk.hidden(true).follow_links(false);
+
+        for path in walk.build() {
+            let dir_entry = path.map_err(|error| Error::Walk {
+                path: source.to_path_buf(),
+                source: error,
+            })?;
+
+            let relative_path = dir_entry
+                .path()
+                .strip_prefix(source)
+                .expect("walk should always yield children of the root path");
+
+            let source_path = dir_entry.path();
+            let destination_path = destination.join(relative_path);
+
+            match dir_entry.file_type() {
+                Some(ft) if ft.is_dir() => {
+                    tokio::fs::create_dir(&destination_path).await?;
+                }
+                Some(ft) if ft.is_file() => {
+                    tokio::fs::copy(source_path, &destination_path).await?;
+                }
+                Some(ft) if ft.is_symlink() => {
+                    // FIXME: find out what to do here
+                    warn!(
+                        "file at '{}' is a symlink, resorting to copying",
+                        source_path.display()
+                    );
+                    tokio::fs::copy(source_path, &destination_path).await?;
+                }
+                // file is stdin
+                _ => (),
+            }
+        }
+
+        Ok(())
     }
 
     async fn clone_git_into(
