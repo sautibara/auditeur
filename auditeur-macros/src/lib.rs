@@ -3,12 +3,12 @@ use std::sync::LazyLock;
 use custom_generics::CustomGenerics;
 use namespaced_id::NamespacedId;
 use proc_macro::TokenStream;
-use proc_macro2::Span;
 use proc_macro_impls::{ComponentCallback, ExpandInputSpecifier, HasInput, IntermediateListener};
-use quote::{quote, quote_spanned, ToTokens};
+use proc_macro2::Span;
+use quote::{ToTokens, quote, quote_spanned};
 use syn::{
-    parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, GenericParam, Ident,
-    Item, ItemImpl, ItemStruct, ItemTrait, Token, TypeParamBound,
+    Attribute, GenericParam, Ident, Item, ItemImpl, ItemStruct, ItemTrait, Token, TypeParamBound,
+    parse_macro_input, punctuated::Punctuated, spanned::Spanned,
 };
 
 use crate::proc_macro_impls::AllCombinations;
@@ -40,24 +40,24 @@ mod proc_macro_impls {
     pub use input::derive as derive_input;
 
     mod all_combinations;
-    pub use all_combinations::{all_combinations, AllCombinations};
+    pub use all_combinations::{AllCombinations, all_combinations};
 
     mod identifiable;
     pub use identifiable::{identifiable, identifiable_with_generics};
 
     pub mod input_reflection;
-    pub use input_reflection::export as export_input;
     pub use input_reflection::ExpandInputSpecifier;
     pub use input_reflection::HasInput;
+    pub use input_reflection::export as export_input;
 
     mod listener;
     pub use listener::Intermediate as IntermediateListener;
-    pub use listener::{runnable_derive, ComponentCallback, Listener};
+    pub use listener::{ComponentCallback, Listener, runnable_derive};
 
     mod respond;
-    pub use respond::macro_ident as respond_macro_ident;
     pub use respond::Meta as RespondMeta;
     pub use respond::Respond;
+    pub use respond::macro_ident as respond_macro_ident;
 
     mod message;
     pub use message::derive_message;
@@ -145,7 +145,7 @@ impl ToTokens for Root {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match &self.crate_name {
             proc_macro_crate::FoundCrate::Itself => quote!(crate).to_tokens(tokens),
-            proc_macro_crate::FoundCrate::Name(ref name) => {
+            proc_macro_crate::FoundCrate::Name(name) => {
                 Ident::new(name, Span::call_site()).to_tokens(tokens);
             }
         }
@@ -574,7 +574,7 @@ pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(item, "expected a struct or enum")
                 .into_compile_error()
-                .into()
+                .into();
         }
     };
 
@@ -617,7 +617,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(item, "expected a struct or enum")
                 .into_compile_error()
-                .into()
+                .into();
         }
     };
 

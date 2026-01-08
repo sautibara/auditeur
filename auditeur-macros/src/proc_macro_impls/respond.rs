@@ -1,16 +1,16 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 
-use proc_macro2::Span;
-use quote::{format_ident, quote, ToTokens};
+use proc_macro2::{Span, TokenStream};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
-    braced,
+    Attribute, Expr, FnArg, GenericParam, Generics, Ident, ImplItem, ImplItemFn, ItemImpl,
+    Lifetime, LitStr, Pat, ReturnType, Token, Type, Visibility, braced,
     parse::Parse,
     parse_quote,
     punctuated::Punctuated,
     spanned::Spanned,
     token::{self, Brace},
-    Attribute, Expr, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, LitStr, Pat, ReturnType, Token,
-    Type, Visibility,
+    visit::Visit,
 };
 
 use crate::{
@@ -75,17 +75,25 @@ impl Respond {
         let (visibilities, raw_fns) = self.mutate_methods()?;
         let (methods, inputs) = self.gather_methods_and_inputs(visibilities)?;
 
+        let generics = &self.item_impl.generics;
         let ident = self.ident()?;
+        let id_expr = self.id_expr(ident)?;
         let config = self.meta.to_config(ident)?;
 
         let hidden = Self::hidden(&methods, &raw_fns);
 
         let macro_def = Self::define_macro(ident, &config, &inputs);
 
-        let query_enum = Self::define_query_enum(&config, &methods, hidden.as_ref());
-        let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs)?;
-        let connection_struct =
-            Self::define_connection_struct(ident, &config, &methods, &raw_fns, hidden.as_ref());
+        let query_enum = Self::define_query_enum(&config, &methods, hidden.as_ref(), generics)?;
+        let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs, generics)?;
+        let connection_struct = Self::define_connection_struct(
+            ident,
+            &config,
+            &methods,
+            &raw_fns,
+            hidden.as_ref(),
+            &id_expr,
+        );
 
         let mut message_impls = quote! {
             #query_enum
@@ -94,6 +102,14 @@ impl Respond {
         };
 
         if let Some(config) = &config.transaction {
+            if !generics.params.is_empty() || generics.where_clause.is_some() {
+                return Err(syn::Error::new(
+                    Span::call_site(),
+                    "generics are not supported with transactions yet - please file an issue if you\
+ find a usecase",
+                ));
+            }
+
             let transaction_struct = Self::define_transaction_struct(config, hidden.as_ref());
             let ref_struct = Self::define_ref_struct(
                 ident,
@@ -113,7 +129,7 @@ impl Respond {
         }
 
         if config.get_ref {
-            message_impls.extend(Self::impl_get_ref(ident, &config));
+            message_impls.extend(Self::impl_get_ref(ident, &config, generics));
         }
 
         let item_impl = &self.item_impl;
@@ -131,15 +147,7 @@ impl Respond {
     fn check_impl_signature(&self) -> syn::Result<()> {
         let item_impl = &self.item_impl;
 
-        // TODO: support generics
-        // This is difficult, since you'd have to check if the generics are used in the Query enum.
-        // But, it isn't possible, so it's up to be added in the future.
-        if !item_impl.generics.params.is_empty() || item_impl.generics.where_clause.is_some() {
-            Err(syn::Error::new_spanned(
-                &item_impl.generics,
-                "generics are not supported yet, file an issue if you find a use-case",
-            ))
-        } else if let Some((_, _, for_kw)) = item_impl.trait_.as_ref() {
+        if let Some((_, _, for_kw)) = item_impl.trait_.as_ref() {
             Err(syn::Error::new_spanned(for_kw, "expected no trait here"))
         } else {
             Ok(())
@@ -148,11 +156,32 @@ impl Respond {
 
     fn ident(&self) -> syn::Result<&Ident> {
         match &*self.item_impl.self_ty {
-            Type::Path(path) => path.path.require_ident(),
+            Type::Path(path) => Ok(&path
+                .path
+                .segments
+                .first()
+                .ok_or_else(|| syn::Error::new_spanned(path, "expected at least one ident"))?
+                .ident),
             _ => Err(syn::Error::new_spanned(
                 &self.item_impl.self_ty,
                 "expected an identifier",
             )),
+        }
+    }
+
+    fn id_expr(&self, item_ident: &Ident) -> syn::Result<TokenStream> {
+        let auditeur = &*crate::AUDITEUR;
+        if self.item_impl.generics.params.is_empty()
+            && self.item_impl.generics.where_clause.is_none()
+        {
+            Ok(quote! { <#item_ident as #auditeur::resource::Identifiable>::const_ident() })
+        } else if let Some(id) = self.meta.id() {
+            Ok(quote! { #id })
+        } else {
+            Err(syn::Error::new(
+                Span::call_site(),
+                "expected id to be specified with generics",
+            ))
         }
     }
 
@@ -243,14 +272,18 @@ impl Respond {
         config: &Config<'_>,
         methods: &[Method],
         hidden: Option<&proc_macro2::TokenStream>,
-    ) -> proc_macro2::TokenStream {
+        generics: &Generics,
+    ) -> syn::Result<proc_macro2::TokenStream> {
         let auditeur = &*crate::AUDITEUR;
+
+        let mut search_types = SearchTypes::from_generics(generics);
 
         let mut variants = proc_macro2::TokenStream::new();
         for method in methods {
             let variant = &method.camel_case_ident;
             let ident = method.args.iter().map(|arg| arg.ident);
             let ty = method.args.iter().map(|arg| arg.ty);
+            let ty2 = ty.clone();
             let return_type = method.return_type_to_token_stream();
             let response = format_ident!("{RESPONSE}");
             let docs = &method.docs;
@@ -259,6 +292,14 @@ impl Respond {
                 method.vis,
                 Visibility::Inherited | Visibility::Restricted(_)
             ));
+
+            for ty in ty2 {
+                search_types.visit_type(ty);
+            }
+
+            if let Some(return_type) = method.return_type {
+                search_types.visit_type(return_type);
+            }
 
             variants.extend(quote! {
                 #(#docs)*
@@ -270,12 +311,20 @@ impl Respond {
             });
         }
 
+        if search_types.any() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "generics are not supported in method arguments or return types with #[respond]. \
+This error may be relaxed in the future - please file an issue if you find a usecase",
+            ));
+        }
+
         let ident = &config.query.message_ident;
         let id = &config.query.message_id;
 
         let message_impl = super::derive_message(ident, id, &CustomGenerics::default());
 
-        quote! {
+        Ok(quote! {
             #[non_exhaustive]
             #hidden
             pub enum #ident {
@@ -283,7 +332,7 @@ impl Respond {
             }
 
             #message_impl
-        }
+        })
     }
 
     fn impl_take_query(
@@ -291,6 +340,7 @@ impl Respond {
         config: &Config<'_>,
         methods: &[Method],
         input_list: &InputList,
+        generics: &Generics,
     ) -> syn::Result<proc_macro2::TokenStream> {
         let auditeur = &*crate::AUDITEUR;
         let anyhow = auditeur.anyhow();
@@ -344,10 +394,12 @@ impl Respond {
             .take(input_list.len())
             .map(|ident| Ident::new(&ident, Span::call_site()));
 
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
         Ok(quote! {
             #input_macro
 
-            impl #auditeur::resource::listener::Take<#message_ident> for #item_ident {
+            impl #impl_generics #auditeur::resource::listener::Take<#message_ident> for #item_ident #ty_generics #where_clause {
                 type OnInput<'a> = #input_reference_list;
 
                 async fn on(&mut self, query: #message_ident, (#(#inputs),*): Self::OnInput<'_>) -> #anyhow::Result<()> {
@@ -368,6 +420,7 @@ impl Respond {
         methods: &[Method],
         raw_fns: &RawFns,
         hidden: Option<&proc_macro2::TokenStream>,
+        id_expr: &TokenStream,
     ) -> proc_macro2::TokenStream {
         let auditeur = &*crate::AUDITEUR;
 
@@ -499,7 +552,7 @@ impl Respond {
 
                 fn constraints() -> #auditeur::input::Constraints {
                     #auditeur::input::Constraints::empty()
-                        .after_resource(<#item_ident as #auditeur::resource::Identifiable>::const_ident())
+                        .after_resource(#id_expr)
                         #(.extend(<#field_types as #auditeur::input::Input>::constraints()))*
                 }
             }
@@ -520,8 +573,7 @@ impl Respond {
                     dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> ::std::result::Result<Self, #auditeur::Error> {
                     let event_sender = registry.event_sender();
-                    let id = <#item_ident as #auditeur::resource::Identifiable>::const_ident()
-                        .to_owned();
+                    let id = #id_expr.to_owned();
                     let dependency = #auditeur::input::dependency::Full {
                         link: #auditeur::input::dependency::Link {
                             dependency: #auditeur::app::ComponentId::Resource(id),
@@ -731,12 +783,18 @@ impl Respond {
         }
     }
 
-    fn impl_get_ref(item_ident: &Ident, config: &Config) -> proc_macro2::TokenStream {
+    fn impl_get_ref(
+        item_ident: &Ident,
+        config: &Config,
+        generics: &Generics,
+    ) -> proc_macro2::TokenStream {
         let auditeur = &*crate::AUDITEUR;
         let connection = &config.query.ref_ident;
 
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
         quote! {
-            impl #auditeur::input::get::GetRef for #item_ident {
+            impl #impl_generics #auditeur::input::get::GetRef for #item_ident #ty_generics #where_clause {
                 type Ref = #connection;
 
                 async fn get_ref(
@@ -1461,5 +1519,69 @@ impl ToTokens for Field {
         self.ident.to_tokens(tokens);
         self.colon.to_tokens(tokens);
         self.ty.to_tokens(tokens);
+    }
+}
+
+#[derive(Default)]
+struct SearchTypes {
+    ty: HashMap<Ident, bool>,
+    cnst: HashMap<Ident, bool>,
+    lifetime: HashMap<Lifetime, bool>,
+}
+
+impl SearchTypes {
+    fn from_generics(generics: &Generics) -> Self {
+        let mut this = Self::default();
+        for param in &generics.params {
+            match param {
+                GenericParam::Lifetime(lt) => this.lifetime.insert(lt.lifetime.clone(), false),
+                GenericParam::Type(ty) => this.ty.insert(ty.ident.clone(), false),
+                GenericParam::Const(cnst) => this.cnst.insert(cnst.ident.clone(), false),
+            };
+        }
+        this
+    }
+
+    fn any(&self) -> bool {
+        (self.ty.values())
+            .chain(self.cnst.values())
+            .chain(self.lifetime.values())
+            .any(|val| *val)
+    }
+}
+
+impl<'ast> Visit<'ast> for SearchTypes {
+    fn visit_type_path(&mut self, i: &'ast syn::TypePath) {
+        if i.path.segments.len() == 1
+            && i.qself.is_none()
+            && i.path.leading_colon.is_none()
+            && let Some(segment) = i.path.segments.first()
+            && let Some(is_present) = self.ty.get_mut(&segment.ident)
+        {
+            *is_present = true;
+        }
+
+        syn::visit::visit_type_path(self, i);
+    }
+
+    fn visit_expr_path(&mut self, i: &'ast syn::ExprPath) {
+        if i.path.segments.len() == 1
+            && i.qself.is_none()
+            && i.path.leading_colon.is_none()
+            && let Some(segment) = i.path.segments.first()
+            && let Some(is_present) = self.cnst.get_mut(&segment.ident)
+        {
+            *is_present = true;
+        }
+
+        syn::visit::visit_expr_path(self, i);
+    }
+
+    fn visit_lifetime(&mut self, i: &'ast syn::Lifetime) {
+        if let Some(is_present) = self.lifetime.get_mut(i) {
+            *is_present = true;
+        }
+
+        syn::visit::visit_lifetime(self, i);
     }
 }

@@ -1,7 +1,7 @@
 use quote::ToTokens;
 use syn::{
-    parenthesized, spanned::Spanned, Attribute, Expr, ExprLit, GenericParam, Ident, Item, Lit,
-    Token, WhereClause,
+    Attribute, Expr, ExprLit, GenericParam, Ident, Item, Lit, Token, WhereClause, parenthesized,
+    spanned::Spanned,
 };
 
 use crate::GenericArgList;
@@ -44,24 +44,23 @@ impl CustomGenerics {
         generics: &syn::Generics,
     ) -> syn::Result<Self> {
         for attr in attrs {
-            if let syn::Meta::NameValue(meta) = &attr.meta {
-                if meta
+            if let syn::Meta::NameValue(meta) = &attr.meta
+                && meta
                     .path
                     .get_ident()
                     .is_some_and(|ident| ident == "resource_custom_generics")
-                {
-                    let Expr::Lit(ExprLit {
-                        lit: Lit::Str(string),
-                        ..
-                    }) = &meta.value
-                    else {
-                        return Err(syn::Error::new(
-                            meta.value.span(),
-                            "expected string literal",
-                        ));
-                    };
-                    return syn::parse_str(&string.value());
-                }
+            {
+                let Expr::Lit(ExprLit {
+                    lit: Lit::Str(string),
+                    ..
+                }) = &meta.value
+                else {
+                    return Err(syn::Error::new(
+                        meta.value.span(),
+                        "expected string literal",
+                    ));
+                };
+                return syn::parse_str(&string.value());
             }
         }
         Ok(Self::from_generics(generics))
