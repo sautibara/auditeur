@@ -1,7 +1,7 @@
 use quote::quote;
 use syn::{Ident, Item};
 
-use crate::{custom_generics::CustomGenerics, namespaced_id::NamespacedId, Auditeur};
+use crate::{Auditeur, custom_generics::CustomGenerics, namespaced_id::NamespacedId};
 
 pub fn identifiable(id: &NamespacedId, item: &mut Item) -> syn::Result<proc_macro2::TokenStream> {
     let (ident, generics) = CustomGenerics::from_item(item)?;

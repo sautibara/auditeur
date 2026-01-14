@@ -1,7 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+};
 
 use auditeur_plugin::auditeur::{
-    app::{App, channels::EventSender, resource_map::ResourceMapConnection},
+    app::{App, channels::EventSender},
     path_any::PathAnyConst,
     resource::listener::Component,
 };
@@ -135,9 +138,11 @@ impl Opts for DefaultOpts {
 #[derive(Debug)]
 enum Action {
     /// Add a source to the [`SourceList`]
-    Load(SourceId),
+    LoadSource(SourceId),
+    /// Check a source for updates.
+    CheckSource(SourceId),
     /// Remove a source from the [`SourceList`]
-    Remove(SourceId),
+    RemoveSource(SourceId),
     /// Resolve dependencies and find out how to load plugins into the workspace in the correct
     /// order.
     ResolveDependencies,
@@ -145,8 +150,8 @@ enum Action {
     AddToWorkspace(PluginName),
     /// Compile all plugins in the workspace.
     CompileAll,
-    /// Unload all plugins that aren't meant to be loaded.
-    UnloadAll,
+    // /// Unload all plugins that aren't meant to be loaded.
+    // UnloadAll,
     /// Load all plugin objects.
     LoadAll,
 }
@@ -154,7 +159,7 @@ enum Action {
 #[derive(Serialize, Runnable)]
 #[listener("plugin_host:arena", biased, respond, components((
     component = MainComponent,
-    input = (EventSender, ResourceMapConnection, PluginRegistryConnection, Registry),
+    input = (EventSender, PluginRegistryConnection),
 )))]
 pub struct Arena<O: Opts> {
     source_list: SourceList,
@@ -278,11 +283,11 @@ impl<O: Opts> Arena<O> {
         let mut other_actions = VecDeque::new();
 
         for action in self.actions.drain(..) {
-            if let Action::Load(id) = &action
+            if let Action::LoadSource(id) = &action
                 && let Some(source) = self.config.source(id)
                 && let source::Variant::Builtin(_) = source.variant()
             {
-                let res = self.source_list.load_source(source).await;
+                let res = self.source_list.load_source(source, None, false).await;
                 if let Err(err) = res {
                     errs.push(err);
                 }
@@ -303,33 +308,36 @@ impl<O: Opts> Arena<O> {
             if !self.config.plugins.contains_key(source)
                 && !self.opts.static_dependencies().contains_key(source)
             {
-                self.actions.push_back(Action::Remove(source.clone()));
+                self.actions.push_back(Action::RemoveSource(source.clone()));
             }
         }
 
         for source in (self.config.plugins.keys()).chain(self.opts.static_dependencies().keys()) {
-            if !self.source_list.contains_source(source) {
-                self.actions.push_back(Action::Load(source.clone()));
+            if self.source_list.contains_source(source) {
+                self.actions.push_back(Action::CheckSource(source.clone()));
+            } else {
+                self.actions.push_back(Action::LoadSource(source.clone()));
             }
         }
 
         self.actions.push_back(Action::ResolveDependencies);
     }
 
-    #[instrument(skip(self, resource_map, plugin_registry, registry))]
+    #[instrument(skip(self, plugin_registry))]
     async fn run_action(
         &mut self,
         action: Action,
-        resource_map: &ResourceMapConnection,
         plugin_registry: &PluginRegistryConnection,
-        registry: &Registry,
     ) -> Result<(), Vec<Error>> {
         trace!("running action...");
         match action {
-            Action::Load(source) => {
-                self.load_source(&source).await?;
+            Action::LoadSource(source) => {
+                self.load_source(&source, false).await?;
             }
-            Action::Remove(source) => {
+            Action::CheckSource(source) => {
+                self.load_source(&source, true).await?;
+            }
+            Action::RemoveSource(source) => {
                 self.remove_source(&source).await?;
             }
             Action::ResolveDependencies => {
@@ -341,9 +349,9 @@ impl<O: Opts> Arena<O> {
             Action::CompileAll => {
                 self.compile().await?;
             }
-            Action::UnloadAll => {
-                self.unload(resource_map, registry).await?;
-            }
+            // Action::UnloadAll => {
+            //     self.unload(resource_map, registry).await?;
+            // }
             Action::LoadAll => {
                 self.load(plugin_registry).await?;
             }
@@ -357,29 +365,34 @@ impl<O: Opts> Arena<O> {
         Ok(())
     }
 
-    async fn load_source(&mut self, source_id: &SourceId) -> Result<(), Error> {
+    async fn load_source(&mut self, source_id: &SourceId, check: bool) -> Result<(), Error> {
         let Some(source) = (self.config.source(source_id))
             .or_else(|| self.opts.static_dependencies().get(source_id))
         else {
             unreachable!("arena should not attempt to load a source that's not in the config");
         };
 
-        debug!("loading source '{}'", source);
-        let (source, updated) = self.source_list.add_source(source).await?;
+        debug!("checking / loading source '{}'", source);
+        let (source, updated) = self
+            .source_list
+            .add_source(
+                source,
+                self.source_list.version(source_id).as_ref(),
+                !check || self.config.arena.auto_update,
+            )
+            .await?;
+
+        trace!("updated: {updated:?}");
 
         match source {
             LoadedSource::Plugins { names, .. } => {
-                if updated.0 || self.config.arena.developer_mode {
+                if updated.has_updated() {
                     for name in names {
                         self.workspace.remove(name).await?;
                     }
                 }
             }
             LoadedSource::Binary { binary } => {
-                let binary = binary.clone();
-                let binary = (self.source_list.get_plugin(&binary))
-                    .and_then(|plugin| plugin.artifacts.as_binary())
-                    .expect("binary should be included as a plugin in the source list");
                 self.binaries
                     .insert_copy(&binary.name, &binary.path)
                     .await?;
@@ -400,7 +413,7 @@ impl<O: Opts> Arena<O> {
                 }
             }
             Some(LoadedSource::Binary { binary }) => {
-                self.binaries.remove(&binary).await?;
+                self.binaries.remove(&binary.name).await?;
             }
             _ => (),
         }
@@ -424,7 +437,7 @@ impl<O: Opts> Arena<O> {
 
         if sources_to_add.is_empty() {
             self.actions.extend(actions);
-            self.actions.push_back(Action::UnloadAll);
+            // self.actions.push_back(Action::UnloadAll);
             self.actions.push_back(Action::CompileAll);
             self.actions.push_back(Action::LoadAll);
         } else {
@@ -487,7 +500,12 @@ impl<O: Opts> Arena<O> {
         let plugin_names = || plugin_names.iter().copied();
         let BuildArtifacts { artifacts, errors } = self.workspace.compile(plugin_names).await?;
 
+        let names: Vec<_> = artifacts.keys().cloned().collect();
         self.binaries.insert_copies(artifacts.into_iter()).await?;
+
+        for name in names {
+            self.loader.queue_reload(name);
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -496,39 +514,47 @@ impl<O: Opts> Arena<O> {
         }
     }
 
-    async fn unload(
-        &mut self,
-        resource_map: &ResourceMapConnection,
-        registry: &Registry,
-    ) -> Result<(), Error> {
-        let plugins: Vec<_> = self
-            .loader
-            .loaded()
-            .keys()
-            .filter(|binary| !self.plugin_enabled(binary).unwrap_or_default())
-            .cloned()
-            .collect();
-
-        if plugins.is_empty() {
-            return Ok(());
-        }
-
-        debug!("unloading {plugins:?} from registry");
-
-        self.loader
-            .unload_all(plugins, resource_map, registry)
-            .await?;
-        Ok(())
-    }
+    // async fn unload(
+    //     &mut self,
+    //     resource_map: &ResourceMapConnection,
+    //     registry: &Registry,
+    // ) -> Result<(), Error> {
+    //     trace!("{:?}", self.loader.loaded());
+    //
+    //     let plugins: Vec<_> = self
+    //         .loader
+    //         .loaded()
+    //         .keys()
+    //         .filter(|name| {
+    //             !self.plugin_enabled(name).unwrap_or_default() || self.loader.to_reload(name)
+    //         })
+    //         .cloned()
+    //         .collect();
+    //
+    //     if plugins.is_empty() {
+    //         trace!("no plugins to unload");
+    //         return Ok(());
+    //     }
+    //
+    //     debug!("unloading {plugins:?} from registry");
+    //
+    //     self.loader
+    //         .unload_all(plugins, resource_map, registry)
+    //         .await?;
+    //     Ok(())
+    // }
 
     async fn load(&mut self, plugin_registry: &PluginRegistryConnection) -> Result<(), Vec<Error>> {
         let binaries: Vec<_> = self
             .enabled_binaries()
-            .filter(|binary| !self.loader.loaded().contains_key(&binary.name))
-            .cloned()
+            .filter(|&(name, _)| {
+                !self.loader.loaded().contains_key(name) || self.loader.to_reload(name)
+            })
+            .map(|(name, path)| (name.clone(), path.to_path_buf()))
             .collect();
 
         if binaries.is_empty() {
+            trace!("no plugins to load");
             return Ok(());
         }
 
@@ -567,13 +593,13 @@ impl<O: Opts> Arena<O> {
         }
     }
 
-    pub fn binaries(&self) -> impl Iterator<Item = &Binary> + '_ {
-        self.binaries.binaries().values()
+    pub fn binaries(&self) -> impl Iterator<Item = (&PluginName, &Path)> + '_ {
+        self.binaries.binaries().iter().map(|(k, v)| (k, &**v))
     }
 
-    pub fn enabled_binaries(&self) -> impl Iterator<Item = &Binary> + '_ {
+    pub fn enabled_binaries(&self) -> impl Iterator<Item = (&PluginName, &Path)> + '_ {
         self.binaries()
-            .filter(|binary| self.plugin_enabled(&binary.name).unwrap_or_default())
+            .filter(|(name, _)| self.plugin_enabled(name).unwrap_or_default())
     }
 
     async fn mutate_config(&mut self, func: impl FnOnce(&mut config::Host)) -> Result<(), Error> {
@@ -625,7 +651,10 @@ impl<O: Opts> Arena<O> {
         registry: &mut PluginRegistry,
         app: &mut App,
     ) -> Result<(), Vec<Error>> {
-        let binaries: Vec<_> = self.enabled_binaries().cloned().collect();
+        let binaries: Vec<_> = self
+            .enabled_binaries()
+            .map(|(name, path)| (name.clone(), path.to_path_buf()))
+            .collect();
 
         if binaries.is_empty() {
             return Ok(());
@@ -634,14 +663,14 @@ impl<O: Opts> Arena<O> {
         debug!("adding {binaries:?} to the registry");
 
         let mut errors = Vec::new();
-        for binary in binaries {
-            trace!("adding '{}' to the registry", binary.path.display());
+        for (name, path) in binaries {
+            trace!("adding '{}' to the registry", path.display());
             // SAFETY: these binaries either must be builtin or built from rust projects, so they
             // should be safe to run
-            let res = unsafe { registry.load_plugin_from_file_unchecked(&binary) };
+            let res = unsafe { registry.load_plugin_from_file_unchecked(name.clone(), &path) };
             match res {
                 Ok((_, bundle)) => {
-                    self.loader.add_loaded(binary.name, bundle.id().to_owned());
+                    self.loader.add_loaded(name, bundle.id().to_owned());
                     app.add_bundle(bundle);
                 }
                 Err(err) => errors.push(err),
@@ -749,12 +778,7 @@ enum PluginLoadResult {
 pub struct MainComponent {}
 
 impl<O: Opts> Component<Arena<O>> for MainComponent {
-    type UserInput<'s> = (
-        &'s mut EventSender,
-        &'s mut ResourceMapConnection,
-        &'s mut PluginRegistryConnection,
-        &'s mut Registry,
-    );
+    type UserInput<'s> = (&'s mut EventSender, &'s mut PluginRegistryConnection);
     type Value = ();
 
     async fn wait(&mut self, listener: &Arena<O>) -> anyhow::Result<ControlFlow<(), Self::Value>> {
@@ -769,12 +793,10 @@ impl<O: Opts> Component<Arena<O>> for MainComponent {
         &mut self,
         (): (),
         listener: &mut Arena<O>,
-        (sender, resource_map, plugin_registry, registry): Self::UserInput<'_>,
+        (sender, plugin_registry): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
         if let Some(action) = listener.actions.pop_front() {
-            let res = listener
-                .run_action(action, resource_map, plugin_registry, registry)
-                .await;
+            let res = listener.run_action(action, plugin_registry).await;
             if let Err(errs) = res {
                 sender.send_errors(Arena::<O>::const_ident(), errs);
             }

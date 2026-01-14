@@ -1,8 +1,8 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_quote, punctuated::Punctuated, spanned::Spanned, FnArg, Ident, ImplItem, ItemImpl, Pat,
-    Type,
+    FnArg, Ident, ImplItem, ItemImpl, Pat, Type, parse_quote, punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 use crate::extract_attr;

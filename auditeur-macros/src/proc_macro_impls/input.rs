@@ -1,6 +1,6 @@
 use syn::ItemStruct;
 
-use crate::{custom_generics::CustomGenerics, Auditeur};
+use crate::{Auditeur, custom_generics::CustomGenerics};
 
 use quote::{format_ident, quote};
 

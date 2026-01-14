@@ -14,8 +14,8 @@ use std::{
 };
 
 use serde::{
-    de::{self, Visitor},
     Deserialize, Serialize,
+    de::{self, Visitor},
 };
 use thiserror::Error;
 

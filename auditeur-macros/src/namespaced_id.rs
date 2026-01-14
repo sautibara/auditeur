@@ -4,9 +4,9 @@ use std::{
 };
 
 use proc_macro2::Span;
-use quote::quote;
 use quote::ToTokens;
-use syn::{parse::Parse, LitStr};
+use quote::quote;
+use syn::{LitStr, parse::Parse};
 use thiserror::Error;
 
 use crate::Auditeur;

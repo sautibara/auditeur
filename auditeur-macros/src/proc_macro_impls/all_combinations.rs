@@ -1,12 +1,11 @@
 use proc_macro2::{Group, Ident, TokenStream, TokenTree};
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::{
-    bracketed, parenthesized,
+    Token, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
     token::{Bracket, Paren},
-    Token,
 };
 
 use crate::field::{NameValue, NameValueArray};

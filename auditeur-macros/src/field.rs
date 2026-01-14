@@ -2,11 +2,10 @@ use std::ops::{Deref, DerefMut};
 
 use quote::ToTokens;
 use syn::{
-    bracketed, parenthesized,
+    Ident, Token, bracketed, parenthesized,
     parse::{Parse, ParseStream, Peek},
     punctuated::Punctuated,
     token::{Bracket, Paren},
-    Ident, Token,
 };
 
 fn parse_ident(input: ParseStream, expected_ident: &str) -> syn::Result<Ident> {

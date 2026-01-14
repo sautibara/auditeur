@@ -18,23 +18,23 @@
 use std::ops::{Deref, DerefMut};
 
 use proc_macro2::{Span, TokenStream};
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::{
-    parenthesized,
+    Generics, Ident, LitBool, Token, Type, WhereClause, parenthesized,
     parse::Parse,
     parse_quote,
     punctuated::{Pair, Punctuated},
     spanned::Spanned,
     token::Paren,
-    Generics, Ident, LitBool, Token, Type, WhereClause,
 };
 
 use crate::{
+    Auditeur,
     custom_generics::CustomGenerics,
     field::{Comma, List, NameValue, Parenthesized},
     input_list::{Combination, InputList},
     namespaced_id::NamespacedId,
-    type_from_ident, Auditeur,
+    type_from_ident,
 };
 
 use super::input_reflection::CallbackList;
@@ -592,9 +592,11 @@ impl Parse for Parameter {
             "take" => Ok(Self::Take(List::parse_after_with(ident, input, |input| {
                 BuiltinComponent::parse(input, BuiltinComponentType::Take)
             })?)),
-            "on_load" => Ok(Self::OnLoad(List::parse_after_with(ident, input, |input| {
-                BuiltinComponent::parse(input, BuiltinComponentType::OnLoad)
-            })?)),
+            "on_load" => Ok(Self::OnLoad(List::parse_after_with(
+                ident,
+                input,
+                |input| BuiltinComponent::parse(input, BuiltinComponentType::OnLoad),
+            )?)),
             "registry_component" => Ok(Self::RegistryComponent(NameValue::parse_after(
                 ident, input,
             )?)),
@@ -615,9 +617,7 @@ impl Parse for Parameter {
             )
             .map(Box::new)
             .map(Self::ListenToRegistry),
-            "biased" => {
-                Ok(Self::BiasedFlag(ident))
-            }
+            "biased" => Ok(Self::BiasedFlag(ident)),
             "id" => Err(syn::Error::new_spanned(
                 ident,
                 "'id' is only accepted as the first parameter",

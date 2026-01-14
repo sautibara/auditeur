@@ -1,8 +1,8 @@
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::{
-    parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned, FnArg, Ident, ImplItem,
-    ImplItemFn, ItemImpl, LitBool, Path, Token, Type, TypePath,
+    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, LitBool, Path, Token, Type, TypePath,
+    parse::Parse, parse_quote, punctuated::Punctuated, spanned::Spanned,
 };
 
 use crate::{
@@ -29,7 +29,9 @@ pub fn type_to_ident(typ: &Type) -> syn::Result<Ident> {
     } else {
         Err(syn::Error::new_spanned(
             typ,
-            format!("{string_rep} is too complex of a type - only types with characters in the range of ([\\w_<>]|::) are supported."),
+            format!(
+                "{string_rep} is too complex of a type - only types with characters in the range of ([\\w_<>]|::) are supported."
+            ),
         ))
     }
 }

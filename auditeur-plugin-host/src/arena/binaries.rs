@@ -10,7 +10,7 @@ use crate::prelude::*;
 #[derive(Serialize, Deserialize)]
 pub struct Binaries {
     path: PathBuf,
-    binaries: HashMap<PluginName, Binary>,
+    binaries: HashMap<PluginName, PathBuf>,
 }
 
 impl Binaries {
@@ -29,14 +29,14 @@ impl Binaries {
     }
 
     pub async fn remove(&mut self, name: &PluginName) -> Result<(), Error> {
-        if let Some(binary) = self.binaries.remove(name) {
-            tokio::fs::remove_file(binary.path).await?;
+        if let Some(path) = self.binaries.remove(name) {
+            tokio::fs::remove_file(path).await?;
         }
         Ok(())
     }
 
-    pub fn get(&self, name: &PluginName) -> Option<&Binary> {
-        self.binaries.get(name)
+    pub fn get(&self, name: &PluginName) -> Option<&Path> {
+        self.binaries.get(name).map(|v| &**v)
     }
 
     pub async fn remove_plugins(
@@ -49,39 +49,42 @@ impl Binaries {
         Ok(())
     }
 
-    pub const fn binaries(&self) -> &HashMap<PluginName, Binary> {
+    pub const fn binaries(&self) -> &HashMap<PluginName, PathBuf> {
         &self.binaries
     }
 
-    pub async fn insert_copies<I>(&mut self, iter: I) -> Result<Vec<Binary>, Error>
+    pub async fn insert_copies<I>(&mut self, iter: I) -> Result<(), Error>
     where
         I: IntoIterator<Item = (PluginName, PathBuf)> + Send,
         I::IntoIter: Send,
     {
-        let mut libraries = Vec::new();
         for (name, path) in iter {
-            let binary = self.insert_copy(&name, &path).await?.to_owned();
-            libraries.push(binary);
+            self.insert_copy(&name, &path).await?;
         }
-        Ok(libraries)
+        Ok(())
     }
 
-    pub async fn insert_copy(&mut self, name: &PluginName, path: &Path) -> Result<&Binary, Error> {
-        let Some(file_name) = path.file_name() else {
+    pub async fn insert_copy(&mut self, name: &PluginName, path: &Path) -> Result<(), Error> {
+        let Some(file_name) = path.file_stem() else {
             return Err(Error::ArtifactHasNoFilename {
                 plugin: name.clone(),
                 artifact: path.to_owned(),
             });
         };
+
+        let random_number: u16 = rand::random();
+
+        let mut file_name = file_name.to_os_string();
+        file_name.push("-");
+        file_name.push(random_number.to_string());
+        if let Some(extension) = path.extension() {
+            file_name.push(".");
+            file_name.push(extension);
+        }
+
         let out_path = self.path.join(file_name);
         tokio::fs::copy(path, &out_path).await?;
-        self.binaries.insert(
-            name.clone(),
-            Binary {
-                path: out_path,
-                name: name.clone(),
-            },
-        );
-        Ok(&self.binaries[name])
+        self.binaries.insert(name.clone(), out_path);
+        Ok(())
     }
 }

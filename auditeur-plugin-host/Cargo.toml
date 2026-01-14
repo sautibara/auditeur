@@ -32,6 +32,7 @@ thiserror = "1.0.58"
 regex = "1.10.6"
 base64 = "0.22"
 ignore = "0.4.25"
+rand = "0.9"
 
 [build-dependencies]
 # for getting build information to be used to build plugins

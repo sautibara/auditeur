@@ -134,9 +134,16 @@ impl Directories {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct Arena {
-    pub retain_build_artifacts: bool,
+    #[serde(default = "default_true")]
     pub auto_add_dependencies: bool,
-    pub developer_mode: bool,
+    #[serde(default)]
+    pub retain_build_artifacts: bool,
+    #[serde(default)]
+    pub auto_update: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 impl Default for Arena {
@@ -144,7 +151,7 @@ impl Default for Arena {
         Self {
             auto_add_dependencies: true,
             retain_build_artifacts: false,
-            developer_mode: false,
+            auto_update: false,
         }
     }
 }

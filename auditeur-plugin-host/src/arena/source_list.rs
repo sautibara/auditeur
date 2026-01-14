@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::*;
+use crate::{prelude::*, source::Version};
 
 #[derive(Clone, Debug)]
 pub enum Artifacts {
@@ -23,9 +23,10 @@ pub enum LoadedSource {
     Plugins {
         path: PathBuf,
         names: Vec<PluginName>,
+        version: Version,
     },
     Binary {
-        binary: PluginName,
+        binary: Binary,
     },
 }
 
@@ -59,16 +60,6 @@ impl LoadedPlugin {
     }
 }
 
-impl LoadedPluginArtifacts {
-    pub const fn as_binary(&self) -> Option<&Binary> {
-        if let Self::Binary { binary } = self {
-            Some(binary)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct SourceList {
     path: PathBuf,
@@ -98,6 +89,15 @@ impl SourceList {
         self.sources.get(id)
     }
 
+    pub fn version(&self, id: &SourceId) -> Option<Version> {
+        self.get(id).map(|source| match source {
+            LoadedSource::Plugins { version, .. } => version.clone(),
+            LoadedSource::Binary { binary } => Version::Versioned {
+                version: binary.version.clone(),
+            },
+        })
+    }
+
     pub fn get_plugin(&self, plugin: &PluginName) -> Option<&LoadedPlugin> {
         self.plugins.get(plugin)
     }
@@ -119,7 +119,7 @@ impl SourceList {
         source: &SourceId,
     ) -> Result<Option<LoadedSource>, Error> {
         let source = self.sources.remove(source);
-        if let Some(LoadedSource::Plugins { path, names }) = &source {
+        if let Some(LoadedSource::Plugins { path, names, .. }) = &source {
             trace!("removing directory '{}'", path.display());
             tokio::fs::remove_dir_all(path).await?;
 
@@ -130,14 +130,24 @@ impl SourceList {
         Ok(source)
     }
 
-    pub async fn add_source(&mut self, source: &Source) -> Result<(&LoadedSource, Updated), Error> {
-        let artifacts = self.load_source(source).await?;
+    pub async fn add_source(
+        &mut self,
+        source: &Source,
+        version: Option<&Version>,
+        auto_update: bool,
+    ) -> Result<(&LoadedSource, Updated), Error> {
+        let artifacts = self.load_source(source, version, auto_update).await?;
         let updated = self.add_artifacts(artifacts);
         Ok(updated)
     }
 
-    pub async fn load_source(&self, source: &Source) -> Result<Artifacts, Error> {
-        match source.load_into(&self.path).await? {
+    pub async fn load_source(
+        &self,
+        source: &Source,
+        version: Option<&Version>,
+        auto_update: bool,
+    ) -> Result<Artifacts, Error> {
+        match source.load_into(&self.path, version, auto_update).await? {
             source::Artifact::Path { path, updated } => Ok(Artifacts::Plugins {
                 plugins: Self::scan_workspace(path.clone(), source).await?,
                 source: source.id().clone(),
@@ -163,25 +173,39 @@ impl SourceList {
                 for plugin in plugins {
                     self.plugins.insert(plugin.name().clone(), plugin);
                 }
-                let source = self.add_loaded_source(&source, LoadedSource::Plugins { names, path });
+                let version = match &updated {
+                    Updated::True { new_version } => new_version.clone(),
+                    Updated::False { retained_version } => retained_version.clone(),
+                };
+                let source = self.add_loaded_source(
+                    &source,
+                    LoadedSource::Plugins {
+                        names,
+                        path,
+                        version,
+                    },
+                );
                 (source, updated)
             }
             Artifacts::Binary { source, binary } => {
-                let plugin_name = binary.name.clone();
+                let version = binary.version.clone();
                 self.plugins.insert(
                     binary.name.clone(),
                     LoadedPlugin {
                         source: source.clone(),
-                        artifacts: LoadedPluginArtifacts::Binary { binary },
+                        artifacts: LoadedPluginArtifacts::Binary {
+                            binary: binary.clone(),
+                        },
                     },
                 );
-                let loaded_source = self.add_loaded_source(
-                    &source,
-                    LoadedSource::Binary {
-                        binary: plugin_name,
+                let loaded_source =
+                    self.add_loaded_source(&source, LoadedSource::Binary { binary });
+                (
+                    loaded_source,
+                    Updated::False {
+                        retained_version: Version::Versioned { version },
                     },
-                );
-                (loaded_source, Updated(false))
+                )
             }
         }
     }
@@ -213,7 +237,6 @@ impl SourceList {
                 config.offset = path.join(config.offset);
                 configs.push(config);
             } else if let Some(config) = configs.pop() {
-                println!("{config:?}");
                 let config::Plugin {
                     offset,
                     children,

@@ -1,10 +1,10 @@
-use quote::{quote_spanned, ToTokens};
+use quote::{ToTokens, quote_spanned};
 use syn::{
+    Lifetime, Token, Type,
     parse::Parse,
     punctuated::{Pair, Punctuated},
     spanned::Spanned,
     token::Paren,
-    Lifetime, Token, Type,
 };
 
 enum Either<L, R> {
@@ -82,7 +82,10 @@ impl InputList {
             if let Some(pos) = pos {
                 combination.set_selected(pos);
                 if last_added.is_some_and(|last_added| pos <= last_added) {
-                    return Err(syn::Error::new_spanned(other_input, "incorrect order of inputs: all inputs to a resource must be in the same relative order to a limitation in SubsetMut"));
+                    return Err(syn::Error::new_spanned(
+                        other_input,
+                        "incorrect order of inputs: all inputs to a resource must be in the same relative order to a limitation in SubsetMut",
+                    ));
                 }
                 last_added = Some(pos);
             } else {

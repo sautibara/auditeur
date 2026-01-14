@@ -1,8 +1,8 @@
 use syn::GenericParam;
 use syn::Ident;
 
-use crate::custom_generics::CustomGenerics;
 use crate::AUDITEUR;
+use crate::custom_generics::CustomGenerics;
 
 use quote::quote;
 

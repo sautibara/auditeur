@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 use auditeur_plugin::auditeur::{
     app::{
@@ -11,7 +14,7 @@ use auditeur_plugin::auditeur::{
 };
 use tracing::{debug, error, trace, warn};
 
-use crate::{Error, PluginName, source::Binary};
+use crate::{Error, PluginName};
 use auditeur_plugin::loading::Plugin;
 
 // FIXME: Let a, b, and c be resources within separate libraries.
@@ -165,14 +168,15 @@ impl PluginRegistry {
     ///
     /// - If the library fails to load
     /// - If the library's main function fails to load
-    #[instrument(skip_all, fields(path = library.path.display().to_string()))]
+    #[instrument(skip_all, fields(path = path.display().to_string()))]
     pub unsafe fn load_plugin_from_file_unchecked(
         &mut self,
-        library: &Binary,
+        name: PluginName,
+        path: &Path,
     ) -> Result<(Plugin, Bundle), Error> {
         trace!("loading binary to app");
         // SAFETY: upheld by caller
-        let plugin = unsafe { Plugin::load_from_file_unchecked(&library.path) }?;
+        let plugin = unsafe { Plugin::load_from_file_unchecked(path) }?;
 
         info!("calling library init function to get bundle");
         let bundle = plugin.init.call();
@@ -180,7 +184,7 @@ impl PluginRegistry {
 
         self.libraries
             .insert(bundle_id.clone(), plugin.init.clone());
-        self.bundles.insert(library.name.clone(), bundle_id.clone());
+        self.bundles.insert(name, bundle_id.clone());
         self.plugins.insert(bundle_id);
 
         Ok((plugin, bundle))
@@ -196,7 +200,7 @@ impl PluginRegistry {
     #[allow(clippy::cognitive_complexity)] // it's all too connected ;-;
     pub async unsafe fn load_binaries(
         &mut self,
-        binaries: Vec<Binary>,
+        binaries: Vec<(PluginName, PathBuf)>,
         (resource_map, registry): (&mut ResourceMapConnection, &mut Registry),
     ) -> (HashMap<PluginName, NamespacedId>, Result<(), Vec<Error>>) {
         let mut errors = Vec::new();
@@ -205,16 +209,16 @@ impl PluginRegistry {
 
         // Load every binary and get their bundles.
         let mut bundles = HashMap::new();
-        for binary in binaries {
+        for (name, path) in binaries {
             // SAFETY: safety must be upheld by the caller of PluginSender::send
-            match unsafe { Plugin::load_from_file_unchecked(&binary.path) } {
+            match unsafe { Plugin::load_from_file_unchecked(&path) } {
                 Ok(plugin) => {
                     info!(
                         "calling library init function to get bundle for binary at '{}'",
-                        binary.path.display()
+                        path.display()
                     );
                     let bundle = plugin.init.call();
-                    bundles.insert(bundle.id().to_owned(), (plugin.init, bundle, binary));
+                    bundles.insert(bundle.id().to_owned(), (plugin.init, bundle, name));
                 }
                 Err(err) => errors.push(Error::from(err)),
             }
@@ -256,10 +260,8 @@ impl PluginRegistry {
         }
 
         // Update our state to match the new bundles that were added.
-        for (init, bundle, binary) in bundles.values() {
-            let old_bundle_id = self
-                .bundles
-                .insert(binary.name.clone(), bundle.id().to_owned());
+        for (init, bundle, name) in bundles.values() {
+            let old_bundle_id = self.bundles.insert(name.clone(), bundle.id().to_owned());
 
             if let Some(old_bundle_id) = old_bundle_id {
                 // Since we are already going to handle unloading the old bundle in this function,
@@ -285,7 +287,7 @@ impl PluginRegistry {
 
         let map = bundles
             .into_iter()
-            .map(|(id, (_, _, binary))| (binary.name, id))
+            .map(|(id, (_, _, name))| (name, id))
             .collect();
 
         let res = if errors.is_empty() {

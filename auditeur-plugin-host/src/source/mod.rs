@@ -1,10 +1,10 @@
 use std::{
     borrow::Borrow,
     fmt::{Debug, Display},
-    fs::FileType,
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use base64::prelude::*;
@@ -14,6 +14,13 @@ use tracing::trace;
 use crate::prelude::*;
 
 pub mod git;
+
+fn difference_is_within(left: SystemTime, right: SystemTime, max_difference: Duration) -> bool {
+    let duration_between = left
+        .duration_since(right)
+        .unwrap_or_else(|err| err.duration());
+    duration_between <= max_difference
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +39,7 @@ pub enum Variant {
 pub struct Binary {
     pub path: PathBuf,
     pub name: PluginName,
+    pub version: semver::Version,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
@@ -71,7 +79,12 @@ impl Source {
     ///
     /// - If cloning a git repo fails
     /// - If there is an error with the filesystem
-    pub async fn load_into(&self, parent_dir: &Path) -> Result<Artifact, Error> {
+    pub async fn load_into(
+        &self,
+        parent_dir: &Path,
+        version: Option<&Version>,
+        auto_update: bool,
+    ) -> Result<Artifact, Error> {
         trace!("  loading source '{self}'");
         let artifact = match &self.variant {
             Variant::Github(shorthand) => {
@@ -84,31 +97,94 @@ impl Source {
                 Self::clone_git_into(shorthand.with_host(git::Host::Bitbucket), parent_dir).await?
             }
             Variant::Builtin(binary) => Artifact::Binary(binary.clone()),
-            Variant::Path(path) => Self::load_path_into(path, parent_dir).await?,
+            Variant::Path(path) => {
+                Self::load_path_into(path, parent_dir, version, auto_update).await?
+            }
         };
         Ok(artifact)
     }
 
-    async fn load_path_into(source: &Path, parent_dir: &Path) -> Result<Artifact, Error> {
+    #[allow(clippy::cognitive_complexity)] // sorry
+    async fn load_path_into(
+        source: &Path,
+        parent_dir: &Path,
+        version: Option<&Version>,
+        auto_update: bool,
+    ) -> Result<Artifact, Error> {
         if !source.exists() || !source.is_dir() {
             return Err(Error::PathNotFound(source.to_owned()));
         }
+
+        let source_last_modified = tokio::task::spawn_blocking({
+            let source = source.to_path_buf();
+            move || Self::last_modified_recursive(&source)
+        })
+            .await
+            .expect("failed to run blocking task")
+            .unwrap_or_else(|err| {
+                warn!("failed to find the modified time of a plugin source directory ({err:?}), using now as the time instead");
+                SystemTime::now()
+            });
+
+        trace!("{source_last_modified:?}, {version:?}");
+
         let subdirectory = source
             .file_name()
             .ok_or_else(|| Error::NoComponentsInPath(source.to_owned()))?;
         let path = parent_dir.join(subdirectory);
-        let updated = if crate::path_exists_with_children(&path)? {
-            // TODO: check for updates
-            Updated(false)
+
+        let destination_path_exists = crate::path_exists_with_children(&path)?;
+        let existing_version = version.and_then(Version::as_path);
+        let existing_version_up_to_date = existing_version.is_some_and(|&last_modified| {
+            difference_is_within(last_modified, source_last_modified, Duration::from_secs(1))
+        });
+
+        let updated = if destination_path_exists
+            && let Some(previous_last_modified) = existing_version
+            && (existing_version_up_to_date || !auto_update)
+        {
+            Updated::False {
+                retained_version: Version::Path {
+                    last_modified: *previous_last_modified,
+                },
+            }
         } else {
-            trace!("copying '{}' to '{}'", source.display(), path.display());
-            Self::copy_dir_recursive(source, &path).await?;
-            Updated(true)
+            Updated::True {
+                new_version: Version::Path {
+                    last_modified: source_last_modified,
+                },
+            }
         };
+
+        if updated.has_updated() {
+            if version.is_some() {
+                warn!(
+                    "lockfile specifies using older files for source `( path = '{}' )`, \
+                        but those files don't already exist in the arena \
+                        - resorting to using new files",
+                    source.display()
+                );
+            }
+
+            if destination_path_exists {
+                trace!("removing old files at '{}'", path.display());
+                tokio::fs::remove_dir_all(&path).await?;
+            }
+
+            trace!("copying '{}' to '{}'", source.display(), path.display());
+            tokio::task::spawn_blocking({
+                let source = source.to_path_buf();
+                let path = path.clone();
+                move || Self::copy_dir_recursive(&source, &path)
+            })
+            .await
+            .expect("failed to run blocking task")?;
+        }
+
         Ok(Artifact::Path { path, updated })
     }
 
-    async fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), Error> {
+    fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), Error> {
         let mut walk = ignore::WalkBuilder::new(source);
         let walk = walk.hidden(true).follow_links(false);
 
@@ -128,10 +204,10 @@ impl Source {
 
             match dir_entry.file_type() {
                 Some(ft) if ft.is_dir() => {
-                    tokio::fs::create_dir(&destination_path).await?;
+                    std::fs::create_dir(&destination_path)?;
                 }
                 Some(ft) if ft.is_file() => {
-                    tokio::fs::copy(source_path, &destination_path).await?;
+                    std::fs::copy(source_path, &destination_path)?;
                 }
                 Some(ft) if ft.is_symlink() => {
                     // FIXME: find out what to do here
@@ -139,7 +215,7 @@ impl Source {
                         "file at '{}' is a symlink, resorting to copying",
                         source_path.display()
                     );
-                    tokio::fs::copy(source_path, &destination_path).await?;
+                    std::fs::copy(source_path, &destination_path)?;
                 }
                 // file is stdin
                 _ => (),
@@ -147,6 +223,29 @@ impl Source {
         }
 
         Ok(())
+    }
+
+    fn last_modified_recursive(path: &Path) -> Result<SystemTime, Error> {
+        let mut walk = ignore::WalkBuilder::new(path);
+        let walk = walk.hidden(true).follow_links(true);
+
+        let meta = std::fs::metadata(path)?;
+        let mut max = meta.modified()?;
+
+        for res in walk.build() {
+            let metadata = res
+                .and_then(|dir_entry| dir_entry.metadata())
+                .map_err(|error| Error::Walk {
+                    path: path.to_path_buf(),
+                    source: error,
+                })?;
+
+            let mtime = metadata.modified()?;
+
+            max = max.max(mtime);
+        }
+
+        Ok(max)
     }
 
     async fn clone_git_into(
@@ -166,10 +265,20 @@ impl Source {
             crate::spawn_blocking(move || repo.clone_into(&path)).await?;
             true
         };
-        Ok(Artifact::Path {
-            path,
-            updated: Updated(updated),
-        })
+        let updated = if updated {
+            Updated::True {
+                new_version: Version::Git {
+                    revision: "todo".to_string(),
+                },
+            }
+        } else {
+            Updated::False {
+                retained_version: Version::Git {
+                    revision: "todo".to_string(),
+                },
+            }
+        };
+        Ok(Artifact::Path { path, updated })
     }
 }
 
@@ -180,10 +289,14 @@ impl Display for Source {
             Variant::Gitlab(shorthand) => write!(f, r#"( gitlab: "{shorthand}" )"#),
             Variant::Bitbucket(shorthand) => write!(f, r#"( bitbucket: "{shorthand}" )"#),
             Variant::Path(path) => write!(f, r#"( path: "{}" )"#, path.display()),
-            Variant::Builtin(Binary { path, name }) => {
+            Variant::Builtin(Binary {
+                path,
+                name,
+                version,
+            }) => {
                 write!(
                     f,
-                    r#"( builtin: ( path: "{}", name: {name} ) )"#,
+                    r#"( builtin: ( path: "{}", name: {name}, version: {version} ) )"#,
                     path.display()
                 )
             }
@@ -318,14 +431,16 @@ impl Borrow<Id> for Source {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
-pub struct Updated(pub bool);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Updated {
+    True { new_version: Version },
+    False { retained_version: Version },
+}
 
 impl Updated {
     #[must_use]
     pub const fn has_updated(&self) -> bool {
-        let Self(updated) = self;
-        *updated
+        matches!(self, Self::True { .. })
     }
 }
 
@@ -333,4 +448,22 @@ impl Updated {
 pub enum Artifact {
     Path { path: PathBuf, updated: Updated },
     Binary(Binary),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Version {
+    Git { revision: String },
+    Path { last_modified: SystemTime },
+    Versioned { version: semver::Version },
+}
+
+impl Version {
+    #[must_use]
+    pub const fn as_path(&self) -> Option<&SystemTime> {
+        if let Self::Path { last_modified } = self {
+            Some(last_modified)
+        } else {
+            None
+        }
+    }
 }

@@ -7,7 +7,7 @@ use std::{
 
 use git2::{CredentialType, Repository};
 use regex::Regex;
-use serde::{de::Visitor, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Visitor};
 
 use crate::Error;
 
