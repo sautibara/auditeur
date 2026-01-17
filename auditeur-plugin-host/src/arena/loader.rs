@@ -34,30 +34,15 @@ impl Loader {
         res
     }
 
-    // pub async fn unload_all(
-    //     &mut self,
-    //     plugins: Vec<PluginName>,
-    //     resource_map: &ResourceMapConnection,
-    //     registry: &Registry,
-    // ) -> Result<(), crate::Error> {
-    //     let query: resource_map::Query = plugins
-    //         .iter()
-    //         .filter_map(|plugin| self.loaded.get(plugin))
-    //         .map(|loaded_plugin| &loaded_plugin.bundle_id)
-    //         .cloned()
-    //         .map(resource_map::Query::Bundle)
-    //         .collect();
-    //
-    //     let sub_map = resource_map.query(query).await;
-    //     sub_map.unload_in(registry).await;
-    //
-    //     for plugin in plugins {
-    //         self.loaded.remove(&plugin);
-    //         self.to_reload.remove(&plugin);
-    //     }
-    //
-    //     Ok(())
-    // }
+    pub async fn unload_all(
+        &mut self,
+        plugins: Vec<PluginName>,
+        plugin_registry: &PluginRegistryConnection,
+    ) {
+        self.loaded.retain(|k, _| !plugins.contains(k));
+        self.to_reload.retain(|k| !plugins.contains(k));
+        plugin_registry.unload_plugins(plugins).await;
+    }
 
     pub const fn loaded(&self) -> &HashMap<PluginName, LoadedPlugin> {
         &self.loaded

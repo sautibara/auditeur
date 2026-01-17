@@ -58,10 +58,9 @@ mod workspace;
 
 // TODO: confirm deserialized state with file system
 // make sure the file system agrees with the state
-// TODO: runtime config changing
-// when config changes, delete all upcoming actions and replace them with the new config
 // TODO: validate built info after deserializing binaries
 // TODO: move SourceId to a UUID
+// TODO: unload disabled plugins again
 
 pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn default_config(&self) -> config::Host;
@@ -137,6 +136,8 @@ impl Opts for DefaultOpts {
 
 #[derive(Debug)]
 enum Action {
+    /// Unload all plugins that aren't supposed to be loaded.
+    Unload,
     /// Add a source to the [`SourceList`]
     LoadSource(SourceId),
     /// Check a source for updates.
@@ -150,8 +151,6 @@ enum Action {
     AddToWorkspace(PluginName),
     /// Compile all plugins in the workspace.
     CompileAll,
-    // /// Unload all plugins that aren't meant to be loaded.
-    // UnloadAll,
     /// Load all plugin objects.
     LoadAll,
 }
@@ -304,6 +303,8 @@ impl<O: Opts> Arena<O> {
     fn source_diff(&mut self) {
         self.actions.clear();
 
+        self.actions.push_back(Action::Unload);
+
         for (source, _) in self.source_list.sources() {
             if !self.config.plugins.contains_key(source)
                 && !self.opts.static_dependencies().contains_key(source)
@@ -331,6 +332,9 @@ impl<O: Opts> Arena<O> {
     ) -> Result<(), Vec<Error>> {
         trace!("running action...");
         match action {
+            Action::Unload => {
+                self.unload(plugin_registry).await;
+            }
             Action::LoadSource(source) => {
                 self.load_source(&source, false).await?;
             }
@@ -349,9 +353,6 @@ impl<O: Opts> Arena<O> {
             Action::CompileAll => {
                 self.compile().await?;
             }
-            // Action::UnloadAll => {
-            //     self.unload(resource_map, registry).await?;
-            // }
             Action::LoadAll => {
                 self.load(plugin_registry).await?;
             }
@@ -363,6 +364,18 @@ impl<O: Opts> Arena<O> {
     async fn serialize_lock(&self) -> Result<(), Error> {
         self.opts.write_config_lock(self).await?;
         Ok(())
+    }
+
+    async fn unload(&mut self, plugin_registry: &PluginRegistryConnection) {
+        let plugins = self
+            .loader
+            .loaded()
+            .keys()
+            .filter(|plugin| !self.plugin_enabled(plugin).unwrap_or_default())
+            .cloned()
+            .collect();
+
+        self.loader.unload_all(plugins, plugin_registry).await;
     }
 
     async fn load_source(&mut self, source_id: &SourceId, check: bool) -> Result<(), Error> {
@@ -513,36 +526,6 @@ impl<O: Opts> Arena<O> {
             Err(errors.into_iter().map(Into::into).collect())
         }
     }
-
-    // async fn unload(
-    //     &mut self,
-    //     resource_map: &ResourceMapConnection,
-    //     registry: &Registry,
-    // ) -> Result<(), Error> {
-    //     trace!("{:?}", self.loader.loaded());
-    //
-    //     let plugins: Vec<_> = self
-    //         .loader
-    //         .loaded()
-    //         .keys()
-    //         .filter(|name| {
-    //             !self.plugin_enabled(name).unwrap_or_default() || self.loader.to_reload(name)
-    //         })
-    //         .cloned()
-    //         .collect();
-    //
-    //     if plugins.is_empty() {
-    //         trace!("no plugins to unload");
-    //         return Ok(());
-    //     }
-    //
-    //     debug!("unloading {plugins:?} from registry");
-    //
-    //     self.loader
-    //         .unload_all(plugins, resource_map, registry)
-    //         .await?;
-    //     Ok(())
-    // }
 
     async fn load(&mut self, plugin_registry: &PluginRegistryConnection) -> Result<(), Vec<Error>> {
         let binaries: Vec<_> = self

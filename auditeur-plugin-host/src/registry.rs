@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
@@ -51,7 +51,7 @@ use auditeur_plugin::loading::Plugin;
 pub struct PluginRegistry {
     libraries: HashMap<NamespacedId, bundle::SharedInitFn>,
     bundles: HashMap<PluginName, NamespacedId>,
-    plugins: HashSet<NamespacedId>,
+    plugins: HashMap<NamespacedId, PluginName>,
     protection: HashMap<NamespacedId, usize>,
     should_exit: bool,
 }
@@ -77,6 +77,7 @@ impl ListenToRegistry for PluginRegistry {
                 if let Some(val) = self.protection.get_mut(&id)
                     && *val > 0
                 {
+                    trace!("recieved unload message, but protection prevents unloading");
                     *val -= 1;
                     return Ok(false);
                 }
@@ -85,6 +86,10 @@ impl ListenToRegistry for PluginRegistry {
                     debug!("unloading bundle `{id}`'s library...");
                     drop(library);
                     debug!("unloaded bundle `{id}`'s library");
+                }
+
+                if let Some(plugin_name) = self.plugins.remove(&id) {
+                    self.bundles.remove(&plugin_name);
                 }
 
                 // we only should stop if all of the libraries are unloaded first
@@ -114,7 +119,7 @@ impl Listen<BundleInit> for PluginRegistry {
         message: BundleInit,
         resource_map: &mut ResourceMapConnection,
     ) -> anyhow::Result<()> {
-        if !self.plugins.contains(message.id()) {
+        if !self.plugins.contains_key(message.id()) {
             return Ok(());
         }
 
@@ -184,8 +189,8 @@ impl PluginRegistry {
 
         self.libraries
             .insert(bundle_id.clone(), plugin.init.clone());
-        self.bundles.insert(name, bundle_id.clone());
-        self.plugins.insert(bundle_id);
+        self.bundles.insert(name.clone(), bundle_id.clone());
+        self.plugins.insert(bundle_id, name);
 
         Ok((plugin, bundle))
     }
@@ -282,7 +287,7 @@ impl PluginRegistry {
             }
 
             self.libraries.insert(bundle.id().to_owned(), init.clone());
-            self.plugins.insert(bundle.id().to_owned());
+            self.plugins.insert(bundle.id().to_owned(), name.clone());
         }
 
         let map = bundles
@@ -297,6 +302,24 @@ impl PluginRegistry {
         };
 
         (map, res)
+    }
+
+    pub async fn unload_plugins(
+        &mut self,
+        plugins: Vec<PluginName>,
+        (resource_map, registry): (&mut ResourceMapConnection, &mut Registry),
+    ) {
+        let query: resource_map::Query = plugins
+            .iter()
+            .filter_map(|name| self.bundles.get(name))
+            .cloned()
+            .map(resource_map::Query::Bundle)
+            .collect();
+        let query = query.and_dependents();
+        let sub_map = resource_map.query(query).await;
+
+        // Unload and reload in the new bundles.
+        sub_map.unload_in(registry).await;
     }
 }
 
