@@ -35,6 +35,13 @@ impl Binaries {
         Ok(())
     }
 
+    pub async fn clear(&mut self) -> Result<(), Error> {
+        for (_, path) in self.binaries.drain() {
+            tokio::fs::remove_file(path).await?;
+        }
+        Ok(())
+    }
+
     pub fn get(&self, name: &PluginName) -> Option<&Path> {
         self.binaries.get(name).map(|v| &**v)
     }

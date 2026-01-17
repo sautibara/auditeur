@@ -58,7 +58,6 @@ mod workspace;
 
 // TODO: confirm deserialized state with file system
 // make sure the file system agrees with the state
-// TODO: validate built info after deserializing binaries
 
 pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn default_config(&self) -> config::Host;
@@ -172,7 +171,9 @@ pub struct Arena<O: Opts> {
     opts: O,
 }
 
+/// Information retained about an arena.
 #[derive(Deserialize)]
+#[expect(clippy::unsafe_derive_deserialize)] // I don't see this method...
 pub struct Lockfile {
     source_list: SourceList,
     workspace: Workspace,
@@ -192,6 +193,37 @@ impl<O: Opts> Arena<O> {
         if let Err(err) = self.reload_config().await {
             event_sender.send_error(Self::const_ident(), anyhow::Error::from(err));
         }
+    }
+}
+
+impl Lockfile {
+    async fn init(&mut self, config: &config::Host) -> Result<(), Error> {
+        let (opts_are_correct, (), ()) = tokio::try_join!(
+            self.workspace.init(config.arena.retain_build_artifacts),
+            self.source_list.init(),
+            self.binaries.init(),
+        )?;
+        if !opts_are_correct {
+            self.binaries.clear().await?;
+        }
+        Ok(())
+    }
+
+    async fn open_with_config(config: &config::Host) -> Result<Self, Error> {
+        let (source_list, workspace, binaries) = tokio::try_join!(
+            SourceList::new(config.directories().source_dir()),
+            Workspace::new_from_build_info(
+                config.directories().workspace_dir(),
+                config.arena.retain_build_artifacts,
+            ),
+            Binaries::new(config.directories().binary_dir())
+        )?;
+
+        Ok(Self {
+            source_list,
+            workspace,
+            binaries,
+        })
     }
 }
 
@@ -222,12 +254,8 @@ impl<O: Opts> Arena<O> {
                 workspace,
                 binaries,
             } = match opts.read_config_lock().await {
-                Ok(lockfile) => {
-                    tokio::try_join!(
-                        lockfile.source_list.init(),
-                        lockfile.workspace.init(),
-                        lockfile.binaries.init(),
-                    )?;
+                Ok(mut lockfile) => {
+                    lockfile.init(&config).await?;
                     lockfile
                 }
                 Err(err) => {
@@ -238,19 +266,7 @@ impl<O: Opts> Arena<O> {
                         error!("failed to parse arena lock file ({err}) - restarting from scratch");
                     }
 
-                    let (source_list, workspace, binaries) = tokio::try_join!(
-                        SourceList::new(config.directories().source_dir()),
-                        Workspace::new_from_build_info(
-                            config.directories().workspace_dir(),
-                            config.arena.retain_build_artifacts,
-                        ),
-                        Binaries::new(config.directories().binary_dir())
-                    )?;
-                    Lockfile {
-                        source_list,
-                        workspace,
-                        binaries,
-                    }
+                    Lockfile::open_with_config(&config).await?
                 }
             };
 

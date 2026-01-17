@@ -27,12 +27,37 @@ mod built_info {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CompileOptions {
-    target: String,
     version: String,
     opt_level: String,
-    debug: bool,
+    target: String,
     num_jobs: u32,
+    debug: bool,
     incremental: bool,
+}
+
+impl CompileOptions {
+    fn from_built_info(incremental: bool) -> Self {
+        Self {
+            target: built_info::TARGET.to_string(),
+            version: built_info::RUSTC_VERSION.to_string(),
+            opt_level: built_info::OPT_LEVEL.to_string(),
+            debug: built_info::DEBUG,
+            num_jobs: built_info::NUM_JOBS,
+            incremental,
+        }
+    }
+
+    fn canaries_match(&self, other: &Self) -> bool {
+        // proven:
+        self.version == other.version
+            && self.opt_level == other.opt_level
+            && self.target == other.target
+        // paranoid:
+            && self.num_jobs == other.num_jobs
+            && self.debug == other.debug
+        // NOTE: host is not included, since we can't change it, and stabby says it's paranoid
+        // anyways
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -108,33 +133,43 @@ impl Workspace {
     const PROFILE: &'static str = "auditeur";
 
     pub async fn new(path: impl Into<PathBuf> + Send, opts: CompileOptions) -> Result<Self, Error> {
-        let workspace = Self {
+        let incremental = opts.incremental;
+        let mut workspace = Self {
             path: path.into(),
             opts,
             crates: HashMap::new(),
         };
-        workspace.init().await?;
+        workspace.init(incremental).await?;
         Ok(workspace)
     }
 
-    pub async fn init(&self) -> Result<(), Error> {
+    pub async fn init(&mut self, incremental: bool) -> Result<bool, Error> {
+        let correct_opts = CompileOptions::from_built_info(incremental);
+        let opts_are_correct = self.opts.canaries_match(&correct_opts);
+        if !opts_are_correct {
+            self.opts = correct_opts;
+            self.crates.clear();
+
+            warn!("compile options changed - clearing previous build artifacts");
+
+            tokio::fs::remove_dir_all(&self.path).await.or_else(|err| {
+                (err.kind() == std::io::ErrorKind::NotFound)
+                    .then_some(())
+                    .ok_or(err)
+            })?;
+        }
+
         tokio::fs::create_dir_all(&self.path).await?;
         self.check_version().await?;
-        Ok(())
+
+        Ok(opts_are_correct)
     }
 
     pub async fn new_from_build_info(
         path: impl Into<PathBuf> + Send,
         incremental: bool,
     ) -> Result<Self, Error> {
-        let opts = CompileOptions {
-            target: built_info::TARGET.to_string(),
-            version: built_info::RUSTC_VERSION.to_string(),
-            opt_level: built_info::OPT_LEVEL.to_string(),
-            debug: built_info::DEBUG,
-            num_jobs: built_info::NUM_JOBS,
-            incremental,
-        };
+        let opts = CompileOptions::from_built_info(incremental);
         Self::new(path, opts).await
     }
 
@@ -201,6 +236,7 @@ impl Workspace {
         let opt_level = &self.opts.opt_level;
         let debug = self.opts.debug;
         let profile = Self::PROFILE;
+        let incremental = self.opts.incremental;
         let workspace_toml = format!(
             r#"
             [workspace]
@@ -212,6 +248,7 @@ impl Workspace {
             inherits = "release"
             opt-level = {opt_level}
             debug = {debug}
+            incremental = {incremental}
 
             [patch.crates-io]
             {patches}"#
@@ -354,10 +391,6 @@ impl Workspace {
             .args(["--profile", Self::PROFILE])
             .args(["--target", &self.opts.target])
             .args(["--jobs", &self.opts.num_jobs.to_string()])
-            .env(
-                "CARGO_INCREMENTAL",
-                usize::from(self.opts.incremental).to_string(),
-            )
             // output
             .arg("--message-format=json-render-diagnostics") // output as json
             .arg("--quiet") // avoid non-json messages
