@@ -1,13 +1,9 @@
 use std::{
-    borrow::Borrow,
     fmt::{Debug, Display},
-    ops::Deref,
     path::{Path, PathBuf},
-    sync::Arc,
     time::{Duration, SystemTime},
 };
 
-use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -46,7 +42,7 @@ pub struct Binary {
 #[serde(from = "Variant", into = "Variant")]
 pub struct Source {
     variant: Variant,
-    id: OwnedId,
+    id: Id,
 }
 
 impl Source {
@@ -69,8 +65,8 @@ impl Source {
     }
 
     #[must_use]
-    pub const fn id(&self) -> &OwnedId {
-        &self.id
+    pub const fn id(&self) -> Id {
+        self.id
     }
 
     /// Load this source into the directory `parent_dir`
@@ -306,19 +302,7 @@ impl Display for Source {
 
 impl From<Variant> for Source {
     fn from(variant: Variant) -> Self {
-        let id = match &variant {
-            Variant::Github(shorthand) => OwnedId::create(0, shorthand.as_bytes()),
-            Variant::Gitlab(shorthand) => OwnedId::create(1, shorthand.as_bytes()),
-            Variant::Bitbucket(shorthand) => OwnedId::create(2, shorthand.as_bytes()),
-            Variant::Path(path) => {
-                let bytes = path.as_os_str().as_encoded_bytes();
-                OwnedId::create(3, bytes.iter().copied())
-            }
-            Variant::Builtin(binary) => {
-                let bytes = binary.path.as_os_str().as_encoded_bytes();
-                OwnedId::create(4, bytes.iter().copied())
-            }
-        };
+        let id = Id::from_source(&variant);
         Self { variant, id }
     }
 }
@@ -329,105 +313,53 @@ impl From<Source> for Variant {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(into = "OwnedIdBase64", try_from = "OwnedIdBase64")]
-#[repr(transparent)]
-pub struct OwnedId(Arc<[u8]>);
-
-impl OwnedId {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes.into())
-    }
-
-    fn create(discriminant: u8, bytes: impl IntoIterator<Item = u8>) -> Self {
-        let mut vec = vec![discriminant];
-        vec.extend(bytes);
-        Self::new(vec)
-    }
-}
-
-impl Debug for OwnedId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", &**self)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-struct OwnedIdBase64(String);
-
-impl From<&Id> for OwnedIdBase64 {
-    fn from(value: &Id) -> Self {
-        Self(BASE64_URL_SAFE.encode(&value.0))
-    }
-}
-
-impl From<OwnedId> for OwnedIdBase64 {
-    fn from(value: OwnedId) -> Self {
-        Self::from(&*value)
-    }
-}
-
-impl TryFrom<OwnedIdBase64> for OwnedId {
-    type Error = base64::DecodeError;
-
-    fn try_from(value: OwnedIdBase64) -> std::result::Result<Self, Self::Error> {
-        let bytes = BASE64_URL_SAFE.decode(value.0)?;
-        let Some(first) = bytes.first() else {
-            return Err(base64::DecodeError::InvalidLength(0));
-        };
-        if *first > 4 {
-            return Err(base64::DecodeError::InvalidByte(0, *first));
-        }
-        Ok(Self(Arc::from(bytes)))
-    }
-}
-
 #[repr(transparent)]
-pub struct Id([u8]);
+pub struct Id(uuid::Uuid);
 
-impl Deref for OwnedId {
-    type Target = Id;
+impl Id {
+    // custom namespace for sha1 uuids for sources
+    const UUID_NAMESPACE: uuid::Uuid = uuid::Builder::from_bytes([
+        0x6b, 0xa7, 0xb8, 0x16, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
+        0xc8,
+    ])
+    .into_uuid();
 
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: OwnedId is #[repr(transparent)] as Arc<[u8]>
-        let bytes: &Arc<[u8]> = unsafe { &*std::ptr::from_ref::<Self>(self).cast() };
-        // coerce the &Arc<[u8]> into a &[u8]
-        let byte_slice: &[u8] = bytes;
-        // SAFETY: Id is #[repr(transparent)] as [u8]
-        let shared_id: &Id = unsafe { &*(std::ptr::from_ref::<[u8]>(byte_slice) as *const Id) };
+    fn from_source(source: &Variant) -> Self {
+        let mut sha1 = sha1_smol::Sha1::new();
+        sha1.update(Self::UUID_NAMESPACE.as_bytes());
 
-        shared_id
-    }
-}
+        match source {
+            Variant::Github(shorthand) => {
+                sha1.update(&[0]);
+                shorthand.update_sha1(&mut sha1);
+            }
+            Variant::Gitlab(shorthand) => {
+                sha1.update(&[1]);
+                shorthand.update_sha1(&mut sha1);
+            }
+            Variant::Bitbucket(shorthand) => {
+                sha1.update(&[2]);
+                shorthand.update_sha1(&mut sha1);
+            }
+            Variant::Path(path) => {
+                let bytes = path.as_os_str().as_encoded_bytes();
+                sha1.update(&[3]);
+                sha1.update(bytes);
+            }
+            Variant::Builtin(binary) => {
+                let bytes = binary.path.as_os_str().as_encoded_bytes();
+                sha1.update(&[4]);
+                sha1.update(bytes);
+            }
+        }
 
-impl Debug for Id {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let variant = match self.0[0] {
-            0 => "Github",
-            1 => "Gitlab",
-            2 => "Bitbucket",
-            3 => "Path",
-            4 => "Builtin",
-            _ => unreachable!("These are the only variants possible now."),
-        };
-        write!(
-            f,
-            "source::Id::{variant}({})",
-            String::from_utf8_lossy(&self.0[1..])
-        )
-    }
-}
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&sha1.digest().bytes()[..16]);
 
-impl Borrow<Id> for OwnedId {
-    fn borrow(&self) -> &Id {
-        self
-    }
-}
-
-impl Borrow<Id> for Source {
-    fn borrow(&self) -> &Id {
-        &self.id
+        let uuid = uuid::Builder::from_sha1_bytes(bytes).into_uuid();
+        Self(uuid)
     }
 }
 

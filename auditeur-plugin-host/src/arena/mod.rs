@@ -97,7 +97,7 @@ impl DefaultOpts {
 
     #[must_use]
     pub fn with_static_dependency(mut self, source: Source) -> Self {
-        self.static_dependencies.insert(source.id().clone(), source);
+        self.static_dependencies.insert(source.id(), source);
         self
     }
 }
@@ -309,15 +309,15 @@ impl<O: Opts> Arena<O> {
             if !self.config.plugins.contains_key(source)
                 && !self.opts.static_dependencies().contains_key(source)
             {
-                self.actions.push_back(Action::RemoveSource(source.clone()));
+                self.actions.push_back(Action::RemoveSource(*source));
             }
         }
 
         for source in (self.config.plugins.keys()).chain(self.opts.static_dependencies().keys()) {
             if self.source_list.contains_source(source) {
-                self.actions.push_back(Action::CheckSource(source.clone()));
+                self.actions.push_back(Action::CheckSource(*source));
             } else {
-                self.actions.push_back(Action::LoadSource(source.clone()));
+                self.actions.push_back(Action::LoadSource(*source));
             }
         }
 
@@ -606,7 +606,7 @@ impl<O: Opts> Arena<O> {
         self.mutate_config(|config| {
             config.plugins.extend(sources.into_iter().map(|source| {
                 (
-                    source.id().clone(),
+                    source.id(),
                     config::host::PluginGroup {
                         source,
                         enabled: config::host::Enabled::All(false),

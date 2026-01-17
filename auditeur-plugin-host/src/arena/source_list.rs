@@ -150,12 +150,12 @@ impl SourceList {
         match source.load_into(&self.path, version, auto_update).await? {
             source::Artifact::Path { path, updated } => Ok(Artifacts::Plugins {
                 plugins: Self::scan_workspace(path.clone(), source).await?,
-                source: source.id().clone(),
+                source: source.id(),
                 updated,
                 path,
             }),
             source::Artifact::Binary(binary) => Ok(Artifacts::Binary {
-                source: source.id().clone(),
+                source: source.id(),
                 binary,
             }),
         }
@@ -192,7 +192,7 @@ impl SourceList {
                 self.plugins.insert(
                     binary.name.clone(),
                     LoadedPlugin {
-                        source: source.clone(),
+                        source,
                         artifacts: LoadedPluginArtifacts::Binary {
                             binary: binary.clone(),
                         },
@@ -218,7 +218,7 @@ impl SourceList {
         // using the entry api so that we can retain an immutable reference to the loaded source
         // Entry::insert_entry would be wonderful here, but it's not stabilized :(
         self.sources.remove(source);
-        self.sources.entry(source.clone()).or_insert(loaded_source)
+        self.sources.entry(*source).or_insert(loaded_source)
     }
 
     async fn scan_workspace(path: PathBuf, source: &Source) -> Result<Vec<LoadedPlugin>, Error> {
@@ -255,7 +255,7 @@ impl SourceList {
                 }
                 if let Some(config) = plugin {
                     plugins.push(LoadedPlugin {
-                        source: source.id().clone(),
+                        source: source.id(),
                         artifacts: LoadedPluginArtifacts::SourceCode {
                             path: offset,
                             config,

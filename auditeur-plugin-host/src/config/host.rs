@@ -195,7 +195,7 @@ impl From<PluginGroupMapSerialized> for PluginGroupMap {
             map: value
                 .list
                 .into_iter()
-                .map(|group| (group.source.id().clone(), group))
+                .map(|group| (group.source.id(), group))
                 .collect(),
         }
     }

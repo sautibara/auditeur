@@ -37,7 +37,7 @@ mod prelude {
     pub use crate::{
         Error, PluginName, config,
         registry::PluginRegistry,
-        source::{self, Binary, OwnedId as SourceId, Source, Updated, git},
+        source::{self, Binary, Id as SourceId, Source, Updated, git},
     };
     pub use auditeur_plugin::prelude::*;
 }

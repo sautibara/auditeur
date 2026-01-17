@@ -30,9 +30,10 @@ auditeur-plugin-export = { path = "../auditeur-plugin-export/" }
 tracing = "0.1.40"
 thiserror = "1.0.58"
 regex = "1.10.6"
-base64 = "0.22"
 ignore = "0.4.25"
 rand = "0.9"
+uuid = { version = "1.19.0", default-features = false, features = ["serde"] }
+sha1_smol = "1.0.1"
 
 [build-dependencies]
 # for getting build information to be used to build plugins

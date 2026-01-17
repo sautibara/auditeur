@@ -8,6 +8,7 @@ use std::{
 use git2::{CredentialType, Repository};
 use regex::Regex;
 use serde::{Deserialize, Serialize, de::Visitor};
+use sha1_smol::Sha1;
 
 use crate::Error;
 
@@ -65,10 +66,10 @@ impl Shorthand {
         }
     }
 
-    pub(crate) fn as_bytes(&self) -> impl Iterator<Item = u8> + '_ {
-        (self.user.as_bytes().iter().copied())
-            .chain(std::iter::once(0)) // just put a null byte in the middle
-            .chain(self.repo.as_bytes().iter().copied())
+    pub(crate) fn update_sha1(&self, sha1: &mut Sha1) {
+        sha1.update(self.user.as_bytes());
+        sha1.update(&[0]);
+        sha1.update(self.repo.as_bytes());
     }
 }
 
