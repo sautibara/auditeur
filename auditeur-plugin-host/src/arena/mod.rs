@@ -59,8 +59,6 @@ mod workspace;
 // TODO: confirm deserialized state with file system
 // make sure the file system agrees with the state
 // TODO: validate built info after deserializing binaries
-// TODO: move SourceId to a UUID
-// TODO: unload disabled plugins again
 
 pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn default_config(&self) -> config::Host;
@@ -232,7 +230,14 @@ impl<O: Opts> Arena<O> {
                     )?;
                     lockfile
                 }
-                Err(Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                Err(err) => {
+                    if !matches!(
+                        &err,
+                        Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
+                    ) {
+                        error!("failed to parse arena lock file ({err}) - restarting from scratch");
+                    }
+
                     let (source_list, workspace, binaries) = tokio::try_join!(
                         SourceList::new(config.directories().source_dir()),
                         Workspace::new_from_build_info(
@@ -246,9 +251,6 @@ impl<O: Opts> Arena<O> {
                         workspace,
                         binaries,
                     }
-                }
-                Err(err) => {
-                    return Err(err);
                 }
             };
 
