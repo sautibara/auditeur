@@ -97,7 +97,10 @@ pub enum RegistryEvent {
         messages: Arc<[NamespacedId]>,
         bundles: Arc<[NamespacedId]>,
     },
-    // TODO: actually emit these
+    Adopt {
+        bundle: NamespacedId,
+        component: ComponentId,
+    },
     ListenMessageLoaded {
         id: NamespacedId,
         bundle: NamespacedId,
@@ -119,7 +122,7 @@ pub enum RegistryEvent {
     ///
     /// This may be emitted multiple times for a single dependency, but it also must be paired with
     /// the same amount of [`DecrementDependency`](Self::DecrementDependency) events. To
-    /// automatically handle this, you may use [`DependencyHandle`], which emits this on creation
+    /// automatically handle this, you may use [`dependency::Handle`], which emits this on creation
     /// and [`DecrementDependency`](Self::DecrementDependency) on drop.
     IncrementDependency(dependency::Full),
     /// Resource `dependent` now depends on `dependency` in some way.
@@ -140,7 +143,7 @@ pub enum RegistryEvent {
     /// For example, if one resource A uses a library resource B's connection to send a trait
     /// object, A would depend on B through its connection, while B would depend on A through the
     /// object. In this case, B should mark the dependency coming from the object as
-    /// [removable](DependencyFull::removable) and listen to the registry message stream for
+    /// [removable](dependency::Full::removable) and listen to the registry message stream for
     /// [`RemoveDependency`](Self::RemoveDependency) messages.
     ///
     /// This message can be sent using [`Stopper`].
@@ -151,7 +154,7 @@ pub enum RegistryEvent {
     /// [`IncrementDependency`](Self::IncrementDependency) event. For example, there must never be
     /// more decrement events than increment events for a single dependency link.
     ///
-    /// This can be automatically sent by [`DependencyHandle`].
+    /// This can be automatically sent by [`dependency::Handle`].
     DecrementDependency(dependency::Full),
     /// Resource `dependent` has fully removed its dependency on `dependency`.
     ///

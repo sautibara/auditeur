@@ -140,7 +140,7 @@ impl App {
         }
     }
 
-    /// [Build](Self::build) the `App` and run all [runners](Runner) to completion
+    /// [Build](Self::build) the `App` and run all [runners](super::Runner) to completion
     ///
     /// # Errors
     ///

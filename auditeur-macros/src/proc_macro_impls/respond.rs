@@ -445,11 +445,14 @@ This error may be relaxed in the future - please file an issue if you find a use
 
             methods_out.extend(quote! {
                 #(#docs)*
-                #vis async #unsafety fn #method_ident(&self, #(#arg0: #ty),*) -> #return_type {
-                    let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
-                    let query = #message_ident::#variant { #response, #(#arg1),* };
-                    self.giver.give(query).await;
-                    auditeur_receiver.await.expect(concat!("respond: ", stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
+                #vis #unsafety fn #method_ident(&self, #(#arg0: #ty),*) -> impl std::future::Future<Output = #return_type> + 'static {
+                    let giver = self.giver.clone_erased();
+                    async move {
+                        let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
+                        let query = #message_ident::#variant { #response, #(#arg1),* };
+                        giver.give(query).await;
+                        auditeur_receiver.await.expect(concat!("respond: ", stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
+                    }
                 }
             });
         }

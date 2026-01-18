@@ -262,7 +262,7 @@ impl RunningRegistry {
 
         trace!("succeeded getting {id}");
 
-        crate::downcast(reference)
+        crate::any::downcast(reference)
             .map(|boxed| *boxed)
             .map_err(|_| Error::DowncastFailed { id: id.to_owned() })
     }

@@ -17,13 +17,32 @@ pub use path_any::PathAny as Any;
 #[cfg(not(feature = "path-any"))]
 pub use std::any::Any;
 
-#[cfg(all(feature = "runtime-loading", feature = "path-any"))]
-pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
-    path_any::downcast(object)
+#[cfg(feature = "path-any")]
+pub mod any {
+    pub use super::Any;
+
+    /// Attempt to downcast the box to a concrete type.
+    ///
+    /// # Errors
+    ///
+    /// - Returns the original `object` if the downcast failed
+    pub fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
+        super::path_any::downcast(object)
+    }
 }
-#[cfg(all(feature = "runtime-loading", not(feature = "path-any")))]
-pub(crate) fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
-    Box::<dyn std::any::Any + 'static>::downcast(object)
+
+#[cfg(not(feature = "path-any"))]
+pub mod any {
+    pub use std::any::Any;
+
+    /// Attempt to downcast the box to a concrete type.
+    ///
+    /// # Errors
+    ///
+    /// - Returns the original `object` if the downcast failed
+    pub fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
+        Box::<dyn std::any::Any + 'static>::downcast(object)
+    }
 }
 
 #[doc(hidden)]

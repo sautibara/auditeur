@@ -58,6 +58,7 @@ mod workspace;
 
 // TODO: confirm deserialized state with file system
 // make sure the file system agrees with the state
+// FIXME: setting config.arena.retain_build_artifacts to false still doesn't do anything
 
 pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn default_config(&self) -> config::Host;

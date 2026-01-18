@@ -761,6 +761,16 @@ impl ResourceMap {
         Ok(())
     }
 
+    fn adopt(&mut self, bundle: &NamespacedIdRef, component: ComponentId) {
+        if let Some(bundle) = self.bundles.get_mut(bundle) {
+            match component {
+                ComponentId::Resource(id) => bundle.resources.insert(id),
+                ComponentId::Bundle(id) => bundle.bundles.insert(id),
+                ComponentId::Message(id) => bundle.messages.insert(id),
+            };
+        }
+    }
+
     /// Add a message with id `id` to the map, or if it's already in the map, update its data.
     fn add_message(
         &mut self,
@@ -1002,6 +1012,9 @@ impl listener::Component<ResourceMap> for MainComponent {
                     return Ok(ControlFlow::Break(()));
                 }
                 self.should_exit = true;
+            }
+            RegistryEvent::Adopt { bundle, component } => {
+                map.adopt(&bundle, component);
             }
             _ => (),
         }

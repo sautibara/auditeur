@@ -744,7 +744,9 @@ impl<M: Message> Giver<M> {
         let _ = self.sender.send(message).await;
     }
 
-    pub(crate) fn clone_erased(&self) -> Self {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clone_erased(&self) -> Self {
         Self {
             sender: self.sender.clone(),
             _dependency: None,

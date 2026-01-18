@@ -136,18 +136,31 @@ impl Constraints {
         self.constraints.iter()
     }
 
-    /// Creates a set of dependency links that models this constraint.
-    #[must_use]
-    pub fn into_dependencies(self, dependent: ComponentIdRef<'_>) -> HashSet<dependency::Link> {
+    /// Creates an iterator over the dependency links that model this constraint.
+    pub fn into_dependencies(
+        self,
+        dependent: ComponentIdRef<'_>,
+    ) -> impl Iterator<Item = dependency::Link> {
         self.constraints
             .into_iter()
-            .map(|constraint| match constraint {
+            .map(move |constraint| match constraint {
                 Constraint::After(component) => dependency::Link {
                     dependency: component,
                     dependent: dependent.into_owned(),
                 },
             })
-            .collect()
+    }
+
+    /// Creates an iterator over dependency handles that model this constraint
+    pub fn into_dependency_handles(
+        self,
+        dependent: ComponentIdRef<'_>,
+        event_sender: EventSender,
+        removable: dependency::Removable,
+    ) -> impl Iterator<Item = dependency::Handle> {
+        self.into_dependencies(dependent)
+            .map(move |link| dependency::Full { link, removable })
+            .map(move |full| dependency::Handle::new(event_sender.clone(), full))
     }
 }
 

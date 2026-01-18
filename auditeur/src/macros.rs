@@ -627,7 +627,7 @@ pub use auditeur_macros::GetRef;
 #[cfg(feature = "runtime-loading")]
 pub use auditeur_macros::MaybeGetRef;
 
-/// Automatically provides an implementation of [`CloneAs`](crate::app::event::CloneAs).
+/// Automatically provides an implementation of [`CloneAs`](crate::input::CloneAs).
 pub use auditeur_macros::CloneAs;
 
 /// Automatically provides an implementation of [`PathAny`] by implementing

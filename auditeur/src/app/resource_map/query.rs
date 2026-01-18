@@ -127,7 +127,7 @@ pub struct SubMapBundle {
     pub bundles: HashMap<NamespacedId, SubMapBundle>,
     /// `true` if this has all children that are currently loaded from this bundle.
     pub complete: bool,
-    /// A function that could initialize the bundle, used for [reloading](Self::reload_in).
+    /// A function that could initialize the bundle, used for [reloading](SubMap::reload_in).
     #[cfg(feature = "runtime-loading")]
     pub init: Option<bundle::SharedInitFn>,
 }

@@ -257,10 +257,6 @@ impl Workspace {
             .await?
             .write_all(workspace_toml.as_bytes())
             .await?;
-
-        // TODO: we know auditeur-plugin will be one of the plugins,
-        // so we could use it to import parking_lot, tokio, and tracing
-
         Ok(())
     }
 
