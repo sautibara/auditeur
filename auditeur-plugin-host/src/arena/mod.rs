@@ -332,7 +332,14 @@ impl<O: Opts> Arena<O> {
             }
         }
 
-        for source in (self.config.plugins.keys()).chain(self.opts.static_dependencies().keys()) {
+        let static_plugins = (self.opts.static_dependencies().keys()).zip(std::iter::repeat(true));
+        let config_plugins = (self.config.plugins.keys()).zip(std::iter::repeat(false));
+        for (source, is_static) in static_plugins.chain(config_plugins) {
+            // remove duplicates
+            if is_static && self.config.plugins.contains_key(source) {
+                continue;
+            }
+
             if self.source_list.contains_source(source) {
                 self.actions.push_back(Action::CheckSource(*source));
             } else {
@@ -496,6 +503,10 @@ impl<O: Opts> Arena<O> {
                     &dependencies,
                     plugin_name.clone(),
                     config.export.clone(),
+                    self.config
+                        .plugins
+                        .get(&plugin.source)
+                        .is_some_and(|source| source.hotreload),
                 )
                 .await?;
             self.binaries.remove(plugin_name).await?;
@@ -629,6 +640,7 @@ impl<O: Opts> Arena<O> {
                     config::host::PluginGroup {
                         source,
                         enabled: config::host::Enabled::All(false),
+                        hotreload: false,
                     },
                 )
             }));
@@ -655,6 +667,15 @@ impl<O: Opts> Arena<O> {
     ) -> Result<(), Vec<Error>> {
         let binaries: Vec<_> = self
             .enabled_binaries()
+            // disable automatically adding hotreload plugins
+            .filter(|(plugin, _)| {
+                self.source_list.get_plugin(plugin).is_some_and(|plugin| {
+                    self.config
+                        .plugins
+                        .get(&plugin.source)
+                        .is_some_and(|plugin| !plugin.hotreload)
+                })
+            })
             .map(|(name, path)| (name.clone(), path.to_path_buf()))
             .collect();
 

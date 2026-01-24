@@ -206,6 +206,7 @@ impl From<PluginGroupMapSerialized> for PluginGroupMap {
 pub struct PluginGroup {
     pub source: Source,
     pub enabled: Enabled,
+    pub hotreload: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -225,6 +226,8 @@ enum PluginGroupSerialized {
         source: Source,
         #[serde(default, skip_serializing_if = "is_default")]
         enabled: Enabled,
+        #[serde(default, skip_serializing_if = "is_default")]
+        hotreload: bool,
     },
 }
 
@@ -268,6 +271,7 @@ impl From<PluginGroup> for PluginGroupSerialized {
     fn from(plugin: PluginGroup) -> Self {
         let variant = plugin.source.into();
         if is_default(&plugin.enabled)
+            && is_default(&plugin.hotreload)
             && let source::Variant::Github(url) = variant
         {
             Self::UrlOnly(url)
@@ -275,6 +279,7 @@ impl From<PluginGroup> for PluginGroupSerialized {
             Self::Full {
                 source: variant.into(),
                 enabled: plugin.enabled,
+                hotreload: plugin.hotreload,
             }
         }
     }
@@ -286,8 +291,17 @@ impl From<PluginGroupSerialized> for PluginGroup {
             PluginGroupSerialized::UrlOnly(url) => Self {
                 source: source::Variant::Github(url).into(),
                 enabled: Enabled::default(),
+                hotreload: false,
             },
-            PluginGroupSerialized::Full { source, enabled } => Self { source, enabled },
+            PluginGroupSerialized::Full {
+                source,
+                enabled,
+                hotreload,
+            } => Self {
+                source,
+                enabled,
+                hotreload,
+            },
         }
     }
 }

@@ -245,21 +245,30 @@ impl PluginRegistry {
         }
         let res = sub_map.reload_in(registry).await;
 
-        // Leak any bundles that were partially loaded.
-        if let Err((app, err)) = res {
-            error!("failed to load bundles: {err:?}");
-            for unloaded_bundle in app.unloaded_bundles() {
-                // FIXME: If only part of a bundle is loaded, the registry gets put
-                // into a terrible situation. It can't just drop the library, since one
-                // of the library's resources could have still been loaded. But it also
-                // can't keep the library, since it will never be unloaded: the
-                // ResourceMap doesn't know that one of the resources was never loaded,
-                // so it'll forever wait for it to unload before unloading the bundle.
-                // Instead, we use the hacky solution: just leak the library and keep
-                // it always loaded.
-                let info = bundles.remove(unloaded_bundle);
-                if let Some((init, _, _)) = info {
-                    std::mem::forget(init);
+        match res {
+            Ok(results) => {
+                if !results.succeeded() {
+                    errors.push(Error::FailedToLoad {
+                        results: Box::new(results),
+                    });
+                }
+            }
+            // Leak any bundles that were partially loaded.
+            Err((app, err)) => {
+                error!("failed to load bundles: {err}");
+                for unloaded_bundle in app.unloaded_bundles() {
+                    // FIXME: If only part of a bundle is loaded, the registry gets put
+                    // into a terrible situation. It can't just drop the library, since one
+                    // of the library's resources could have still been loaded. But it also
+                    // can't keep the library, since it will never be unloaded: the
+                    // ResourceMap doesn't know that one of the resources was never loaded,
+                    // so it'll forever wait for it to unload before unloading the bundle.
+                    // Instead, we use the hacky solution: just leak the library and keep
+                    // it always loaded.
+                    let info = bundles.remove(unloaded_bundle);
+                    if let Some((init, _, _)) = info {
+                        std::mem::forget(init);
+                    }
                 }
             }
         }

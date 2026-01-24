@@ -8,7 +8,7 @@ use crate::{
         LoadedResource, Loader, Runner,
         channels::{self, EventReceiver, EventSender, Taker},
     },
-    input::subset::Subset,
+    input::{dependency, subset::Subset},
     prelude::*,
 };
 
@@ -437,12 +437,20 @@ pub(crate) struct LoadedListener<L: Listener> {
     input: L::Input,
     components: L::Components,
     event_sender: EventSender,
+    _dependencies: Vec<dependency::Handle>,
 }
 
 impl<L: Listener> LoadedListener<L> {
     pub(crate) async fn build(listener: L, registry: &Registry) -> Result<Self, Error> {
+        let dependencies = L::Input::constraints().into_dependency_handles(
+            ComponentIdRef::Resource(L::const_ident()),
+            registry.event_sender(),
+            dependency::Removable::Set(false),
+        );
+
         let ident = ComponentIdRef::Resource(listener.ident());
         Ok(Self {
+            _dependencies: dependencies.collect(),
             input: L::Input::create(registry, ident).await?,
             components: L::Components::create(registry, ident).await?,
             listener,

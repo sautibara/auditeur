@@ -266,9 +266,11 @@ impl Workspace {
         dependencies: &HashSet<&PluginName>,
         plugin_name: PluginName,
         export: Option<config::plugin::Export>,
+        hotreload: bool,
     ) -> Result<PackageName, Error> {
         let manifest = Manifest::load_dir(&source).await?;
 
+        // Get some information from the manifest for bookkeeping.
         let Some(package) = manifest.package.as_ref() else {
             return Err(Error::PackageExpected {
                 manifest_path: source.join("Cargo.toml"),
@@ -288,9 +290,12 @@ impl Workspace {
             .unwrap_or_else(|| package_name.0.replace('-', "_"));
         let library_name = LibraryName(library_name);
 
+        // Copy the manifest to the mirror path.
         let mirror_path = self.path.join(&package_name.0);
         tokio::fs::create_dir_all(&mirror_path).await?;
         let mut manifest = manifest.copy_to_path(&mirror_path);
+
+        // Link dependencies.
         for dependency in dependencies {
             trace!("linking dependency '{dependency}' for '{plugin_name}'");
             let (package, dependency) =
@@ -301,6 +306,19 @@ impl Workspace {
         let (rubicon_key, rubicon_dep) = Self::rubicon_dependency();
         manifest.dependencies.insert(rubicon_key, rubicon_dep);
 
+        // Ensure the crate is a dylib (useful for hotreloading).
+        if export.is_none() && hotreload {
+            let lib = manifest.lib.get_or_insert_default();
+            if !lib.crate_type.iter().any(|ty| ty == "dylib") {
+                lib.crate_type.push("dylib".to_string());
+            }
+            if let Some(index) = lib.crate_type.iter().position(|ty| ty == "lib") {
+                lib.crate_type.remove(index);
+            }
+        }
+        manifest.lints = None;
+
+        // Save all changes made.
         manifest.save().await?;
 
         let workspace_crate = Crate {
@@ -383,6 +401,8 @@ impl Workspace {
         let mut build_command = std::process::Command::new("cargo")
             .arg("build")
             .args(package_specifiers)
+            // extra rust flags
+            .env("RUSTFLAGS", "-C prefer-dynamic")
             // canaries
             .args(["--profile", Self::PROFILE])
             .args(["--target", &self.opts.target])

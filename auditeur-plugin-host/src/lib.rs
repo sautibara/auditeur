@@ -21,7 +21,7 @@ use std::{
 };
 
 use arena::Arena;
-use auditeur_plugin::auditeur::app::App;
+use auditeur_plugin::auditeur::app::{App, resource_map::LoadResults};
 use futures::Future;
 use ron::{extensions::Extensions, ser::PrettyConfig};
 use serde::{Deserialize, Serialize};
@@ -240,6 +240,8 @@ pub enum Error {
         #[source]
         source: ignore::Error,
     },
+    #[error("failed to load all resources in a reload: {results}")]
+    FailedToLoad { results: Box<LoadResults> },
 }
 
 impl From<cargo_metadata::CompilerMessage> for Error {

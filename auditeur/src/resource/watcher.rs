@@ -4,6 +4,7 @@ use tracing::debug;
 
 use crate::{
     app::{LoadedResource, Loader, Runner, channels::EventReceiver},
+    input::dependency,
     prelude::*,
 };
 
@@ -90,17 +91,25 @@ struct LoadedWatcher<W: Watcher> {
     input: W::Input,
     event_receiver: EventReceiver,
     event_sender: EventSender,
+    _dependencies: Vec<dependency::Handle>,
     #[cfg(feature = "runtime-loading")]
     registry: Registry,
 }
 
 impl<W: Watcher> LoadedWatcher<W> {
     pub async fn build(watcher: W, registry: &Registry) -> Result<Self, Error> {
+        let dependencies = W::Input::constraints().into_dependency_handles(
+            ComponentIdRef::Resource(W::const_ident()),
+            registry.event_sender(),
+            dependency::Removable::Set(false),
+        );
+
         Ok(Self {
             #[cfg(feature = "runtime-loading")]
             registry: registry.handle(),
             event_receiver: registry.event_receiver(),
             event_sender: registry.event_sender(),
+            _dependencies: dependencies.collect(),
             input: <W::Input as Input>::create(registry, ComponentIdRef::Resource(watcher.ident()))
                 .await?,
             inner: watcher,

@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use super::*;
 
 /// A query for components in a [`ResourceMap`] that is buildable into a [`SubMap`] using
@@ -495,6 +497,23 @@ pub struct LoadResults {
     pub message_result: LoadResult,
 }
 
+impl LoadResults {
+    #[must_use]
+    pub fn succeeded(&self) -> bool {
+        self.resource_result.failed.is_empty() && self.message_result.failed.is_empty()
+    }
+}
+
+impl Display for LoadResults {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "failed to load resources {:?} and messages {:?}",
+            &self.resource_result.failed, &self.message_result.failed
+        )
+    }
+}
+
 /// Data on which components of a single type loaded successfully.
 #[derive(Default, Debug)]
 #[cfg(feature = "runtime-loading")]
@@ -614,11 +633,13 @@ impl SubMapBundle {
     fn load_plans(&self, id: &NamespacedIdRef, parents: &mut Vec<NamespacedId>) -> LoadState {
         let resources: HashSet<_> = self
             .descendent_resources()
+            .filter(|(_, info)| !info.iter().any(ResourceSource::is_removable_dependency))
             .map(|(id, _info)| id)
             .cloned()
             .collect();
         let messages: HashSet<_> = self
             .descendent_messages()
+            .filter(|(_, info)| !info.iter().any(ResourceSource::is_removable_dependency))
             .map(|(id, _info)| id)
             .cloned()
             .collect();
