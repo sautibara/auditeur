@@ -181,9 +181,14 @@ pub struct Lockfile {
     binaries: Binaries,
 }
 
-#[create]
 impl<O: Opts> Create for Arena<O> {
-    async fn create(#[external] arena: Result<Self>) -> Result<Self> {
+    type ExternalInput = Result<Self>;
+    type RegistryInput = ();
+
+    async fn create(
+        (): Self::RegistryInput,
+        arena: Self::ExternalInput,
+    ) -> Result<Self, anyhow::Error> {
         arena
     }
 }

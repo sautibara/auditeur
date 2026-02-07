@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use tracing::{debug, instrument, trace};
+use tracing::{instrument, trace};
 
 use crate::{
     Either,

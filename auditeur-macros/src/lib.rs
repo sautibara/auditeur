@@ -7,7 +7,7 @@ use proc_macro_impls::{ComponentCallback, ExpandInputSpecifier, HasInput, Interm
 use proc_macro2::Span;
 use quote::{ToTokens, quote, quote_spanned};
 use syn::{
-    Attribute, GenericParam, Ident, Item, ItemImpl, ItemStruct, ItemTrait, Token, TypeParamBound,
+    GenericParam, Ident, Item, ItemImpl, ItemStruct, ItemTrait, Token, TypeParamBound,
     parse_macro_input, punctuated::Punctuated, spanned::Spanned,
 };
 
@@ -32,9 +32,6 @@ fn snake_to_upper_camel_case(snake: &str) -> String {
 mod proc_macro_impls {
     mod resource;
     pub use resource::{resource, resource_impls_with_generics};
-
-    mod create;
-    pub use create::create;
 
     mod input;
     pub use input::derive as derive_input;
@@ -217,14 +214,6 @@ impl Auditeur {
     }
 }
 
-fn extract_attr(vec: &mut Vec<Attribute>, ident: &str) -> impl Iterator<Item = Attribute> {
-    let (matches, others) = std::mem::take(vec)
-        .into_iter()
-        .partition(|attr| attr.path().is_ident(ident));
-    *vec = others;
-    matches.into_iter()
-}
-
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
@@ -276,12 +265,6 @@ pub fn ident(string: TokenStream) -> TokenStream {
     let id = parse_macro_input!(string as NamespacedId);
 
     id.to_token_stream().into()
-}
-
-#[proc_macro_attribute]
-pub fn create(_: TokenStream, item: TokenStream) -> TokenStream {
-    let implementation = parse_macro_input!(item as ItemImpl);
-    proc_macro_impls::create(implementation).into()
 }
 
 #[proc_macro_derive(Create)]

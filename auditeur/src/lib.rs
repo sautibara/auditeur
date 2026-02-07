@@ -65,8 +65,8 @@ pub mod prelude {
         bundle::Bundle,
         input::{Constraints, get::Get},
         macros::{
-            Create, GetRef, Input, Runnable, component, create, has_input, ident, identifiable,
-            listener, message, resource, respond,
+            Create, GetRef, Input, Runnable, component, has_input, ident, identifiable, listener,
+            message, resource, respond,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros

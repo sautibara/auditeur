@@ -56,9 +56,14 @@ pub struct PluginRegistry {
     should_exit: bool,
 }
 
-#[create]
 impl Create for PluginRegistry {
-    async fn create(#[external] this: Self) -> Result<Self> {
+    type ExternalInput = Self;
+    type RegistryInput = ();
+
+    async fn create(
+        (): Self::RegistryInput,
+        this: Self::ExternalInput,
+    ) -> Result<Self, anyhow::Error> {
         Ok(this)
     }
 }
