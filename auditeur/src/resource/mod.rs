@@ -62,3 +62,32 @@ pub trait Create: Sized {
         external: Self::ExternalInput,
     ) -> impl Future<Output = Result<Self, anyhow::Error>> + Send;
 }
+
+impl<T: CreateDerive> Create for T {
+    type ExternalInput = <Self as CreateDeriveTypes>::External;
+    type RegistryInput = <Self as CreateDeriveTypes>::Input;
+
+    async fn create(
+        registry: Self::RegistryInput,
+        external: Self::ExternalInput,
+    ) -> Result<Self, anyhow::Error> {
+        let plain = <Self as CreateDerive>::create(external, &registry).await?;
+        Ok(Self::combine(registry, plain))
+    }
+}
+
+pub trait CreateDeriveTypes {
+    type External: Send;
+
+    type Input: Input;
+    type Plain: Send;
+
+    fn combine(input: Self::Input, plain: Self::Plain) -> Self;
+}
+
+pub trait CreateDerive: CreateDeriveTypes {
+    fn create(
+        _: Self::External,
+        _: &Self::Input,
+    ) -> impl Future<Output = anyhow::Result<Self::Plain>> + Send;
+}

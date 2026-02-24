@@ -630,7 +630,9 @@ impl LoadedMessage {
     listen(BundleInit),
     components((component = MainComponent, input = ())),
 )]
+#[create]
 pub struct ResourceMap {
+    #[create(input)]
     sender: EventSender,
     /// A map of all of the currently running resources
     ///
@@ -658,16 +660,9 @@ pub struct ResourceMap {
     dependencies: hashbrown::HashMap<ComponentId, ComponentDependencies>,
 }
 
-impl Create for ResourceMap {
-    type RegistryInput = EventSender;
-    type ExternalInput = ();
-
-    async fn create(
-        sender: Self::RegistryInput,
-        (): Self::ExternalInput,
-    ) -> Result<Self, anyhow::Error> {
-        Ok(Self {
-            sender,
+impl CreateDerive for ResourceMap {
+    async fn create((): Self::External, _: &Self::Input) -> anyhow::Result<Self::Plain> {
+        Ok(Self::Plain {
             runners: HashSet::new(),
             resources: hashbrown::HashMap::new(),
             bundles: hashbrown::HashMap::new(),

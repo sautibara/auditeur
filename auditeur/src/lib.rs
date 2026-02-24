@@ -65,14 +65,14 @@ pub mod prelude {
         bundle::Bundle,
         input::{Constraints, get::Get},
         macros::{
-            Create, GetRef, Input, Runnable, component, has_input, ident, identifiable, listener,
+            GetRef, Input, Runnable, component, create, has_input, ident, identifiable, listener,
             message, resource, respond,
         },
         namespaced_id::{NamespacedId, NamespacedIdRef},
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
-            Create, Runnable,
+            Create, CreateDerive, Runnable,
             listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
             watcher::Watcher,
         },

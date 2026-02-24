@@ -7,22 +7,7 @@ use syn::{
     token::Paren,
 };
 
-enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<I, L: Iterator<Item = I>, R: Iterator<Item = I>> Iterator for Either<L, R> {
-    type Item = I;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Left(left) => left.next(),
-            Self::Right(right) => right.next(),
-        }
-    }
-}
-
+use crate::Either;
 use crate::field::Parenthesized;
 
 #[derive(Clone, Debug)]

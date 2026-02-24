@@ -13,9 +13,11 @@ use syn::{
 
 use crate::proc_macro_impls::AllCombinations;
 
+mod attr;
 mod custom_generics;
 mod field;
 mod input_list;
+mod maybe_error;
 mod namespaced_id;
 
 fn snake_to_upper_camel_case(snake: &str) -> String {
@@ -29,11 +31,27 @@ fn snake_to_upper_camel_case(snake: &str) -> String {
     })
 }
 
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<I, L: Iterator<Item = I>, R: Iterator<Item = I>> Iterator for Either<L, R> {
+    type Item = I;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Left(left) => left.next(),
+            Self::Right(right) => right.next(),
+        }
+    }
+}
+
 mod proc_macro_impls {
     mod resource;
     pub use resource::{resource, resource_impls_with_generics};
 
-    mod input;
+    pub mod input;
     pub use input::derive as derive_input;
 
     mod all_combinations;
@@ -72,6 +90,9 @@ mod proc_macro_impls {
     mod path_any;
     #[cfg(feature = "path-any")]
     pub use path_any::path_any;
+
+    mod create;
+    pub use create::create_attr;
 }
 
 fn type_from_ident(ident: syn::Ident) -> syn::Type {
@@ -260,45 +281,18 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+#[proc_macro_attribute]
+pub fn create(attr: TokenStream, item: TokenStream) -> TokenStream {
+    proc_macro_impls::create_attr(attr.into(), item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 #[proc_macro]
 pub fn ident(string: TokenStream) -> TokenStream {
     let id = parse_macro_input!(string as NamespacedId);
 
     id.to_token_stream().into()
-}
-
-#[proc_macro_derive(Create)]
-pub fn create_derive(item: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(item as Item);
-
-    let (ident, generics) = match item {
-        Item::Struct(strct) => (strct.ident, strct.generics),
-        Item::Enum(enm) => (enm.ident, enm.generics),
-        _ => {
-            return quote_spanned! {
-                item.span() => compile_error!("item must be a struct or enum"),
-            }
-            .into();
-        }
-    };
-
-    let auditeur = &AUDITEUR;
-    let resource_mod = auditeur.resource();
-    let anyhow = auditeur.anyhow();
-
-    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-
-    quote! {
-        // we can be generic over message because there are no inputs to depend on it
-        impl #impl_generics #resource_mod::Create for #ident #type_generics #where_clause {
-            type RegistryInput = ();
-            type ExternalInput = ();
-            async fn create((): (), (): ()) -> #anyhow::Result<Self> {
-                Ok(Self::default())
-            }
-        }
-    }
-    .into()
 }
 
 #[proc_macro_derive(Input, attributes(custom_generics))]

@@ -589,7 +589,8 @@ pub use auditeur_macros::has_input;
 /// ```
 pub use auditeur_macros::Runnable;
 
-pub use auditeur_macros::Create;
+// TODO: write documentation!
+pub use auditeur_macros::create;
 
 pub use auditeur_macros::Input;
 

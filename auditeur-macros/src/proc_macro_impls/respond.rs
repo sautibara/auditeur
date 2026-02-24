@@ -925,7 +925,7 @@ impl Parse for MethodAttribute {
             "timeout" => NameValue::parse_after(ident, input).map(Self::Timeout),
             "on_error" => NameValue::parse_after(ident, input).map(Self::OnError),
             other => Err(input.error(format!(
-                "expected 'connection_fn', 'ref_fn, 'timeout', or 'on_error', found {other}"
+                "expected 'connection_fn', 'ref_fn', 'timeout', or 'on_error', found {other}"
             ))),
         }
     }
