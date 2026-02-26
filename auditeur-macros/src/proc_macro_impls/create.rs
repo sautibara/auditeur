@@ -144,21 +144,16 @@ impl<'a> ConfigStruct<'a> {
         };
 
         // include generics only if this is the basic struct
-        let (impl_generics, type_generics, where_clause) = if is_input {
-            Default::default()
+        let generics = if is_input {
+            TokenStream::new()
         } else {
-            let (a, b, c) = self.shared.split_generics();
-            (
-                a.into_token_stream(),
-                b.into_token_stream(),
-                c.into_token_stream(),
-            )
+            self.shared.generics.to_token_stream()
         };
 
         quote! {
             #attrs
             #[doc(hidden)]
-            pub struct #impl_generics #name #type_generics #where_clause {
+            pub struct #name #generics {
                 #(#fields: #types,)*
             }
         }
