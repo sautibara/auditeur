@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use arena::Arena;
+use arena::ArenaImpl;
 use auditeur_plugin::auditeur::app::{App, resource_map::LoadResults};
 use futures::Future;
 use ron::{extensions::Extensions, ser::PrettyConfig};
@@ -49,6 +49,8 @@ pub use auditeur_plugin;
 // make sure the shared library is loaded
 #[expect(clippy::single_component_path_imports, unused_imports)]
 use auditeur_plugin_export;
+
+use crate::{arena::Arena, registry::PluginRegistryImpl};
 
 /// Spawn a blocking closure in [`tokio`], resuming any panics from the closure if they occur
 async fn spawn_blocking<F, R>(func: F) -> R
@@ -133,8 +135,8 @@ pub trait AppExt {
 
 impl AppExt for App {
     async fn with_plugin_system<O: arena::Opts>(mut self, opts: O) -> Self {
-        let mut registry = PluginRegistry::new();
-        let (mut arena, mut errors) = Arena::<O>::open_or_init(opts).await;
+        let mut registry = PluginRegistryImpl::new();
+        let (mut arena, mut errors) = ArenaImpl::<O>::open_or_init(opts).await;
         if let Ok(arena) = &mut arena {
             let res = arena.add_to_plugin_registry(&mut registry, &mut self);
             if let Err(errs) = res {

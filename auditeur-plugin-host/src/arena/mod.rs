@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
 use crate::{
-    arena::source_list::LoadedPluginArtifacts, prelude::*, registry::PluginRegistryConnection,
+    arena::source_list::LoadedPluginArtifacts,
+    prelude::*,
+    registry::{PluginRegistryConnection, PluginRegistryImpl},
 };
 
 use self::{
@@ -74,7 +76,7 @@ pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn read_config_lock(&self) -> impl Future<Output = Result<Lockfile, Error>> + Send + Sync;
     fn write_config_lock(
         &self,
-        lock: &Arena<Self>,
+        lock: &ArenaImpl<Self>,
     ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
 }
 
@@ -125,7 +127,7 @@ impl Opts for DefaultOpts {
         crate::deserialize(file).await
     }
 
-    async fn write_config_lock(&self, lock: &Arena<Self>) -> Result<(), Error> {
+    async fn write_config_lock(&self, lock: &ArenaImpl<Self>) -> Result<(), Error> {
         tokio::fs::create_dir_all(self.project_dirs.config_dir()).await?;
         let file = self.project_dirs.config_dir().join("lock.ron");
         crate::serialize(file, lock)
@@ -153,12 +155,29 @@ enum Action {
     LoadAll,
 }
 
-#[derive(Serialize, Runnable)]
+#[derive(Runnable)]
 #[listener("plugin_host:arena", biased, respond, components((
     component = MainComponent,
-    input = (EventSender, PluginRegistryConnection),
+    input = (),
 )))]
+#[create(external_input(Result<ArenaImpl<O>>))]
 pub struct Arena<O: Opts> {
+    inner: ArenaImpl<O>,
+
+    #[create(input)]
+    sender: EventSender,
+    #[create(input)]
+    registry: PluginRegistryConnection,
+}
+
+impl<O: Opts> CreateDerive for Arena<O> {
+    async fn create(arena: Self::External, _: &Self::Input) -> anyhow::Result<Self::Plain> {
+        arena.map(|inner| Self::Plain { inner })
+    }
+}
+
+#[derive(Serialize)]
+pub struct ArenaImpl<O: Opts> {
     source_list: SourceList,
     workspace: Workspace,
     binaries: Binaries,
@@ -172,7 +191,7 @@ pub struct Arena<O: Opts> {
     opts: O,
 }
 
-/// Information retained about an arena.
+/// Information retained about an ArenaImpl.
 #[derive(Deserialize)]
 #[expect(clippy::unsafe_derive_deserialize)] // I don't see this method...
 pub struct Lockfile {
@@ -181,23 +200,12 @@ pub struct Lockfile {
     binaries: Binaries,
 }
 
-impl<O: Opts> Create for Arena<O> {
-    type ExternalInput = Result<Self>;
-    type RegistryInput = ();
-
-    async fn create(
-        (): Self::RegistryInput,
-        arena: Self::ExternalInput,
-    ) -> Result<Self, anyhow::Error> {
-        arena
-    }
-}
-
 #[respond("plugin_host:arena")]
 impl<O: Opts> Arena<O> {
-    pub async fn refresh(&mut self, event_sender: &mut EventSender) {
-        if let Err(err) = self.reload_config().await {
-            event_sender.send_error(Self::const_ident(), anyhow::Error::from(err));
+    pub async fn refresh(&mut self, (): ()) {
+        if let Err(err) = self.inner.reload_config().await {
+            self.sender
+                .send_error(Self::const_ident(), anyhow::Error::from(err));
         }
     }
 }
@@ -233,14 +241,14 @@ impl Lockfile {
     }
 }
 
-impl<O: Opts> Arena<O> {
-    /// Open or initialize an [`Arena`] using the specified `config`
+impl<O: Opts> ArenaImpl<O> {
+    /// Open or initialize an [`ArenaImpl`] using the specified `config`
     ///
     /// # Errors
     ///
     /// - If the directory structure cannot be created
     pub async fn open_or_init(opts: O) -> (Result<Self, Error>, Vec<Error>) {
-        async fn open_or_init<O: Opts>(opts: O) -> Result<Arena<O>, Error> {
+        async fn open_or_init<O: Opts>(opts: O) -> Result<ArenaImpl<O>, Error> {
             debug!("initializing plugin arena");
 
             let config = match opts.read_config().await {
@@ -278,7 +286,7 @@ impl<O: Opts> Arena<O> {
 
             let loader = Loader::default();
 
-            let mut arena = Arena {
+            let mut arena = ArenaImpl {
                 source_list,
                 workspace,
                 binaries,
@@ -413,7 +421,7 @@ impl<O: Opts> Arena<O> {
         let Some(source) = (self.config.source(source_id))
             .or_else(|| self.opts.static_dependencies().get(source_id))
         else {
-            unreachable!("arena should not attempt to load a source that's not in the config");
+            unreachable!("ArenaImpl should not attempt to load a source that's not in the config");
         };
 
         debug!("checking / loading source '{}'", source);
@@ -667,7 +675,7 @@ impl<O: Opts> Arena<O> {
     /// If a plugin can't be loaded
     pub fn add_to_plugin_registry(
         &mut self,
-        registry: &mut PluginRegistry,
+        registry: &mut PluginRegistryImpl,
         app: &mut App,
     ) -> Result<(), Vec<Error>> {
         let binaries: Vec<_> = self
@@ -713,7 +721,7 @@ impl<O: Opts> Arena<O> {
 }
 
 struct SourceTracker<'a, O: Opts> {
-    arena: &'a Arena<O>,
+    arena: &'a ArenaImpl<O>,
     // value is if the plugin was enabled
     already_added: HashMap<PluginName, bool>,
     errors: Vec<Error>,
@@ -722,7 +730,7 @@ struct SourceTracker<'a, O: Opts> {
 }
 
 impl<'a, O: Opts> SourceTracker<'a, O> {
-    fn new(arena: &'a Arena<O>) -> Self {
+    fn new(arena: &'a ArenaImpl<O>) -> Self {
         Self {
             arena,
             already_added: HashMap::new(),
@@ -806,11 +814,11 @@ enum PluginLoadResult {
 pub struct MainComponent {}
 
 impl<O: Opts> Component<Arena<O>> for MainComponent {
-    type UserInput<'s> = (&'s mut EventSender, &'s mut PluginRegistryConnection);
+    type UserInput<'s> = ();
     type Value = ();
 
     async fn wait(&mut self, listener: &Arena<O>) -> anyhow::Result<ControlFlow<(), Self::Value>> {
-        if listener.actions.is_empty() {
+        if listener.inner.actions.is_empty() {
             futures::future::pending().await
         } else {
             Ok(ControlFlow::Continue(()))
@@ -821,12 +829,12 @@ impl<O: Opts> Component<Arena<O>> for MainComponent {
         &mut self,
         (): (),
         listener: &mut Arena<O>,
-        (sender, plugin_registry): Self::UserInput<'_>,
+        (): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        if let Some(action) = listener.actions.pop_front() {
-            let res = listener.run_action(action, plugin_registry).await;
+        if let Some(action) = listener.inner.actions.pop_front() {
+            let res = listener.inner.run_action(action, &listener.registry).await;
             if let Err(errs) = res {
-                sender.send_errors(Arena::<O>::const_ident(), errs);
+                listener.sender.send_errors(Arena::<O>::const_ident(), errs);
             }
         }
 

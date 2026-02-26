@@ -39,7 +39,7 @@ use auditeur_plugin::loading::Plugin;
 /// [`RegistryEvent::Unloaded`] is received for the plugin's bundle, so that the library isn't
 /// held for forever.
 #[must_use = "if the registry isn't added to an app, the libraries that are loaded will be leaked"]
-#[derive(Runnable, Default)]
+#[derive(Runnable)]
 #[listener(
     "plugin_host:registry",
     listen_to_registry,
@@ -47,8 +47,20 @@ use auditeur_plugin::loading::Plugin;
     respond,
     listen(BundleInit)
 )]
+#[create(external_input(PluginRegistryImpl))]
 #[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
 pub struct PluginRegistry {
+    inner: PluginRegistryImpl,
+
+    #[create(input)]
+    resource_map: ResourceMapConnection,
+    #[create(input)]
+    registry: Registry,
+}
+
+#[derive(Default)]
+#[doc(hidden)]
+pub struct PluginRegistryImpl {
     libraries: HashMap<NamespacedId, bundle::SharedInitFn>,
     bundles: HashMap<PluginName, NamespacedId>,
     plugins: HashMap<NamespacedId, PluginName>,
@@ -56,130 +68,19 @@ pub struct PluginRegistry {
     should_exit: bool,
 }
 
-impl Create for PluginRegistry {
-    type ExternalInput = Self;
-    type RegistryInput = ();
-
-    async fn create(
-        (): Self::RegistryInput,
-        this: Self::ExternalInput,
-    ) -> Result<Self, anyhow::Error> {
-        Ok(this)
+impl CreateDerive for PluginRegistry {
+    async fn create(inner: PluginRegistryImpl, _: &Self::Input) -> anyhow::Result<Self::Plain> {
+        Ok(Self::Plain { inner })
     }
 }
 
-impl PluginRegistry {
-    pub fn new() -> Self {
+impl PluginRegistryImpl {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
-}
 
-#[has_input]
-impl ListenToRegistry for PluginRegistry {
-    async fn on(&mut self, message: RegistryEvent, (): ()) -> anyhow::Result<bool> {
-        match message {
-            RegistryEvent::Unloaded(ComponentId::Bundle(id)) => {
-                if let Some(val) = self.protection.get_mut(&id)
-                    && *val > 0
-                {
-                    trace!("recieved unload message, but protection prevents unloading");
-                    *val -= 1;
-                    return Ok(false);
-                }
-
-                if let Some(library) = self.libraries.remove(&id) {
-                    debug!("unloading bundle `{id}`'s library...");
-                    drop(library);
-                    debug!("unloaded bundle `{id}`'s library");
-                }
-
-                if let Some(plugin_name) = self.plugins.remove(&id) {
-                    self.bundles.remove(&plugin_name);
-                }
-
-                // we only should stop if all of the libraries are unloaded first
-                if self.should_exit && self.libraries.is_empty() {
-                    return Ok(true);
-                }
-            }
-            // NOTE: extra stop signals are ignored
-            RegistryEvent::Exit => {
-                // WARN: if this is removed and no bundles are unloaded after we
-                // receive the exit signal, the registry will never exit.
-                if self.libraries.is_empty() {
-                    return Ok(true); // we already get to exit :)
-                }
-                self.should_exit = true;
-            }
-            _ => (),
-        }
-        Ok(false)
-    }
-}
-
-#[has_input]
-impl Listen<BundleInit> for PluginRegistry {
-    async fn on(
-        &mut self,
-        message: BundleInit,
-        resource_map: &mut ResourceMapConnection,
-    ) -> anyhow::Result<()> {
-        if !self.plugins.contains_key(message.id()) {
-            return Ok(());
-        }
-
-        if let Some(new_init) = message.init() {
-            if let Some(old_init) = self.libraries.remove(message.id())
-                && old_init != new_init
-                // double check to make sure it's actually still loaded
-                && resource_map.loaded_bundles().await.contains(message.id())
-            {
-                // NOTE: this is the main reason the PluginRegistry exists (at least now).
-                // Initially, the registry was created to keep libraries of bundles always alive.
-                // But when reloading was added, the ResourceMap began keeping libraries alive
-                // through their initialization functions (which have a handle to the library
-                // stored). But there's a catch! See, the ResourceMap only keeps a single
-                // initialization function stored per bundle (if it exists), so it has to kick out
-                // old ones when new ones come in. If only part of a bundle is reloaded, then,
-                // there may be two versions of the plugin... but then the old library is unloaded
-                // (as the map kicks it out), which would lead the resources from the old version
-                // to segfault (as their code is no longer loaded).
-                // HACK: the fix for this, at least now, is to just leak the old library - just
-                // like what happens when the registry is dropped with libraries.
-                error!(
-                    concat!(
-                        "attempted to reload plugin with bundle id '{}' without unloading all of",
-                        " its resources, forced to leak its library",
-                    ),
-                    message.id(),
-                );
-                std::mem::forget(old_init);
-            }
-
-            self.libraries.insert(message.id().to_owned(), new_init);
-        }
-
-        Ok(())
-    }
-}
-
-impl PluginRegistry {
-    /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
-    /// handle in the registry. Note that this doesn't add it to any app yet - that is up to the
-    /// caller.
-    ///
-    /// # Safety
-    ///
-    /// Calling a function from a dynamic library is inherently unsafe, as we're trusting the
-    /// it to have the correct signature. If the signature is wrong, it could lead to undefined
-    /// behavior.
-    ///
-    /// # Errors
-    ///
-    /// - If the library fails to load
-    /// - If the library's main function fails to load
     #[instrument(skip_all, fields(path = path.display().to_string()))]
-    pub unsafe fn load_plugin_from_file_unchecked(
+    pub(crate) unsafe fn load_plugin_from_file_unchecked(
         &mut self,
         name: PluginName,
         path: &Path,
@@ -199,19 +100,13 @@ impl PluginRegistry {
 
         Ok((plugin, bundle))
     }
-}
 
-#[respond("plugin_host:registry")]
-impl PluginRegistry {
-    /// # Safety
-    ///
-    /// Each of these plugins must adhere to the safety contract specified in
-    /// [`PluginRegistry::load_plugin_from_file_unchecked`]
     #[allow(clippy::cognitive_complexity)] // it's all too connected ;-;
-    pub async unsafe fn load_binaries(
+    async unsafe fn load_binaries(
         &mut self,
         binaries: Vec<(PluginName, PathBuf)>,
-        (resource_map, registry): (&mut ResourceMapConnection, &mut Registry),
+        resource_map: &ResourceMapConnection,
+        registry: &mut Registry,
     ) -> (HashMap<PluginName, NamespacedId>, Result<(), Vec<Error>>) {
         let mut errors = Vec::new();
 
@@ -321,7 +216,8 @@ impl PluginRegistry {
     pub async fn unload_plugins(
         &mut self,
         plugins: Vec<PluginName>,
-        (resource_map, registry): (&mut ResourceMapConnection, &mut Registry),
+        resource_map: &ResourceMapConnection,
+        registry: &Registry,
     ) {
         let query: resource_map::Query = plugins
             .iter()
@@ -335,9 +231,161 @@ impl PluginRegistry {
         // Unload and reload in the new bundles.
         sub_map.unload_in(registry).await;
     }
+
+    fn unload(&mut self, id: &NamespacedIdRef) -> bool {
+        if let Some(val) = self.protection.get_mut(id)
+            && *val > 0
+        {
+            trace!("recieved unload message, but protection prevents unloading");
+            *val -= 1;
+            return false;
+        }
+
+        if let Some(library) = self.libraries.remove(id) {
+            debug!("unloading bundle `{id}`'s library...");
+            drop(library);
+            debug!("unloaded bundle `{id}`'s library");
+        }
+
+        if let Some(plugin_name) = self.plugins.remove(id) {
+            self.bundles.remove(&plugin_name);
+        }
+
+        // we only should stop if all of the libraries are unloaded first
+        self.should_exit && self.libraries.is_empty()
+    }
+
+    fn handle_registry_event(&mut self, message: RegistryEvent) -> bool {
+        match message {
+            RegistryEvent::Unloaded(ComponentId::Bundle(id)) => self.unload(&id),
+            // NOTE: extra stop signals are ignored
+            RegistryEvent::Exit => {
+                // WARN: if this is removed and no bundles are unloaded after we
+                // receive the exit signal, the registry will never exit.
+                if self.libraries.is_empty() {
+                    true
+                } else {
+                    self.should_exit = true;
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    async fn handle_bundle_init(
+        &mut self,
+        message: BundleInit,
+        resource_map: &ResourceMapConnection,
+    ) -> anyhow::Result<()> {
+        if !self.plugins.contains_key(message.id()) {
+            return Ok(());
+        }
+
+        if let Some(new_init) = message.init() {
+            if let Some(old_init) = self.libraries.remove(message.id())
+                        && old_init != new_init
+                        // double check to make sure it's actually still loaded
+                        && resource_map.loaded_bundles().await.contains(message.id())
+            {
+                // NOTE: this is the main reason the PluginRegistry exists (at least now).
+                // Initially, the registry was created to keep libraries of bundles always alive.
+                // But when reloading was added, the ResourceMap began keeping libraries alive
+                // through their initialization functions (which have a handle to the library
+                // stored). But there's a catch! See, the ResourceMap only keeps a single
+                // initialization function stored per bundle (if it exists), so it has to kick out
+                // old ones when new ones come in. If only part of a bundle is reloaded, then,
+                // there may be two versions of the plugin... but then the old library is unloaded
+                // (as the map kicks it out), which would lead the resources from the old version
+                // to segfault (as their code is no longer loaded).
+                // HACK: the fix for this, at least now, is to just leak the old library - just
+                // like what happens when the registry is dropped with libraries.
+                error!(
+                    concat!(
+                        "attempted to reload plugin with bundle id '{}' without unloading all of",
+                        " its resources, forced to leak its library",
+                    ),
+                    message.id(),
+                );
+                std::mem::forget(old_init);
+            }
+
+            self.libraries.insert(message.id().to_owned(), new_init);
+        }
+
+        Ok(())
+    }
 }
 
-impl Drop for PluginRegistry {
+#[has_input]
+impl ListenToRegistry for PluginRegistry {
+    async fn on(&mut self, message: RegistryEvent, (): ()) -> anyhow::Result<bool> {
+        Ok(self.inner.handle_registry_event(message))
+    }
+}
+
+#[has_input]
+impl Listen<BundleInit> for PluginRegistry {
+    async fn on(&mut self, message: BundleInit, (): ()) -> anyhow::Result<()> {
+        self.inner
+            .handle_bundle_init(message, &self.resource_map)
+            .await
+    }
+}
+
+impl PluginRegistry {
+    /// Load a plugin from a dynamic library at `path`, run its `main` function, and save its
+    /// handle in the registry. Note that this doesn't add it to any app yet - that is up to the
+    /// caller.
+    ///
+    /// # Safety
+    ///
+    /// Calling a function from a dynamic library is inherently unsafe, as we're trusting the
+    /// it to have the correct signature. If the signature is wrong, it could lead to undefined
+    /// behavior.
+    ///
+    /// # Errors
+    ///
+    /// - If the library fails to load
+    /// - If the library's main function fails to load
+    #[instrument(skip_all, fields(path = path.display().to_string()))]
+    pub unsafe fn load_plugin_from_file_unchecked(
+        &mut self,
+        name: PluginName,
+        path: &Path,
+    ) -> Result<(Plugin, Bundle), Error> {
+        // SAFETY: upheld by caller
+        unsafe { self.inner.load_plugin_from_file_unchecked(name, path) }
+    }
+}
+
+#[respond("plugin_host:registry")]
+impl PluginRegistry {
+    /// # Safety
+    ///
+    /// Each of these plugins must adhere to the safety contract specified in
+    /// [`PluginRegistry::load_plugin_from_file_unchecked`]
+    pub async unsafe fn load_binaries(
+        &mut self,
+        binaries: Vec<(PluginName, PathBuf)>,
+        (): (),
+    ) -> (HashMap<PluginName, NamespacedId>, Result<(), Vec<Error>>) {
+        // SAFETY: upheld by caller
+        unsafe {
+            self.inner
+                .load_binaries(binaries, &self.resource_map, &mut self.registry)
+                .await
+        }
+    }
+
+    pub async fn unload_plugins(&mut self, plugins: Vec<PluginName>, (): ()) {
+        self.inner
+            .unload_plugins(plugins, &self.resource_map, &self.registry)
+            .await;
+    }
+}
+
+impl Drop for PluginRegistryImpl {
     fn drop(&mut self) {
         #[allow(clippy::collection_is_never_read)]
         let libraries: Vec<_> = {
