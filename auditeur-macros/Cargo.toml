@@ -9,7 +9,7 @@ edition = "2024"
 proc-macro-crate = "3.1.0"
 proc-macro2 = "1.0.79"
 quote = "1.0.35"
-syn = { version = "2.0.85", features = ["full", "visit"] }
+syn = { version = "2.0.85", features = ["full", "visit", "fold"] }
 thiserror = "1.0.58"
 
 [lib]

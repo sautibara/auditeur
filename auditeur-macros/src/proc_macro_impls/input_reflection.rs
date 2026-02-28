@@ -6,11 +6,9 @@ use syn::{
 };
 
 use crate::{
-    field::{NameValue, Parenthesized},
+    field::NameValue,
     input_list::{InputList, InputReferenceList},
 };
-
-use super::listener::Specifier;
 
 pub fn type_to_ident(typ: &Type) -> syn::Result<Ident> {
     let string_rep = typ.to_token_stream().to_string();
@@ -36,26 +34,11 @@ pub fn type_to_ident(typ: &Type) -> syn::Result<Ident> {
     }
 }
 
-fn in_root(ident: Ident) -> Path {
-    let mut segments = Punctuated::new();
-    segments.push(ident.clone().into());
-    segments.push(ident.into());
-    Path {
-        leading_colon: None,
-        segments,
-    }
-}
-
 pub fn input_macro_ident_of(trait_: &Type, implementer: &Type) -> syn::Result<Ident> {
     let trait_ = type_to_ident(trait_)?;
     let implementer = type_to_ident(implementer)?;
     let full_ident = format!("auditeur_input_of_impl_{trait_}_for_{implementer}");
     Ok(Ident::new(&full_ident, implementer.span()))
-}
-
-pub fn input_macro_of(trait_: &Type, implementer: &Type) -> syn::Result<Path> {
-    let ident = input_macro_ident_of(trait_, implementer)?;
-    Ok(in_root(ident))
 }
 
 pub fn input_macro_ident_of_method(
@@ -67,11 +50,6 @@ pub fn input_macro_ident_of_method(
     let implementer = type_to_ident(implementer)?;
     let full_ident = format!("auditeur_input_of_{method}_in_impl_{trait_}_for_{implementer}");
     Ok(Ident::new(&full_ident, implementer.span()))
-}
-
-pub fn input_macro_of_method(trait_: &Type, implementer: &Type, method: &str) -> syn::Result<Path> {
-    let ident = input_macro_ident_of_method(trait_, implementer, method)?;
-    Ok(in_root(ident))
 }
 
 pub fn export(macro_ident: &Ident, inputs: &InputList) -> TokenStream {
@@ -284,89 +262,5 @@ impl Parse for CallbackList {
 impl ToTokens for CallbackList {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         self.list.to_tokens(tokens);
-    }
-}
-
-pub struct ExpandInputSpecifier {
-    callbacks: Parenthesized<CallbackList>,
-    params: Parenthesized<ExpandSpecifierParams>,
-    implementer: Type,
-    rest: proc_macro2::TokenStream,
-}
-
-impl ExpandInputSpecifier {
-    pub fn expand(mut self) -> syn::Result<proc_macro2::TokenStream> {
-        let ExpandSpecifierParams {
-            specifier,
-            rest: params,
-        } = self.params.value;
-
-        match specifier.value {
-            Specifier::None => self.rest.extend(quote! { () }),
-            Specifier::Input(name_value) => {
-                let input_list = name_value.value;
-                self.rest.extend(quote! { #input_list });
-            }
-            // we'll have to fill in the specifier, so add it as a callback
-            Specifier::Implementation(implementation) => {
-                let macro_name = super::input_reflection::input_macro_of(
-                    &implementation.value,
-                    &self.implementer,
-                )?;
-                self.callbacks.value.push_front(macro_name);
-            }
-        }
-
-        let Self {
-            callbacks,
-            implementer,
-            rest,
-            ..
-        } = self;
-
-        let mut other_callbacks = callbacks.value.list.into_pairs();
-        let callback = other_callbacks
-            .next()
-            .ok_or_else(|| {
-                syn::Error::new(
-                    callbacks.paren.span.span(),
-                    "expected at least one callback",
-                )
-            })?
-            .into_value();
-
-        Ok(quote! { #callback!((#(#other_callbacks)*) (#params) #implementer #rest ); })
-    }
-}
-
-impl Parse for ExpandInputSpecifier {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        Ok(Self {
-            callbacks: input.parse()?,
-            params: input.parse()?,
-            implementer: input.parse()?,
-            rest: input.parse()?,
-        })
-    }
-}
-
-struct ExpandSpecifierParams {
-    specifier: Parenthesized<Specifier>,
-    rest: proc_macro2::TokenStream,
-}
-
-impl Parse for ExpandSpecifierParams {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        Ok(Self {
-            specifier: input.parse()?,
-            rest: input.parse()?,
-        })
-    }
-}
-
-impl ToTokens for ExpandSpecifierParams {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.specifier.to_tokens(tokens);
-        self.rest.to_tokens(tokens);
     }
 }

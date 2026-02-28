@@ -40,14 +40,14 @@ use auditeur_plugin::loading::Plugin;
 /// held for forever.
 #[must_use = "if the registry isn't added to an app, the libraries that are loaded will be leaked"]
 #[derive(Runnable)]
+#[create(external_input(PluginRegistryImpl))]
+#[resource("plugin_host:registry")]
 #[listener(
-    "plugin_host:registry",
     listen_to_registry,
     registry_component = false,
     respond,
     listen(BundleInit)
 )]
-#[create(external_input(PluginRegistryImpl))]
 #[allow(clippy::module_name_repetitions)] // conflicts with the normal auditeur Registry
 pub struct PluginRegistry {
     inner: PluginRegistryImpl,

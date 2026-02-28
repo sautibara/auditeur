@@ -623,14 +623,14 @@ impl LoadedMessage {
 /// This listener is automatically loaded to every [`App`] that is constructed
 /// when the `resource-map` feature is specified.
 #[derive(Runnable, Debug)]
+#[create]
+#[resource("auditeur:resource_map")]
 #[listener(
-    "auditeur:resource_map",
     registry_component = false,
     respond,
     listen(BundleInit),
-    components((component = MainComponent, input = ())),
+    components(MainComponent)
 )]
-#[create]
 pub struct ResourceMap {
     #[create(input)]
     sender: EventSender,

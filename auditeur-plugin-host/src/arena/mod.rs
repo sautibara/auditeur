@@ -156,11 +156,9 @@ enum Action {
 }
 
 #[derive(Runnable)]
-#[listener("plugin_host:arena", biased, respond, components((
-    component = MainComponent,
-    input = (),
-)))]
 #[create(external_input(Result<ArenaImpl<O>>))]
+#[resource("plugin_host:arena")]
+#[listener(biased, respond, components(MainComponent))]
 pub struct Arena<O: Opts> {
     inner: ArenaImpl<O>,
 

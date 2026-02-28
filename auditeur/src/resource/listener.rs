@@ -79,7 +79,6 @@ pub trait Listen<M: ListenMessage>: Listener {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-#[component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
 pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
     receiver: channels::Listener<M>,
     listener: PhantomData<L>,
@@ -131,7 +130,6 @@ pub trait ListenToRegistry: Listener {
     ) -> impl Future<Output = anyhow::Result<bool>> + Send;
 }
 
-#[component((<$_:ty>) => (implementation = ListenToRegistry))]
 pub struct ListenToRegistryComponent<L: ListenToRegistry> {
     receiver: EventReceiver,
     listener: PhantomData<L>,
@@ -184,7 +182,6 @@ pub trait OnLoad<R: Resource>: Listener {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-#[component((<$_:ty, $message:ty>) => (implementation = OnLoad<$message>))]
 pub struct OnLoadComponent<L: OnLoad<R>, R: Resource> {
     receiver: EventReceiver,
     should_init: bool,
@@ -238,7 +235,6 @@ impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
     }
 }
 
-#[component((<$_:ty, $message:ty>) => (implementation = Take<$message>))]
 pub struct TakeComponent<R: Take<M>, M: Message> {
     receiver: Taker<M>,
     pd: PhantomData<R>,
@@ -293,7 +289,6 @@ impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
     }
 }
 
-#[component(() => ())]
 pub struct RegistryComponent {
     receiver: EventReceiver,
     #[cfg(feature = "runtime-loading")]
@@ -348,6 +343,13 @@ impl<L: Listener> Component<L> for RegistryComponent {
         })
     }
 }
+
+pub trait Respond {
+    type Query: crate::Message;
+    type Connection: Input;
+}
+
+pub type RespondComponent<L> = TakeComponent<L, <L as Respond>::Query>;
 
 pub struct Unbiased;
 pub struct Biased;

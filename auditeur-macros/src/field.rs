@@ -36,14 +36,6 @@ impl<T> Deref for NameValue<T> {
 }
 
 impl<T> NameValue<T> {
-    pub fn new(ident: Ident, value: T) -> Self {
-        Self {
-            eq: Token![=](ident.span()),
-            ident,
-            value,
-        }
-    }
-
     pub fn to_tokens_with(
         &self,
         tokens: &mut proc_macro2::TokenStream,
@@ -184,10 +176,6 @@ pub struct Comma<T> {
 }
 
 impl<T> Comma<T> {
-    pub const fn new(value: T) -> Self {
-        Self { value, comma: None }
-    }
-
     pub fn parse_with(
         input: ParseStream<'_>,
         parser: fn(_: ParseStream<'_>) -> syn::Result<T>,
@@ -209,14 +197,6 @@ impl<T> Comma<T> {
 
     pub const fn has_comma(&self) -> bool {
         self.comma.is_some()
-    }
-
-    pub fn continue_with<T2>(
-        &self,
-        input: ParseStream<'_>,
-        parser: fn(_: ParseStream<'_>) -> syn::Result<T2>,
-    ) -> syn::Result<Option<T2>> {
-        self.has_comma().then(|| parser(input)).transpose()
     }
 }
 
@@ -255,22 +235,6 @@ impl<T> Parenthesized<T> {
             paren: parenthesized!(content in input),
             value: parser(&content)?,
         })
-    }
-
-    pub fn parse_empty(input: ParseStream) -> syn::Result<Self>
-    where
-        T: Default,
-    {
-        let content;
-        let paren = parenthesized!(content in input);
-        if content.is_empty() {
-            Ok(Self {
-                paren,
-                value: T::default(),
-            })
-        } else {
-            Err(content.error(format!("expected parens to be empty, got {content}")))
-        }
     }
 
     pub fn to_tokens_with(

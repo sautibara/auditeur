@@ -97,12 +97,6 @@ pub use auditeur_macros::identifiable;
 /// ```
 pub use auditeur_macros::message;
 
-// these two are used in [`macro@listener`]
-#[doc(hidden)]
-pub use auditeur_macros::expand_input_specifier;
-#[doc(hidden)]
-pub use auditeur_macros::expand_listener;
-
 /// Implements [`Listener`] for any type.
 ///
 /// Like [`#[resource]`](resource), the first argument in the attribute must be a [`NamespacedId`]
@@ -425,61 +419,6 @@ pub use auditeur_macros::expand_listener;
 ///
 /// </details>
 pub use auditeur_macros::listener;
-
-/// Allows specifying a default [specifier](listener#specifier) for a
-/// [`listener::Component`](crate::resource::listener::Component).
-///
-/// The arguments to the attribute must be in the form of `(<generic_arguments>) => (<specifier>)`,
-/// where `<generic_arguments>` are the generic arguments for the component, and `<specifier>` is
-/// a [specifier](listener#specifier). This is then compiled into a declaritve macro with the same
-/// identifier as the component, so all macro metavariables work.
-///
-/// # Examples
-///
-/// ```no_run
-/// use auditeur::prelude::*;
-/// # use auditeur::resource::listener::Listen;
-/// use auditeur::ListenMessage;
-///
-/// // If a specifier isn't given, the default is `input = ()`.
-/// // That is, this expects no generic arguments and outputs a specifier with no inputs.
-/// #[component(() => ())]
-/// pub struct RegistryComponent {
-/// # /*
-///     ...
-/// # */
-/// }
-///
-/// // Since the message type is given as the second generic argument, we delegate to the
-/// //   implementation of the `Listen` trait for that message.
-/// // More specifically, this expects two generic arguments, ignores the first one, and takes the
-/// //   second one as a metavariable. Then, it outputs a specifier delegating to the
-/// //   implementation of the `Listen` trait with the metavariable as a generic argument.
-/// #[component((<$_:ty, $message:ty>) => (implementation = Listen<$message>))]
-/// pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
-/// # /*
-///     ...
-/// # */
-/// # phantom_data: std::marker::PhantomData<(L, M)>,
-/// }
-///
-/// # fn main() {
-/// # /*
-/// // NOTE: these can't actually be run because callback macros can't be used in this context
-/// //       just trust...
-/// assert_eq!(
-///     "() ((implementation = Listen<Message>))",
-///     ListenComponent!((stringify) (ListenComponent<Struct, Message>)),
-/// );
-///
-/// assert_eq!(
-///     "() (())",
-///     RegistryComponent!((stringify) (RegistryComponent)),
-/// );
-/// # */
-/// # }
-/// ```
-pub use auditeur_macros::component;
 
 /// Used on implementation blocks with [`Input`]s.
 ///

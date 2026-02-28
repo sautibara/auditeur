@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use custom_generics::CustomGenerics;
 use namespaced_id::NamespacedId;
 use proc_macro::TokenStream;
-use proc_macro_impls::{ComponentCallback, ExpandInputSpecifier, HasInput, IntermediateListener};
+use proc_macro_impls::HasInput;
 use proc_macro2::Span;
 use quote::{ToTokens, quote, quote_spanned};
 use syn::{
@@ -49,7 +49,7 @@ impl<I, L: Iterator<Item = I>, R: Iterator<Item = I>> Iterator for Either<L, R> 
 
 mod proc_macro_impls {
     mod resource;
-    pub use resource::{resource, resource_impls_with_generics};
+    pub use resource::resource;
 
     pub mod input;
     pub use input::derive as derive_input;
@@ -61,18 +61,15 @@ mod proc_macro_impls {
     pub use identifiable::{identifiable, identifiable_with_generics};
 
     pub mod input_reflection;
-    pub use input_reflection::ExpandInputSpecifier;
     pub use input_reflection::HasInput;
     pub use input_reflection::export as export_input;
 
     mod listener;
-    pub use listener::Intermediate as IntermediateListener;
-    pub use listener::{ComponentCallback, Listener, runnable_derive};
+    pub use listener::listener_attr;
 
     mod respond;
     pub use respond::Meta as RespondMeta;
     pub use respond::Respond;
-    pub use respond::macro_ident as respond_macro_ident;
 
     mod message;
     pub use message::derive_message;
@@ -93,13 +90,6 @@ mod proc_macro_impls {
 
     mod create;
     pub use create::create_attr;
-}
-
-fn type_from_ident(ident: syn::Ident) -> syn::Type {
-    syn::Type::Path(syn::TypePath {
-        qself: None,
-        path: syn::Path::from(ident),
-    })
 }
 
 static AUDITEUR: LazyLock<Root> = LazyLock::new(Root::new);
@@ -531,46 +521,9 @@ pub fn all_combinations(params: TokenStream) -> TokenStream {
         .into()
 }
 
-#[proc_macro]
-pub fn expand_input_specifier(tokens: TokenStream) -> TokenStream {
-    let config = parse_macro_input!(tokens as ExpandInputSpecifier);
-    config
-        .expand()
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
 #[proc_macro_attribute]
 pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let listener = parse_macro_input!(attr as proc_macro_impls::Listener);
-    let item = parse_macro_input!(item as Item);
-
-    let (ident, generics) = match &item {
-        Item::Struct(strct) => (&strct.ident, &strct.generics),
-        Item::Enum(enm) => (&enm.ident, &enm.generics),
-        _ => {
-            return syn::Error::new_spanned(item, "expected a struct or enum")
-                .into_compile_error()
-                .into();
-        }
-    };
-
-    let impls = listener
-        .expand(ident.clone(), generics.clone())
-        .unwrap_or_else(syn::Error::into_compile_error);
-
-    quote! {
-        #item
-        #impls
-    }
-    .into()
-}
-
-#[proc_macro]
-pub fn expand_listener(value: TokenStream) -> TokenStream {
-    let intermediate = parse_macro_input!(value as IntermediateListener);
-    intermediate
-        .expand()
+    proc_macro_impls::listener_attr(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -581,30 +534,6 @@ pub fn has_input(attr: TokenStream, item: TokenStream) -> TokenStream {
         .and_then(HasInput::expand)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
-}
-
-#[proc_macro_attribute]
-pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let component_map = parse_macro_input!(attr as ComponentCallback);
-    let item = parse_macro_input!(item as Item);
-
-    let ident = match &item {
-        Item::Struct(strct) => &strct.ident,
-        Item::Enum(enm) => &enm.ident,
-        _ => {
-            return syn::Error::new_spanned(item, "expected a struct or enum")
-                .into_compile_error()
-                .into();
-        }
-    };
-
-    let macro_impl = component_map.expand(ident);
-
-    quote! {
-        #item
-        #macro_impl
-    }
-    .into()
 }
 
 #[proc_macro_derive(Runnable)]
@@ -621,9 +550,19 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
         }
     };
 
-    proc_macro_impls::runnable_derive(&crate::type_from_ident(ident), &generics)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+
+    let auditeur = &*AUDITEUR;
+    quote! {
+        impl #impl_generics #auditeur::resource::Runnable for #ident #type_generics #where_clause {
+            type InitInput<'a> = ();
+            type ExitInput<'a> = ();
+
+            async fn init(&mut self, (): Self::InitInput<'_>) -> #auditeur::anyhow::Result<()> { Ok(()) }
+            async fn exit(&mut self, (): Self::ExitInput<'_>) -> #auditeur::anyhow::Result<()> { Ok(()) }
+        }
+    }
+    .into()
 }
 
 #[proc_macro_attribute]

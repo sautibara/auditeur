@@ -83,6 +83,7 @@ impl Respond {
         let hidden = Self::hidden(&methods, &raw_fns);
 
         let macro_def = Self::define_macro(ident, &config, &inputs);
+        let respond_impl = Self::impl_respond(ident, &config, &generics);
 
         let query_enum = Self::define_query_enum(&config, &methods, hidden.as_ref(), generics)?;
         let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs, generics)?;
@@ -139,6 +140,7 @@ impl Respond {
             #item_impl
 
             #macro_def
+            #respond_impl
 
             #message_impls
         })
@@ -443,6 +445,7 @@ This error may be relaxed in the future - please file an issue if you find a use
             let vis = &method.vis;
             let unsafety = method.unsafety;
 
+            // FIXME: self.giver.clone_erased used, this might be dangerous
             methods_out.extend(quote! {
                 #(#docs)*
                 #vis #unsafety fn #method_ident(&self, #(#arg0: #ty),*) -> impl std::future::Future<Output = #return_type> + 'static {
@@ -807,6 +810,27 @@ This error may be relaxed in the future - please file an issue if you find a use
                 ) -> Result<Self::Ref, #auditeur::Error> {
                     #connection::new(registry, dependent).await
                 }
+            }
+        }
+    }
+
+    fn impl_respond(
+        item_ident: &Ident,
+        config: &Config,
+        generics: &Generics,
+    ) -> proc_macro2::TokenStream {
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+        let query_ident = &config.query.message_ident;
+        let connection_ident = &config.query.ref_ident;
+
+        let auditeur = &*crate::AUDITEUR;
+        quote! {
+            impl #impl_generics #auditeur::resource::listener::Respond for #item_ident #ty_generics
+            #where_clause
+            {
+                type Query = #query_ident;
+                type Connection = #connection_ident;
             }
         }
     }
