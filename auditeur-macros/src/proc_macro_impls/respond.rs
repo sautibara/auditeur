@@ -390,21 +390,13 @@ This error may be relaxed in the future - please file an issue if you find a use
         )?;
         let input_macro = super::input_reflection::export(&input_macro_ident, input_list);
 
-        let input_reference_list = input_list.clone().into_reference_list().with_lifetime("'a");
-
-        let inputs = input_idents()
-            .take(input_list.len())
-            .map(|ident| Ident::new(&ident, Span::call_site()));
-
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Ok(quote! {
             #input_macro
 
             impl #impl_generics #auditeur::resource::listener::Take<#message_ident> for #item_ident #ty_generics #where_clause {
-                type OnInput<'a> = #input_reference_list;
-
-                async fn on(&mut self, query: #message_ident, (#(#inputs),*): Self::OnInput<'_>) -> #anyhow::Result<()> {
+                async fn on(&mut self, query: #message_ident) -> #anyhow::Result<()> {
                     match query {
                         #variants
                     }
@@ -651,19 +643,15 @@ This error may be relaxed in the future - please file an issue if you find a use
         )?;
         let input_macro = super::input_reflection::export(&input_macro_ident, &input_list);
 
-        let input_reference_list = input_list.into_reference_list().with_lifetime("'a");
-
         let auditeur = &*crate::AUDITEUR;
         let anyhow = auditeur.anyhow();
 
         Ok(quote! {
             impl #auditeur::resource::listener::Take<#message_ident> for #item_ident {
-                type OnInput<'a> = #input_reference_list;
-
-                async fn on(&mut self, transaction: #message_ident, input: Self::OnInput<'_>) -> #anyhow::Result<()> {
+                async fn on(&mut self, transaction: #message_ident) -> #anyhow::Result<()> {
                     let reference = #ref_ident {
                         deref: self,
-                        input,
+                        input: (),
                     };
                     (transaction.func)(reference);
                     Ok(())

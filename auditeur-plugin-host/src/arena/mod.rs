@@ -812,7 +812,6 @@ enum PluginLoadResult {
 pub struct MainComponent {}
 
 impl<O: Opts> Component<Arena<O>> for MainComponent {
-    type UserInput<'s> = ();
     type Value = ();
 
     async fn wait(&mut self, listener: &Arena<O>) -> anyhow::Result<ControlFlow<(), Self::Value>> {
@@ -823,12 +822,7 @@ impl<O: Opts> Component<Arena<O>> for MainComponent {
         }
     }
 
-    async fn handle(
-        &mut self,
-        (): (),
-        listener: &mut Arena<O>,
-        (): Self::UserInput<'_>,
-    ) -> anyhow::Result<ControlFlow<()>> {
+    async fn handle(&mut self, (): (), listener: &mut Arena<O>) -> anyhow::Result<ControlFlow<()>> {
         if let Some(action) = listener.inner.actions.pop_front() {
             let res = listener.inner.run_action(action, &listener.registry).await;
             if let Err(errs) = res {

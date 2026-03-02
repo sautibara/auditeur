@@ -907,7 +907,6 @@ impl Input for MainComponent {
 
 impl listener::Component<ResourceMap> for MainComponent {
     type Value = RegistryEvent;
-    type UserInput<'s> = ();
 
     async fn wait(&mut self, _: &ResourceMap) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         let res = self.receiver.recv().await;
@@ -919,7 +918,6 @@ impl listener::Component<ResourceMap> for MainComponent {
         &mut self,
         event: RegistryEvent,
         map: &mut ResourceMap,
-        (): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
         trace!("handling registry event");
         match event {
@@ -1017,9 +1015,8 @@ impl listener::Component<ResourceMap> for MainComponent {
     }
 }
 
-#[has_input]
 impl Listen<BundleInit> for ResourceMap {
-    async fn on(&mut self, message: BundleInit, (): ()) -> anyhow::Result<()> {
+    async fn on(&mut self, message: BundleInit) -> anyhow::Result<()> {
         self.add_bundle(
             message.id(),
             None,

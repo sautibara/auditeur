@@ -70,19 +70,23 @@ use std::time::Duration;
 struct Exit;
 
 /// A [`Listener`] that exits the program once it receives an [`Exit`] message
-#[listener("test:exit_listener", listen(Exit))]
-#[derive(Runnable, Default, Create)] // use default implementations for Runnable and Create
-struct ExitListener;
+#[derive(Runnable)]
+#[create(default)]
+#[resource("test:exit_listener")]
+#[listener(listen(Exit))]
+struct ExitListener {
+    #[create(input)]
+    stopper: Stopper,
+}
 
-#[has_input]
 impl Listen<Exit> for ExitListener {
     // Note that this method only has one [`Input`], so the last parameter is simple.
     // If the method had none, the last parameter would have to be `(): ()` to signify no inputs.
     // If the method had more than one, the last parameter would have to be a tuple of mutable
     //   references (such as `(stopper, sender): (&mut Stopper, &mut Sender<Exit>)`).
-    async fn on(&mut self, _: Exit, stopper: &mut Stopper) -> Result<()> {
+    async fn on(&mut self, _: Exit) -> Result<()> {
         // [`Stopper`] can be used to stop individual resources or the entire program
-        stopper.exit();
+        self.stopper.exit();
         Ok(())
     }
 }

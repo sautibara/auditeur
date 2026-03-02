@@ -44,9 +44,8 @@ impl<'a> Config<'a> {
         let registry_component = (attrs.attrs.iter())
             .filter_map(Attr::as_registry_component)
             .last()
-            .map(|comp| comp.value.value)
             // `registry_component`'s default is `true`.
-            .unwrap_or(true);
+            .is_none_or(|comp| comp.value.value);
 
         // `biased`'s default is `false`.
         let biased = attrs.attrs.iter().any(Attr::is_biased_flag);
@@ -67,17 +66,12 @@ impl<'a> Config<'a> {
         let bias = self.bias();
         let components = self.components();
 
-        let component_len = self.components().count();
-        let combinations = std::iter::repeat(quote! { () }).take(component_len);
-
         let auditeur = &*AUDITEUR;
         quote! {
             impl #impl_generics #auditeur::resource::listener::Listener for #ident #type_generics
             #where_clause
             {
-                type Input = ();
                 type Components = (#bias, #(#components),*);
-                type ComponentCombinations = ( #(#combinations),* );
             }
         }
     }
@@ -168,7 +162,7 @@ impl Attr {
         }
     }
 
-    fn as_registry_component(&self) -> Option<&field::NameValue<syn::LitBool>> {
+    const fn as_registry_component(&self) -> Option<&field::NameValue<syn::LitBool>> {
         if let Self::RegistryComponent(v) = self {
             Some(v)
         } else {
@@ -180,7 +174,7 @@ impl Attr {
     ///
     /// [`BiasedFlag`]: Attr::BiasedFlag
     #[must_use]
-    fn is_biased_flag(&self) -> bool {
+    const fn is_biased_flag(&self) -> bool {
         matches!(self, Self::BiasedFlag)
     }
 }

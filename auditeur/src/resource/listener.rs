@@ -24,19 +24,11 @@ use tracing::debug;
 
 #[doc = include_str!("listener_docs.md")]
 pub trait Listener: Resource + Runnable + Sized {
-    /// A shared list of inputs between [`Self::Components`] and [`Runnable`], starting with a unit
-    /// tuple. In essence, each separate input of the components and runnable methods must be a
-    /// [`Subset`] of this type.
-    type Input: Input;
     /// The list of [`Component`]s, starting with a unit tuple.
     type Components: ComponentList<Self>;
-
-    /// The [combinations](Subset) for each component in order, stored in a tuple.
-    type ComponentCombinations;
 }
 
 pub trait Component<L: Listener>: Input {
-    type UserInput<'s>: Send;
     type Value: Send;
 
     fn wait(
@@ -48,7 +40,6 @@ pub trait Component<L: Listener>: Input {
         &mut self,
         value: Self::Value,
         listener: &mut L,
-        input: Self::UserInput<'_>,
     ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send;
 
     /// Returns a set of channels that this component "owns".
@@ -62,13 +53,7 @@ pub trait Component<L: Listener>: Input {
 }
 
 pub trait Listen<M: ListenMessage>: Listener {
-    type OnInput<'s>: Send;
-
-    fn on(
-        &mut self,
-        message: M,
-        input: <Self as Listen<M>>::OnInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
@@ -91,7 +76,6 @@ impl<L: Listen<M>, M: ListenMessage> Input for ListenComponent<L, M> {
 
 impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
     type Value = M;
-    type UserInput<'s> = <L as Listen<M>>::OnInput<'s>;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
@@ -105,21 +89,14 @@ impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
         &mut self,
         message: Self::Value,
         listener: &mut L,
-        input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        listener.on(message, input).send().await?;
+        listener.on(message).send().await?;
         Ok(ControlFlow::Continue(()))
     }
 }
 
 pub trait ListenToRegistry: Listener {
-    type OnInput<'s>: Send;
-
-    fn on(
-        &mut self,
-        message: RegistryEvent,
-        input: <Self as ListenToRegistry>::OnInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<bool>> + Send;
+    fn on(&mut self, message: RegistryEvent) -> impl Future<Output = anyhow::Result<bool>> + Send;
 }
 
 pub struct ListenToRegistryComponent<L: ListenToRegistry> {
@@ -140,7 +117,6 @@ impl<L: ListenToRegistry> Input for ListenToRegistryComponent<L> {
 
 impl<L: ListenToRegistry> Component<L> for ListenToRegistryComponent<L> {
     type Value = RegistryEvent;
-    type UserInput<'s> = <L as ListenToRegistry>::OnInput<'s>;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
@@ -154,9 +130,8 @@ impl<L: ListenToRegistry> Component<L> for ListenToRegistryComponent<L> {
         &mut self,
         message: Self::Value,
         listener: &mut L,
-        input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        let should_break = listener.on(message, input).send().await?;
+        let should_break = listener.on(message).send().await?;
         if should_break {
             Ok(ControlFlow::Break(()))
         } else {
@@ -166,12 +141,7 @@ impl<L: ListenToRegistry> Component<L> for ListenToRegistryComponent<L> {
 }
 
 pub trait OnLoad<R: Resource>: Listener {
-    type OnLoadInput<'s>: Send;
-
-    fn on_load(
-        &mut self,
-        input: <Self as OnLoad<R>>::OnLoadInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn on_load(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 pub struct OnLoadComponent<L: OnLoad<R>, R: Resource> {
@@ -197,7 +167,6 @@ impl<L: OnLoad<R>, R: Resource> Input for OnLoadComponent<L, R> {
 
 impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
     type Value = Option<RegistryEvent>;
-    type UserInput<'s> = <L as OnLoad<R>>::OnLoadInput<'s>;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         if self.should_init {
@@ -216,12 +185,11 @@ impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
         &mut self,
         message: Self::Value,
         listener: &mut L,
-        input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
         if message.is_none()
             || matches!(&message, Some(RegistryEvent::Running(id)) if *id == *R::const_ident())
         {
-            listener.on_load(input).send().await?;
+            listener.on_load().send().await?;
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -246,17 +214,11 @@ impl<R: Take<M>, M: Message> Input for TakeComponent<R, M> {
 }
 
 pub trait Take<M: Message>: Listener {
-    type OnInput<'s>: Send;
-    fn on(
-        &mut self,
-        message: M,
-        input: <Self as Take<M>>::OnInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
     type Value = M;
-    type UserInput<'s> = <R as Take<M>>::OnInput<'s>;
 
     async fn wait(&mut self, _: &R) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
@@ -270,9 +232,8 @@ impl<R: Take<M>, M: Message> Component<R> for TakeComponent<R, M> {
         &mut self,
         message: Self::Value,
         responder: &mut R,
-        input: Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
-        responder.on(message, input).send().await?;
+        responder.on(message).send().await?;
         Ok(ControlFlow::Continue(()))
     }
 
@@ -306,7 +267,6 @@ impl Input for RegistryComponent {
 
 impl<L: Listener> Component<L> for RegistryComponent {
     type Value = RegistryEvent;
-    type UserInput<'s> = ();
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
         #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
@@ -321,7 +281,6 @@ impl<L: Listener> Component<L> for RegistryComponent {
         &mut self,
         event: Self::Value,
         listener: &mut L,
-        (): Self::UserInput<'_>,
     ) -> anyhow::Result<ControlFlow<()>> {
         Ok(match event {
             RegistryEvent::Stop(ref id) if id == L::const_ident() => ControlFlow::Break(()),
@@ -360,12 +319,7 @@ impl Input for Biased {
 
 #[allow(private_bounds)]
 pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send + Sync {
-    fn run(
-        &mut self,
-        listener: &mut L,
-        input: &mut L::Input,
-        sender: &EventSender,
-    ) -> impl Future<Output = ()> + Send;
+    fn run(&mut self, listener: &mut L, sender: &EventSender) -> impl Future<Output = ()> + Send;
 
     fn channels() -> Channels;
 }
@@ -373,21 +327,19 @@ pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send + Sync {
 pub(crate) trait Sealed<L> {}
 
 macro_rules! impl_component_list {
-    ($(($T:tt, $C:tt, $c:tt)),*) => {
-        impl_component_list!((Unbiased) () $(($T, $C, $c)),*);
-        impl_component_list!((Biased) (biased;) $(($T, $C, $c)),*);
+    ($(($T:tt, $c:tt)),*) => {
+        impl_component_list!((Unbiased) () $(($T, $c)),*);
+        impl_component_list!((Biased) (biased;) $(($T, $c)),*);
     };
-    (($bias_marker:ident) ($($bias:tt)*) $(($T:tt, $C:tt, $c:tt)),*) => {
+    (($bias_marker:ident) ($($bias:tt)*) $(($T:tt, $c:tt)),*) => {
         #[allow(unused_parens)]
-        impl<L, $($T,)* $($C,)*> ComponentList<L> for ($bias_marker, $($T),*)
+        impl<L, $($T,)*> ComponentList<L> for ($bias_marker, $($T),*)
         where
             Self: Input,
             $($T: Component<L>,)*
-            L: Listener<Components = Self, ComponentCombinations = ($($C),*)>,
-            L::Input: 'static
-                $(+ for<'s> Subset<$C, SubsetMut<'s> = $T::UserInput<'s>>)*
+            L: Listener<Components = Self>,
         {
-            async fn run(&mut self, listener: &mut L, input: &mut L::Input, sender: &EventSender) {
+            async fn run(&mut self, listener: &mut L, sender: &EventSender) {
                 let (_, $($c),*) = self;
 
                 loop {
@@ -396,8 +348,7 @@ macro_rules! impl_component_list {
                             let Some(val) = sender.handle_error(res, listener.ident()) else { continue; };
                             let ControlFlow::Continue(val) = val else { break; };
 
-                            let input = <<L as Listener>::Input as Subset<$C>>::subset_mut(input);
-                            let res = $c.handle(val, listener, input).send().await;
+                            let res = $c.handle(val, listener).send().await;
 
                             let Some(val) = sender.handle_error(res, listener.ident()) else { continue; };
                             if val.is_break() { break; }
@@ -413,41 +364,29 @@ macro_rules! impl_component_list {
         }
 
         #[allow(unused_parens)]
-        impl<L, $($T,)* $($C,)*> Sealed<L> for ($bias_marker, $($T),*)
+        impl<L, $($T,)*> Sealed<L> for ($bias_marker, $($T),*)
         where
             Self: Input,
             $($T: Component<L>,)*
-            L: Listener<Components = Self, ComponentCombinations = ($($C),*)>,
-            L::Input: 'static
-                $(+ for<'s> Subset<$C, SubsetMut<'s> = $T::UserInput<'s>>)*
+            L: Listener<Components = Self>,
         {}
     };
 }
 
-all_tuples!(impl_component_list, 1, 16, T, C, c);
+all_tuples!(impl_component_list, 1, 16, T, c);
 
 pub(crate) struct LoadedListener<L: Listener> {
     listener: L,
-    input: L::Input,
     components: L::Components,
     event_sender: EventSender,
-    _dependencies: Vec<dependency::Handle>,
 }
 
 impl<L: Listener> LoadedListener<L> {
     pub(crate) async fn build(listener: L, registry: &Registry) -> Result<Self, Error> {
-        let dependencies = L::Input::constraints().into_dependency_handles(
-            ComponentIdRef::Resource(L::const_ident()),
-            registry.event_sender(),
-            dependency::Removable::Set(false),
-        );
-
         let ident = ComponentIdRef::Resource(listener.ident());
         Ok(Self {
-            _dependencies: dependencies.collect(),
-            input: L::Input::create(registry, ident).await?,
-            components: L::Components::create(registry, ident).await?,
             listener,
+            components: L::Components::create(registry, ident).await?,
             event_sender: registry.event_sender(),
         })
     }
@@ -462,7 +401,6 @@ impl<L: Listener> Runner for LoadedListener<L> {
         <L::Components as ComponentList<L>>::run(
             &mut self.components,
             &mut self.listener,
-            &mut self.input,
             &self.event_sender,
         )
         .await;
@@ -527,9 +465,7 @@ impl<L: Listener + Create> Loader for ListenerLoader<L> {
     }
 
     fn constraints(&self) -> Constraints {
-        L::RegistryInput::constraints()
-            .extend(L::Input::constraints())
-            .extend(L::Components::constraints())
+        L::RegistryInput::constraints().extend(L::Components::constraints())
     }
 
     fn ident(&self) -> &NamespacedIdRef {

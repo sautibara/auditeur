@@ -317,16 +317,14 @@ impl PluginRegistryImpl {
     }
 }
 
-#[has_input]
 impl ListenToRegistry for PluginRegistry {
-    async fn on(&mut self, message: RegistryEvent, (): ()) -> anyhow::Result<bool> {
+    async fn on(&mut self, message: RegistryEvent) -> anyhow::Result<bool> {
         Ok(self.inner.handle_registry_event(message))
     }
 }
 
-#[has_input]
 impl Listen<BundleInit> for PluginRegistry {
-    async fn on(&mut self, message: BundleInit, (): ()) -> anyhow::Result<()> {
+    async fn on(&mut self, message: BundleInit) -> anyhow::Result<()> {
         self.inner
             .handle_bundle_init(message, &self.resource_map)
             .await
