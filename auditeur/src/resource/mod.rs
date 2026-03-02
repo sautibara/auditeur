@@ -37,18 +37,13 @@ impl<T: Identifiable + crate::Any + crate::input::get::MaybeGetRef + Send + Sync
 impl<T: Identifiable + crate::Any + Send + Sync + 'static> Resource for T {}
 
 pub trait Runnable {
-    type InitInput<'s>: Send;
-    type ExitInput<'s>: Send;
+    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
 
-    fn init(
-        &mut self,
-        input: Self::InitInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
-
-    fn exit(
-        &mut self,
-        input: Self::ExitInput<'_>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
 }
 
 pub trait Create: Sized {

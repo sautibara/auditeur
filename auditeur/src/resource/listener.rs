@@ -23,11 +23,7 @@ use tracing::debug;
 // pub use super::builtins::Logger;
 
 #[doc = include_str!("listener_docs.md")]
-pub trait Listener: Resource + Runnable + Sized
-where
-    Self::Input: for<'s> Subset<Self::InitCombination, SubsetMut<'s> = <Self as Runnable>::InitInput<'s>>
-        + for<'s> Subset<Self::ExitCombination, SubsetMut<'s> = <Self as Runnable>::ExitInput<'s>>,
-{
+pub trait Listener: Resource + Runnable + Sized {
     /// A shared list of inputs between [`Self::Components`] and [`Runnable`], starting with a unit
     /// tuple. In essence, each separate input of the components and runnable methods must be a
     /// [`Subset`] of this type.
@@ -37,10 +33,6 @@ where
 
     /// The [combinations](Subset) for each component in order, stored in a tuple.
     type ComponentCombinations;
-    /// The [combination](Subset) for [`Runnable::init`]
-    type InitCombination;
-    /// The [combination](Subset) for [`Runnable::exit`]
-    type ExitCombination;
 }
 
 pub trait Component<L: Listener>: Input {
@@ -464,8 +456,7 @@ impl<L: Listener> LoadedListener<L> {
 #[async_trait]
 impl<L: Listener> Runner for LoadedListener<L> {
     async fn run(mut self: Box<Self>) {
-        let init_input = <L::Input as Subset<L::InitCombination>>::subset_mut(&mut self.input);
-        let res = self.listener.init(init_input).send().await;
+        let res = self.listener.init().send().await;
         self.event_sender.handle_error(res, self.listener.ident());
 
         <L::Components as ComponentList<L>>::run(
@@ -476,8 +467,7 @@ impl<L: Listener> Runner for LoadedListener<L> {
         )
         .await;
 
-        let exit_input = <L::Input as Subset<L::ExitCombination>>::subset_mut(&mut self.input);
-        let res = self.listener.exit(exit_input).send().await;
+        let res = self.listener.exit().send().await;
         self.event_sender.handle_error(res, self.listener.ident());
 
         debug!("exit");

@@ -6,8 +6,6 @@
 //     components(ListenComponent<Self, message::Queue>),
 // )]
 
-// TODO: allow specifying inputs for Runnable
-
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::{Ident, Token, parse::Parse, punctuated::Punctuated, spanned::Spanned};
@@ -80,8 +78,6 @@ impl<'a> Config<'a> {
                 type Input = ();
                 type Components = (#bias, #(#components),*);
                 type ComponentCombinations = ( #(#combinations),* );
-                type InitCombination = ();
-                type ExitCombination = ();
             }
         }
     }

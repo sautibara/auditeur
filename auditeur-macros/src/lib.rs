@@ -555,11 +555,8 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
     let auditeur = &*AUDITEUR;
     quote! {
         impl #impl_generics #auditeur::resource::Runnable for #ident #type_generics #where_clause {
-            type InitInput<'a> = ();
-            type ExitInput<'a> = ();
-
-            async fn init(&mut self, (): Self::InitInput<'_>) -> #auditeur::anyhow::Result<()> { Ok(()) }
-            async fn exit(&mut self, (): Self::ExitInput<'_>) -> #auditeur::anyhow::Result<()> { Ok(()) }
+            async fn init(&mut self) -> #auditeur::anyhow::Result<()> { Ok(()) }
+            async fn exit(&mut self) -> #auditeur::anyhow::Result<()> { Ok(()) }
         }
     }
     .into()
