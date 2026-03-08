@@ -7,8 +7,8 @@ use proc_macro_impls::HasInput;
 use proc_macro2::Span;
 use quote::{ToTokens, quote, quote_spanned};
 use syn::{
-    GenericParam, Ident, Item, ItemImpl, ItemStruct, ItemTrait, Token, TypeParamBound,
-    parse_macro_input, punctuated::Punctuated, spanned::Spanned,
+    GenericParam, Ident, Item, ItemStruct, ItemTrait, Token, TypeParamBound, parse_macro_input,
+    punctuated::Punctuated, spanned::Spanned,
 };
 
 use crate::proc_macro_impls::AllCombinations;
@@ -19,6 +19,7 @@ mod field;
 mod input_list;
 mod maybe_error;
 mod namespaced_id;
+mod overlay;
 
 fn snake_to_upper_camel_case(snake: &str) -> String {
     snake.split('_').fold(String::new(), |mut string, slice| {
@@ -68,8 +69,7 @@ mod proc_macro_impls {
     pub use listener::listener_attr;
 
     mod respond;
-    pub use respond::Meta as RespondMeta;
-    pub use respond::Respond;
+    pub use respond::respond_attr;
 
     mod message;
     pub use message::derive_message;
@@ -564,20 +564,7 @@ pub fn runnable_derive(item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn respond(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let meta = parse_macro_input!(attr as proc_macro_impls::RespondMeta);
-    let item = parse_macro_input!(item as ItemImpl);
-
-    let mut respond = proc_macro_impls::Respond::new(meta, item);
-
-    respond
-        .expand()
-        .unwrap_or_else(|err| {
-            let item = respond.item_impl;
-            let error = err.into_compile_error();
-            quote! {
-                #item
-                #error
-            }
-        })
+    proc_macro_impls::respond_attr(attr.into(), item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

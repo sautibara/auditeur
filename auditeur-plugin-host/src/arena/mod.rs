@@ -200,7 +200,7 @@ pub struct Lockfile {
 
 #[respond("plugin_host:arena")]
 impl<O: Opts> Arena<O> {
-    pub async fn refresh(&mut self, (): ()) {
+    pub async fn refresh(&mut self) {
         if let Err(err) = self.inner.reload_config().await {
             self.sender
                 .send_error(Self::const_ident(), anyhow::Error::from(err));

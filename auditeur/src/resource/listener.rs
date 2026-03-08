@@ -1,12 +1,12 @@
 #![doc = include_str!("listener_docs.md")]
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, pin::Pin};
 
 use crate::{
     Message,
     app::{
         LoadedResource, Loader, Runner,
-        channels::{self, EventReceiver, EventSender, Taker},
+        channels::{self, EventReceiver, EventSender, Giver, Taker},
     },
     input::{dependency, subset::Subset},
     prelude::*,
@@ -295,9 +295,150 @@ impl<L: Listener> Component<L> for RegistryComponent {
     }
 }
 
-pub trait Respond {
+pub trait Respond: Listener {
     type Query: crate::Message;
-    type Connection: Input;
+}
+
+fn func2() {
+    func(async |map: &mut crate::app::ResourceMap| {
+        let _ = map.loaded_bundles();
+        let _ = map.loaded_resources();
+    })
+}
+
+fn func(val: impl for<'a> TransactionFnOnce<'a, crate::app::ResourceMap, Output = ()>) {
+    let _ = val;
+}
+
+pub trait TransactionFnOnce<'a, R: Respond>: Send + Sync + 'static {
+    type Output: Send;
+
+    fn run(self, resource: &'a mut R) -> impl Future<Output = Self::Output> + Send + 'a;
+}
+
+impl<'a, Out, Res, Fn, Fut> TransactionFnOnce<'a, Res> for Fn
+where
+    Out: Send,
+    Res: Respond,
+    Fn: FnOnce(&'a mut Res) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Out> + Send + 'a,
+{
+    type Output = Out;
+
+    fn run(self, resource: &'a mut Res) -> impl Future<Output = Self::Output> + Send + 'a {
+        (self)(resource)
+    }
+}
+
+pub struct BoxedTransactionFnOnce<R: Respond>(
+    Box<
+        dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+            + Send
+            + Sync,
+    >,
+);
+
+impl<R: Respond> BoxedTransactionFnOnce<R> {
+    pub fn new(func: impl for<'a> TransactionFnOnce<'a, R, Output = ()>) -> Self {
+        Self(Box::new(|resource| Box::pin(func.run(resource))))
+    }
+
+    pub fn new_with_sender<T: Send + Sync + 'static>(
+        func: impl for<'a> TransactionFnOnce<'a, R, Output = T>,
+        sender: tokio::sync::oneshot::Sender<T>,
+    ) -> Self {
+        Self(Box::new(|resource| {
+            Box::pin(async {
+                let res = func.run(resource).send().await;
+                let _ = sender.send(res);
+            })
+        }))
+    }
+
+    pub async fn run(self, resource: &mut R) {
+        (self.0)(resource).await;
+    }
+}
+
+#[pin_project::pin_project]
+pub struct RespondFuture<RT, Fut1, Fut2>
+where
+    Fut1: Future<Output = ()> + Send,
+    Fut2: Future<Output = RT> + Send + 'static,
+{
+    #[pin]
+    fut1: Fut1,
+    #[pin]
+    fut2: Fut2,
+    state: RespondFutureState,
+}
+
+enum RespondFutureState {
+    Fut1,
+    Fut2,
+    End,
+}
+
+impl<RT, Fut1, Fut2> RespondFuture<RT, Fut1, Fut2>
+where
+    Fut1: Future<Output = ()> + Send,
+    Fut2: Future<Output = RT> + Send + 'static,
+{
+    #[doc(hidden)]
+    pub fn new(fut1: Fut1, fut2: Fut2) -> Self {
+        Self {
+            fut1,
+            fut2,
+            state: RespondFutureState::Fut1,
+        }
+    }
+
+    pub fn send_blocking(self) -> impl Future<Output = RT> + Send + 'static {
+        match self.state {
+            RespondFutureState::Fut1 => {
+                tokio::runtime::Handle::current().block_on(self.fut1);
+                self.fut2
+            }
+            RespondFutureState::Fut2 => self.fut2,
+            RespondFutureState::End => {
+                panic!("attemped to call `send_blocking` when the future was already finished");
+            }
+        }
+    }
+}
+
+impl<RT, Fut1, Fut2> Future for RespondFuture<RT, Fut1, Fut2>
+where
+    Fut1: Future<Output = ()> + Send,
+    Fut2: Future<Output = RT> + Send + 'static,
+{
+    type Output = RT;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        match this.state {
+            RespondFutureState::Fut1 => match this.fut1.poll(cx) {
+                std::task::Poll::Ready(()) => {
+                    *this.state = RespondFutureState::Fut2;
+                    this.fut2.poll(cx)
+                }
+                _ => std::task::Poll::Pending,
+            },
+            RespondFutureState::Fut2 => match this.fut2.poll(cx) {
+                ready @ std::task::Poll::Ready(_) => {
+                    *this.state = RespondFutureState::End;
+                    ready
+                }
+                pending => pending,
+            },
+            RespondFutureState::End => {
+                panic!("called poll on a finished future")
+            }
+        }
+    }
 }
 
 pub type RespondComponent<L> = TakeComponent<L, <L as Respond>::Query>;

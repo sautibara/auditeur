@@ -878,12 +878,6 @@ impl ResourceMap {
     fn get_message(&self, id: &NamespacedIdRef) -> Option<&LoadedMessage> {
         self.messages.get(id)
     }
-
-    // publicize the implementation for the respond version of add_channels
-    // TODO: provide a way to do this automatically
-    pub(crate) fn add_channels_pub(&mut self, channels: Channels) {
-        self.add_channels(channels, ());
-    }
 }
 
 #[doc(hidden)]
@@ -1033,7 +1027,7 @@ impl Listen<BundleInit> for ResourceMap {
 impl ResourceMap {
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] loaded in the [`Registry`]
     #[must_use]
-    pub fn loaded_resources(&self, (): ()) -> HashSet<NamespacedId> {
+    pub fn loaded_resources(&self) -> HashSet<NamespacedId> {
         self.resources
             .iter()
             .filter(|(_, resource)| resource.dependencies(self).strong_count != 0)
@@ -1043,7 +1037,7 @@ impl ResourceMap {
 
     /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] loaded in the [`Registry`]
     #[must_use]
-    pub fn loaded_bundles(&self, (): ()) -> HashSet<NamespacedId> {
+    pub fn loaded_bundles(&self) -> HashSet<NamespacedId> {
         self.bundles
             .iter()
             .filter(|(_, bundle)| bundle.dependencies(self).strong_count != 0)
@@ -1053,7 +1047,7 @@ impl ResourceMap {
 
     /// Returns a set of the [`NamespacedId`]s of each [`Message`](crate::Message) loaded in the [`Registry`]
     #[must_use]
-    pub fn loaded_messages(&self, (): ()) -> HashSet<NamespacedId> {
+    pub fn loaded_messages(&self) -> HashSet<NamespacedId> {
         self.messages
             .iter()
             .filter(|(_, message)| message.dependencies(self).strong_count != 0)
@@ -1063,17 +1057,17 @@ impl ResourceMap {
 
     /// Returns a set of the [`NamespacedId`]s of each [`Resource`] running in the main loop
     #[must_use]
-    pub fn running_resources(&self, (): ()) -> HashSet<NamespacedId> {
+    pub fn running_resources(&self) -> HashSet<NamespacedId> {
         self.runners.clone()
     }
 
     /// Returns a static view into the resources and bundles that fit `query`
-    pub fn query(&self, query: Query, (): ()) -> SubMap {
+    pub fn query(&self, query: Query) -> SubMap {
         query.get(self)
     }
 
     #[cfg(feature = "runtime-loading")]
-    pub(crate) fn add_channels(&mut self, channels: Channels, (): ()) {
+    pub(crate) fn add_channels(&mut self, channels: Channels) {
         for (id, channel) in channels.listen {
             let res = self.add_message(&id, None, Some(TypedAnyChannel::Listen(channel)));
             if let Err(err) = res {
@@ -1090,7 +1084,7 @@ impl ResourceMap {
     }
 
     #[cfg(feature = "runtime-loading")]
-    pub(crate) fn listen_channel(&self, id: NamespacedId, (): ()) -> Option<AnyListenChannel> {
+    pub(crate) fn listen_channel(&self, id: NamespacedId) -> Option<AnyListenChannel> {
         self.get_message(&id)
             .and_then(|message| message.channel.as_ref())
             .and_then(|channel| channel.as_listen())
@@ -1098,7 +1092,7 @@ impl ResourceMap {
     }
 
     #[cfg(feature = "runtime-loading")]
-    pub(crate) fn take_channel(&self, id: NamespacedId, (): ()) -> Option<AnyTakeChannel> {
+    pub(crate) fn take_channel(&self, id: NamespacedId) -> Option<AnyTakeChannel> {
         self.get_message(&id)
             .and_then(|message| message.channel.as_ref())
             .and_then(|channel| channel.as_take())

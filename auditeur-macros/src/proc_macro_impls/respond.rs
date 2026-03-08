@@ -1,570 +1,456 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashSet};
 
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, TokenStreamExt, format_ident, quote};
 use syn::{
-    Attribute, Expr, FnArg, GenericParam, Generics, Ident, ImplItem, ImplItemFn, ItemImpl,
-    Lifetime, LitStr, Pat, ReturnType, Token, Type, Visibility, braced,
-    parse::Parse,
-    parse_quote,
-    punctuated::Punctuated,
-    spanned::Spanned,
-    token::{self, Brace},
-    visit::Visit,
+    Ident, Token, braced, fold::Fold, parse::Parse, punctuated::Punctuated, spanned::Spanned,
 };
 
 use crate::{
-    custom_generics::CustomGenerics,
-    field::{Comma, List, NameValue, Parenthesized},
-    input_list::{Combination, InputList, InputReferenceList},
-    namespaced_id::NamespacedId,
+    CustomGenerics, NamespacedId,
+    attr::{self, FoldAttr},
+    field,
+    maybe_error::{
+        Continue, ContinueExt, MaybeError, MaybeErrorExt, drain_continues_into, drain_results_into,
+    },
+    overlay,
 };
-
-pub fn macro_ident(item_ident: &Ident) -> Ident {
-    format_ident!("auditeur_respond_impl_of_{item_ident}")
-}
 
 // #[respond(
 //     "core:library",
-//     query(
-//         message_ident = LibraryQuery,
-//         message_id = "core:library_query",
-//         ref_ident = LibraryConnection,
-//     ),
-//     transaction(
-//         message_ident = LibraryTransaction,
-//         message_id = "core:library_transaction",
-//         ref_ident = LibraryRef,
-//     ),
-//     fields = |registry| {
-//         field_name: field_type = field_constructor,
+//     connection(ident = LibraryConnection),
+//     query(ident = LibraryQuery, id = "core:library_query")
+//     fields = {
+//         field_name: field_type,
 //     }
 // )]
 
 // #[respond(
 //     connection_fn,
-//     ref_fn,
+//     resource_fn,
 //     timeout = Duration::from_secs(2),
 //     on_error = panic,
 // )]
 
-const RESPONSE: &str = "response";
+// TODO: `timeout` and `on_error`
 
-fn input_idents() -> impl Iterator<Item = String> {
-    let mut index = 0;
-    std::iter::from_fn(move || {
-        let str = format!("auditeur{index}");
-        index += 1;
-        Some(str)
+pub fn respond_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    let mut error = None;
+
+    // Parsing
+    let item: syn::ItemImpl = syn::parse2(item)?;
+    let attr: Attrs = syn::parse2(attr)?;
+
+    // Parsing config
+    let config = Config::new(&attr, &item).drain_into(&mut error);
+    let methods_to_remove = config.methods_to_remove();
+
+    // Expansion
+    let respond_impls = config.expand();
+
+    // Mutation
+    let item = FoldAttr::remove("respond").fold_item_impl(item);
+    let item = item_impl_remove_methods(item, methods_to_remove);
+
+    // Combination
+    let error = error.map(syn::Error::into_compile_error);
+    Ok(quote! {
+        #item
+        #respond_impls
+        #error
     })
 }
 
-pub struct Respond {
-    pub meta: Meta,
-    pub item_impl: ItemImpl,
+fn item_impl_remove_methods(mut item: syn::ItemImpl, methods: HashSet<Ident>) -> syn::ItemImpl {
+    item.items
+        .retain(|item| impl_item_as_fn(item).is_none_or(|item| !methods.contains(&item.sig.ident)));
+    item
 }
 
-impl Respond {
-    pub const fn new(meta: Meta, item_impl: ItemImpl) -> Self {
-        Self { meta, item_impl }
-    }
+struct Config<'a> {
+    item: &'a syn::ItemImpl,
 
-    pub fn expand(&mut self) -> syn::Result<proc_macro2::TokenStream> {
-        self.check_impl_signature()?;
+    query_ident: Cow<'a, Ident>,
+    query_id: Cow<'a, NamespacedId>,
+    connection_ident: Cow<'a, Ident>,
 
-        let (visibilities, raw_fns) = self.mutate_methods()?;
-        let (methods, inputs) = self.gather_methods_and_inputs(visibilities)?;
+    transaction: bool,
+    get_ref: bool,
 
-        let generics = &self.item_impl.generics;
-        let ident = self.ident()?;
-        let id_expr = self.id_expr(ident)?;
-        let config = self.meta.to_config(ident)?;
+    vis: syn::Visibility,
+    id_expr: TokenStream,
 
-        let hidden = Self::hidden(&methods, &raw_fns);
+    methods: Vec<MethodConfig<'a>>,
+    fields: Vec<&'a Field>,
+}
 
-        let macro_def = Self::define_macro(ident, &config, &inputs);
-        let respond_impl = Self::impl_respond(ident, &config, &generics);
+/// Functions related to construction.
+impl<'a> Config<'a> {
+    fn new(attrs: &'a Attrs, item: &'a syn::ItemImpl) -> Continue<Self> {
+        let mut error = None;
 
-        let query_enum = Self::define_query_enum(&config, &methods, hidden.as_ref(), generics)?;
-        let take_query_impl = Self::impl_take_query(ident, &config, &methods, &inputs, generics)?;
-        let connection_struct = Self::define_connection_struct(
-            ident,
-            &config,
-            &methods,
-            &raw_fns,
-            hidden.as_ref(),
-            &id_expr,
-        );
+        let (query_ident, query_id, connection_ident) =
+            Self::get_component_data(attrs, item, &mut error);
 
-        let mut message_impls = quote! {
-            #query_enum
-            #take_query_impl
-            #connection_struct
+        let methods: Vec<_> = (item.items.iter())
+            .filter_map(impl_item_as_fn)
+            .map(MethodConfig::new)
+            .map(drain_continues_into(&mut error))
+            .collect();
+        let fields = (attrs.attrs.iter())
+            .filter_map(Attr::as_fields)
+            .flat_map(|fields| fields.fields.iter())
+            .collect();
+
+        let vis = if methods
+            .iter()
+            .all(|method| matches!(method.method.vis, syn::Visibility::Public(_)))
+        {
+            syn::Visibility::Public(Token![pub](Span::call_site()))
+        } else {
+            syn::Visibility::Inherited
         };
 
-        if let Some(config) = &config.transaction {
-            if !generics.params.is_empty() || generics.where_clause.is_some() {
-                return Err(syn::Error::new(
-                    Span::call_site(),
-                    "generics are not supported with transactions yet - please file an issue if you\
- find a usecase",
-                ));
-            }
+        let transaction = attrs.attrs.iter().any(Attr::is_transaction_flag);
+        let get_ref = attrs.attrs.iter().any(Attr::is_get_ref_flag);
 
-            let transaction_struct = Self::define_transaction_struct(config, hidden.as_ref());
-            let ref_struct = Self::define_ref_struct(
-                ident,
-                config,
-                &methods,
-                &inputs,
-                &raw_fns,
-                hidden.as_ref(),
-            );
-            let take_transaction_impl = Self::impl_take_transaction(ident, config, inputs)?;
+        let id_expr = Self::id_expr(attrs, item).drain_into(&mut error);
 
-            message_impls.extend(quote! {
-                #transaction_struct
-                #ref_struct
-                #take_transaction_impl
-            });
-        }
-
-        if config.get_ref {
-            message_impls.extend(Self::impl_get_ref(ident, &config, generics));
-        }
-
-        let item_impl = &self.item_impl;
-
-        Ok(quote! {
-            #[allow(clippy::needless_pass_by_value)]
-            #item_impl
-
-            #macro_def
-            #respond_impl
-
-            #message_impls
+        error.wrap(Self {
+            item,
+            query_ident,
+            query_id,
+            connection_ident,
+            transaction,
+            get_ref,
+            vis,
+            id_expr,
+            methods,
+            fields,
         })
     }
 
-    fn check_impl_signature(&self) -> syn::Result<()> {
-        let item_impl = &self.item_impl;
+    fn get_component_data(
+        attrs: &'a Attrs,
+        item: &'a syn::ItemImpl,
+        error: &mut MaybeError,
+    ) -> (Cow<'a, Ident>, Cow<'a, NamespacedId>, Cow<'a, Ident>) {
+        let mut id = None;
+        let mut ident = None;
 
-        if let Some((_, _, for_kw)) = item_impl.trait_.as_ref() {
-            Err(syn::Error::new_spanned(for_kw, "expected no trait here"))
-        } else {
-            Ok(())
+        let query_ident = attrs
+            .get_component_data(Attr::as_query, ComponentInfo::as_ident)
+            .map_or_else(
+                || Cow::Owned(Self::default_query_ident(item, &mut ident, error)),
+                Cow::Borrowed,
+            );
+
+        let query_id = attrs
+            .get_component_data(Attr::as_query, ComponentInfo::as_id)
+            .map_or_else(
+                || Cow::Owned(Self::default_query_id(attrs, &mut id, error)),
+                Cow::Borrowed,
+            );
+
+        let connection_ident = attrs
+            .get_component_data(Attr::as_connection, ComponentInfo::as_ident)
+            .map_or_else(
+                || Cow::Owned(Self::default_connection_ident(item, &mut ident, error)),
+                Cow::Borrowed,
+            );
+
+        if let Some(id) = attrs.get_component_data(Attr::as_connection, ComponentInfo::as_id) {
+            error.combine(syn::Error::new(
+                id.span,
+                "unexpected id argument - connection does not use an id",
+            ));
         }
+
+        (query_ident, query_id, connection_ident)
     }
 
-    fn ident(&self) -> syn::Result<&Ident> {
-        match &*self.item_impl.self_ty {
-            Type::Path(path) => Ok(&path
-                .path
-                .segments
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(path, "expected at least one ident"))?
-                .ident),
-            _ => Err(syn::Error::new_spanned(
-                &self.item_impl.self_ty,
-                "expected an identifier",
-            )),
-        }
+    fn default_connection_ident(
+        item: &'a syn::ItemImpl,
+        ident: &mut Option<Cow<'a, Ident>>,
+        error: &mut MaybeError,
+    ) -> Ident {
+        format_ident!("{}Connection", Self::item_ident(item, ident, error))
     }
 
-    fn id_expr(&self, item_ident: &Ident) -> syn::Result<TokenStream> {
-        let auditeur = &*crate::AUDITEUR;
-        if self.item_impl.generics.params.is_empty()
-            && self.item_impl.generics.where_clause.is_none()
-        {
-            Ok(quote! { <#item_ident as #auditeur::resource::Identifiable>::const_ident() })
-        } else if let Some(id) = self.meta.id() {
-            Ok(quote! { #id })
-        } else {
-            Err(syn::Error::new(
-                Span::call_site(),
-                "expected id to be specified with generics",
-            ))
-        }
+    fn default_query_ident(
+        item: &'a syn::ItemImpl,
+        ident: &mut Option<Cow<'a, Ident>>,
+        error: &mut MaybeError,
+    ) -> Ident {
+        format_ident!("{}Query", Self::item_ident(item, ident, error))
     }
 
-    fn mutate_methods(&mut self) -> syn::Result<(Vec<Visibility>, RawFns)> {
-        let mut raw_fns = Vec::new();
-        let iter = self
-            .item_impl
-            .items
-            .drain(..)
-            .filter_map(|item| match item {
-                ImplItem::Fn(method) => Self::mutate_method(method, &mut raw_fns).transpose(),
-                _ => Some(Err(syn::Error::new_spanned(item, "expected a function"))),
-            });
-        let (items, visibilities) = iter.collect::<syn::Result<_>>()?;
-        self.item_impl.items = items;
-        Ok((visibilities, RawFns { raw_fns }))
-    }
-
-    fn mutate_method(
-        mut method: ImplItemFn,
-        raw_fns: &mut Vec<(ImplItemFn, RawFnType)>,
-    ) -> syn::Result<Option<(ImplItem, Visibility)>> {
-        let (attrs, config) = method.attrs.drain(..).try_fold(
-            (Vec::new(), MethodAttributes::default()),
-            |(mut attrs, mut config), attr| {
-                if attr.path().is_ident("respond") {
-                    let args: MethodAttributes = attr.parse_args()?;
-                    config.attributes.extend(args.attributes.into_pairs());
-                } else {
-                    attrs.push(attr);
-                }
-                syn::Result::Ok((attrs, config))
-            },
-        )?;
-        method.attrs = attrs;
-        match config.into_config()? {
-            MethodAttributeConfig::RawFn(raw_fn) => {
-                raw_fns.push((method, raw_fn));
-                Ok(None)
-            }
-            MethodAttributeConfig::Method { timeout, on_error } => {
-                if timeout.is_some() || !on_error.is_default() {
-                    todo!("timeout and on_error support");
-                }
-                let vis = std::mem::replace(&mut method.vis, Visibility::Inherited);
-                method.attrs.push(parse_quote!(
-                    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn item_ident(
+        item: &'a syn::ItemImpl,
+        ident: &mut Option<Cow<'a, Ident>>,
+        error: &mut MaybeError,
+    ) -> Cow<'a, Ident> {
+        let cow = ident.get_or_insert_with(|| {
+            if let syn::Type::Path(path) = &*item.self_ty
+                && let Some(segment) = path.path.segments.last()
+            {
+                Cow::Borrowed(&segment.ident)
+            } else {
+                error.combine(syn::Error::new(
+                    item.self_ty.span(),
+                    "expected a single identifier here, found a complex type",
                 ));
-                Ok(Some((ImplItem::Fn(method), vis)))
+                Cow::Owned(Ident::new("RespondRecover", item.self_ty.span()))
             }
-        }
+        });
+        cow.clone()
     }
 
-    fn gather_methods_and_inputs(
-        &self,
-        visibilities: Vec<Visibility>,
-    ) -> syn::Result<(Vec<Method<'_>>, InputList)> {
-        let mut inputs = InputList::default();
-        let methods = (self.item_impl.items.iter())
-            .zip(visibilities)
-            .map(|(item, visibility)| match item {
-                ImplItem::Fn(method) => Method::new(method, visibility, &mut inputs),
-                _ => unreachable!(),
-            })
-            .collect::<syn::Result<_>>()?;
-        Ok((methods, inputs))
+    fn default_query_id(
+        attrs: &'a Attrs,
+        id: &mut Option<Cow<'a, NamespacedId>>,
+        error: &mut MaybeError,
+    ) -> NamespacedId {
+        let id = Self::item_id(attrs, id, error);
+        let mut id = id.into_owned();
+        id.id += "_query";
+        id
     }
 
-    fn private_vis(private: bool) -> Option<proc_macro2::TokenStream> {
-        if private {
-            Some(quote! {
-                #[doc(hidden)]
-                #[allow(private_interfaces)]
-            })
-        } else {
-            None
-        }
+    fn item_id(
+        attrs: &'a Attrs,
+        id: &mut Option<Cow<'a, NamespacedId>>,
+        error: &mut MaybeError,
+    ) -> Cow<'a, NamespacedId> {
+        let cow = id.get_or_insert_with(|| {
+            if let Some(id) = &attrs.id {
+                Cow::Borrowed(&id.value)
+            } else {
+                error.combine(syn::Error::new(
+                    Span::call_site(),
+                    "cannot get the item's `NamespacedId`, expected one as the first argument",
+                ));
+                Cow::Owned(NamespacedId {
+                    namespace: "error".to_string(),
+                    id: "recovery".to_string(),
+                    span: Span::call_site(),
+                })
+            }
+        });
+        cow.clone()
     }
 
-    fn hidden(methods: &[Method], raw_fns: &RawFns) -> Option<proc_macro2::TokenStream> {
-        let all_private = (methods.iter().map(|method| &method.vis))
-            .chain(raw_fns.iter().map(|method| &method.vis))
-            .all(|vis| matches!(vis, Visibility::Inherited | Visibility::Restricted(_)));
-        Self::private_vis(all_private)
-    }
+    fn id_expr(attrs: &'a Attrs, item: &'a syn::ItemImpl) -> Continue<TokenStream> {
+        let mut error = None;
 
-    fn define_query_enum(
-        config: &Config<'_>,
-        methods: &[Method],
-        hidden: Option<&proc_macro2::TokenStream>,
-        generics: &Generics,
-    ) -> syn::Result<proc_macro2::TokenStream> {
         let auditeur = &*crate::AUDITEUR;
-
-        let mut search_types = SearchTypes::from_generics(generics);
-
-        let mut variants = proc_macro2::TokenStream::new();
-        for method in methods {
-            let variant = &method.camel_case_ident;
-            let ident = method.args.iter().map(|arg| arg.ident);
-            let ty = method.args.iter().map(|arg| arg.ty);
-            let ty2 = ty.clone();
-            let return_type = method.return_type_to_token_stream();
-            let response = format_ident!("{RESPONSE}");
-            let docs = &method.docs;
-
-            let vis = Self::private_vis(matches!(
-                method.vis,
-                Visibility::Inherited | Visibility::Restricted(_)
-            ));
-
-            for ty in ty2 {
-                search_types.visit_type(ty);
-            }
-
-            if let Some(return_type) = method.return_type {
-                search_types.visit_type(return_type);
-            }
-
-            variants.extend(quote! {
-                #(#docs)*
-                #[allow(rustdoc::broken_intra_doc_links)]
-                #vis #variant {
-                    #response: #auditeur::tokio::sync::oneshot::Sender<#return_type>,
-                    #(#ident: #ty),*
-                },
-            });
-        }
-
-        if search_types.any() {
-            return Err(syn::Error::new(
+        let expr = if item.generics.params.is_empty() && item.generics.where_clause.is_none() {
+            let item_ident = &item.self_ty;
+            quote! { <#item_ident as #auditeur::resource::Identifiable>::const_ident() }
+        } else if let Some(id) = &attrs.id {
+            let id = &id.value;
+            quote! { #id }
+        } else {
+            error.combine(syn::Error::new(
                 Span::call_site(),
-                "generics are not supported in method arguments or return types with #[respond]. \
-This error may be relaxed in the future - please file an issue if you find a usecase",
+                "id must be specified for a resource with generics",
             ));
+            quote! { &#auditeur::namespaced_id::NamespacedId::new("error", "recovery") }
+        };
+
+        error.wrap(expr)
+    }
+}
+
+/// Methods related to expansion.
+impl Config<'_> {
+    fn expand(&self) -> TokenStream {
+        let mut tokens = TokenStream::new();
+        self.expand_query_enum(&mut tokens);
+        self.expand_take_impl(&mut tokens);
+        self.expand_connection_struct(&mut tokens);
+        self.expand_respond_impl(&mut tokens);
+        if self.get_ref {
+            self.expand_get_ref_impl(&mut tokens);
+        }
+        tokens
+    }
+
+    fn expand_query_enum(&self, tokens: &mut TokenStream) {
+        let mut variants = TokenStream::new();
+        (self.methods.iter()).for_each(|method| method.expand_query_variant(&mut variants));
+        if self.transaction {
+            self.expand_query_transaction_variant(&mut variants);
         }
 
-        let ident = &config.query.message_ident;
-        let id = &config.query.message_id;
+        let ident = &self.query_ident;
 
-        let message_impl = super::derive_message(ident, id, &CustomGenerics::default());
+        let message_impl =
+            super::derive_message(&ident, &self.query_id, &CustomGenerics::default());
 
-        Ok(quote! {
+        tokens.extend(quote! {
             #[non_exhaustive]
-            #hidden
             pub enum #ident {
                 #variants
             }
 
             #message_impl
-        })
+        });
     }
 
-    fn impl_take_query(
-        item_ident: &Ident,
-        config: &Config<'_>,
-        methods: &[Method],
-        input_list: &InputList,
-        generics: &Generics,
-    ) -> syn::Result<proc_macro2::TokenStream> {
+    fn expand_query_transaction_variant(&self, tokens: &mut TokenStream) {
+        // Box<FnOnce(&mut self) -> Pin<Box<Future -> ()>>>
+        let self_ty = &self.item.self_ty;
         let auditeur = &*crate::AUDITEUR;
-        let anyhow = auditeur.anyhow();
+        tokens.extend(quote! {
+            Transaction(#auditeur::resource::listener::BoxedTransactionFnOnce<#self_ty>),
+        });
+    }
 
-        let message_ident = &config.query.message_ident;
+    fn expand_take_impl(&self, tokens: &mut TokenStream) {
+        let (impl_generics, ty_generics, where_clause) = self.item.generics.split_for_impl();
 
-        let response = format_ident!("{RESPONSE}");
+        let self_ty = &self.item.self_ty;
+        let query_ident = &self.query_ident;
 
-        let mut variants = proc_macro2::TokenStream::new();
-        for method in methods {
-            let variant = &method.camel_case_ident;
-            let method_ident = method.snake_case_ident;
-            let arg0 = method.args.iter().map(|arg| arg.ident);
-            let arg1 = arg0.clone();
-            let inputs = method
-                .combination
-                .selections
-                .iter()
-                .zip(input_idents())
-                .filter(|(selection, _)| selection.in_set)
-                .map(|(selection, ident)| Ident::new(&ident, selection.span));
-
-            let mut call = quote! { self.#method_ident(#(#arg1,)* (#(#inputs),*)) };
-
-            if let Some(async_kw) = method.asyncness {
-                let await_kw = Token![await](async_kw.span);
-                call = quote! { #call . #await_kw };
-            }
-
-            if let Some(unsafe_kw) = method.unsafety {
-                call = quote! { #unsafe_kw { #call } };
-            }
-
-            variants.extend(quote! {
-                #message_ident::#variant { #response, #(#arg0),* } => {
-                    let result = #call;
-                    let _ = #response.send(result);
-                }
-            });
+        let mut variants = TokenStream::new();
+        (self.methods.iter())
+            .for_each(|method| method.expand_take_variant(query_ident, &mut variants));
+        if self.transaction {
+            self.expand_take_transaction_variant(&mut variants);
         }
 
-        let input_macro_ident = super::input_reflection::input_macro_ident_of(
-            &parse_quote!(Take<#message_ident>),
-            &parse_quote!(#item_ident),
-        )?;
-        let input_macro = super::input_reflection::export(&input_macro_ident, input_list);
-
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-        Ok(quote! {
-            #input_macro
-
-            impl #impl_generics #auditeur::resource::listener::Take<#message_ident> for #item_ident #ty_generics #where_clause {
-                async fn on(&mut self, query: #message_ident) -> #anyhow::Result<()> {
+        let auditeur = &*crate::AUDITEUR;
+        tokens.extend(quote! {
+            impl #impl_generics #auditeur::resource::listener::Take<#query_ident> for #self_ty #where_clause {
+                async fn on(&mut self, query: #query_ident) -> #auditeur::anyhow::Result<()> {
                     match query {
                         #variants
                     }
                     Ok(())
                 }
             }
-        })
+        });
     }
 
-    // TODO: please for the love of god break this into multiple functions
-    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-    fn define_connection_struct(
-        item_ident: &Ident,
-        config: &Config<'_>,
-        methods: &[Method],
-        raw_fns: &RawFns,
-        hidden: Option<&proc_macro2::TokenStream>,
-        id_expr: &TokenStream,
-    ) -> proc_macro2::TokenStream {
+    fn expand_take_transaction_variant(&self, tokens: &mut TokenStream) {
+        let query_ident = &self.query_ident;
+        tokens.extend(quote! {
+            #query_ident::Transaction(func) => func.run(self).await,
+        });
+    }
+
+    fn field_idents(&self) -> impl Iterator<Item = &Ident> {
+        self.fields.iter().map(|field| &field.ident)
+    }
+
+    fn field_types(&self) -> impl Iterator<Item = &syn::Type> {
+        self.fields.iter().map(|field| &field.ty)
+    }
+
+    fn expand_connection_struct(&self, tokens: &mut TokenStream) {
+        let query_ident = &self.query_ident;
+        let connection_ident = &self.connection_ident;
+
+        let field_idents = self.field_idents();
+        let field_types = self.field_types();
+
         let auditeur = &*crate::AUDITEUR;
-
-        let message_ident = &config.query.message_ident;
-
-        let mut field_idents = vec![Ident::new("giver", Span::call_site())];
-        let mut field_types = vec![parse_quote!(#auditeur::app::channels::Giver<#message_ident>)];
-
-        let response = format_ident!("{RESPONSE}");
-
-        let mut methods_out = proc_macro2::TokenStream::new();
-        for method in methods {
-            let variant = &method.camel_case_ident;
-            let method_ident = method.snake_case_ident;
-            let arg0 = method.args.iter().map(|arg| arg.ident);
-            let arg1 = arg0.clone();
-            let ty = method.args.iter().map(|arg| arg.ty);
-            let return_type = method.return_type_to_token_stream();
-            let docs = &method.docs;
-            let vis = &method.vis;
-            let unsafety = method.unsafety;
-
-            // FIXME: self.giver.clone_erased used, this might be dangerous
-            methods_out.extend(quote! {
-                #(#docs)*
-                #vis #unsafety fn #method_ident(&self, #(#arg0: #ty),*) -> impl std::future::Future<Output = #return_type> + 'static {
-                    let giver = self.giver.clone_erased();
-                    async move {
-                        let (#response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
-                        let query = #message_ident::#variant { #response, #(#arg1),* };
-                        giver.give(query).await;
-                        auditeur_receiver.await.expect(concat!("respond: ", stringify!(#item_ident), "::", stringify!(#method_ident), " panicked"))
-                    }
-                }
-            });
-        }
-
-        for method in raw_fns.connection_fns() {
-            method.to_tokens(&mut methods_out);
-        }
-
-        if let Some(transaction) = config.transaction.as_ref() {
-            let transaction_message = &transaction.message_ident;
-            let transaction_ref = &transaction.ref_ident;
-
-            field_idents.push(Ident::new("transactions", Span::call_site()));
-            field_types.push(parse_quote!(#auditeur::app::channels::Giver<#transaction_message>));
-
-            let vis = if hidden.is_some() {
-                quote! { pub(crate) }
-            } else {
-                quote! { pub }
-            };
-
-            methods_out.extend(quote! {
-                #vis async fn run_transaction<T: Send + Sync + 'static>(
-                    &self,
-                    transaction: impl for<'a> FnOnce(#transaction_ref<'a>) -> T + Send + Sync + 'static,
-                ) -> T {
-                    let (response, receiver) = #auditeur::tokio::sync::oneshot::channel();
-                    self.spawn_transaction(move |reference| {
-                        let res = transaction(reference);
-                        let _ = response.send(res);
-                    })
-                    .await;
-                    receiver.await.expect(concat!(stringify!(#item_ident), " transaction panicked"))
-                }
-
-                #vis async fn spawn_transaction(
-                    &self,
-                    transaction: impl for<'a> FnOnce(#transaction_ref<'a>) + Send + Sync + 'static,
-                ) {
-                    self.transactions
-                        .give(#transaction_message::from(transaction))
-                        .await;
-                }
-            });
-        }
-
-        if let Some(fields) = &config.fields {
-            for field in &fields.list {
-                let Field { ident, ty, .. } = &field;
-                field_idents.push((*ident).clone());
-                field_types.push(ty.clone());
+        tokens.extend(quote! {
+            pub struct #connection_ident {
+                dependency_handle: #auditeur::input::dependency::Handle,
+                giver: #auditeur::app::channels::Giver<#query_ident>,
+                #(#field_idents: #field_types,)*
             }
+        });
+
+        self.expand_connection_impl_new(tokens);
+        self.expand_connection_methods(tokens);
+        self.expand_connection_impl_input(tokens);
+        self.expand_connection_impl_any(tokens);
+        self.expand_connection_impl_clone_as(tokens);
+        self.expand_connection_impl_debug(tokens);
+    }
+
+    fn expand_connection_methods(&self, tokens: &mut TokenStream) {
+        let mut methods = TokenStream::new();
+        for method in &self.methods {
+            method.expand_connection_method(&self.item.self_ty, &self.query_ident, &mut methods);
         }
 
-        let ref_ident = &config.query.ref_ident;
+        if self.transaction {
+            self.expand_connection_transaction_method(&mut methods);
+        }
 
+        let connection_ident = &self.connection_ident;
+        tokens.extend(quote! {
+            impl #connection_ident {
+                #methods
+            }
+        });
+    }
+
+    fn expand_connection_transaction_method(&self, tokens: &mut TokenStream) {
+        let self_ty = &self.item.self_ty;
+        let query_ident = &self.query_ident;
+
+        let auditeur = &*crate::AUDITEUR;
+        tokens.extend(quote! {
+            pub fn run_transaction<T: Send + Sync + 'static>(
+                &self,
+                transaction: impl for<'a>
+                    #auditeur::resource::listener::TransactionFnOnce<'a, #self_ty, Output = T>,
+            ) -> #auditeur::resource::listener::RespondFuture<
+                T,
+                impl ::std::future::Future<Output = ()> + Send,
+                impl ::std::future::Future<Output = T> + Send + 'static,
+            > {
+                let (response, receiver) = #auditeur::tokio::sync::oneshot::channel();
+                #auditeur::resource::listener::RespondFuture::new(
+                    async move {
+                        self.giver.give(#query_ident::Transaction(
+                            #auditeur::resource::listener::BoxedTransactionFnOnce::new_with_sender(
+                                transaction,
+                                response,
+                            ),
+                        )).await;
+                    },
+                    async move {
+                        receiver.await.expect(concat!(
+                            stringify!(#self_ty),
+                            " transaction panicked"
+                        ))
+                    }
+                )
+            }
+
+            pub async fn spawn_transaction(
+                &self,
+                transaction: impl for<'a>
+                    #auditeur::resource::listener::TransactionFnOnce<'a, #self_ty, Output = ()>,
+            ) {
+                self.giver.give(#query_ident::Transaction(
+                    #auditeur::resource::listener::BoxedTransactionFnOnce::new(transaction)
+                )).await;
+            }
+        });
+    }
+
+    fn expand_connection_impl_new(&self, tokens: &mut TokenStream) {
+        let connection_ident = &self.connection_ident;
+
+        let auditeur = &*crate::AUDITEUR;
         let new_docs = format!(
-            "Create a new [`{ref_ident}`] using a [`Registry`]({}::app::Registry).",
+            "Create a new [`{connection_ident}`] using a [`Registry`]({}::app::Registry).",
             auditeur.to_token_stream().to_string().replace(' ', "")
         );
 
-        let resource_ref_impl = if cfg!(feature = "runtime-loading") {
-            #[cfg(feature = "path-any")]
-            let any_impl = super::path_any(ref_ident, &CustomGenerics::default());
-            #[cfg(not(feature = "path-any"))]
-            let any_impl = quote! {};
+        let id_expr = &self.id_expr;
+        let field_idents = self.field_idents();
+        let field_types = self.field_types();
 
-            let dependency_handle_ident = format_ident!("dependency_handle");
-
-            let generics = syn::Generics::default();
-
-            let resource_ref_impl = super::clone_as_struct(
-                ref_ident,
-                std::iter::once(&dependency_handle_ident).chain(&field_idents),
-                &generics,
-            );
-
-            quote! {
-                #any_impl
-                #resource_ref_impl
-            }
-        } else {
-            quote! {}
-        };
-
-        quote! {
-            #hidden
-            pub struct #ref_ident {
-                dependency_handle: #auditeur::input::dependency::Handle,
-                #(#field_idents: #field_types),*
-            }
-
-            impl #auditeur::input::Input for #ref_ident {
-                async fn create(
-                    registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::ComponentIdRef<'_>,
-                ) -> Result<Self, #auditeur::Error> {
-                    Self::new(registry, dependent).await
-                }
-
-                fn constraints() -> #auditeur::input::Constraints {
-                    #auditeur::input::Constraints::empty()
-                        .after_resource(#id_expr)
-                        #(.extend(<#field_types as #auditeur::input::Input>::constraints()))*
-                }
-            }
-
-            impl std::fmt::Debug for #ref_ident {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    write!(f, "{} {{ .. }}", stringify!(#ref_ident))
-                }
-            }
-
-            #resource_ref_impl
-
-            #[allow(clippy::missing_panics_doc)]
-            impl #ref_ident {
+        tokens.extend(quote! {
+            impl #connection_ident {
                 #[doc = #new_docs]
                 pub async fn new(
                     registry: &#auditeur::app::Registry,
@@ -586,786 +472,368 @@ This error may be relaxed in the future - please file an issue if you find a use
                     #[allow(unused_variables)]
                     Ok(Self {
                         dependency_handle,
+                        giver: registry.channels().giver(dependent).await?,
                         #(#field_idents: <#field_types as #auditeur::input::Input>::create(registry, dependent).await?),*
                     })
                 }
-
-                #methods_out
             }
-        }
+        });
     }
 
-    fn define_transaction_struct(
-        config: &TakeConfig,
-        hidden: Option<&proc_macro2::TokenStream>,
-    ) -> proc_macro2::TokenStream {
-        let TakeConfig {
-            message_ident,
-            message_id,
-            ref_ident,
-        } = config;
+    fn expand_connection_impl_input(&self, tokens: &mut TokenStream) {
+        let connection_ident = &self.connection_ident;
+        let id_expr = &self.id_expr;
 
-        let message_impl =
-            super::derive_message(message_ident, message_id, &CustomGenerics::default());
-
-        quote! {
-            #hidden
-            pub struct #message_ident {
-                func: Box<dyn for<'a> FnOnce(#ref_ident<'a>) + Send + Sync>,
-            }
-
-            #message_impl
-
-            impl<F: for<'a> FnOnce(#ref_ident<'a>) + Send + Sync + 'static> From<F> for #message_ident {
-                fn from(value: F) -> Self {
-                    Self {
-                        func: Box::new(value),
-                    }
-                }
-            }
-        }
-    }
-
-    fn impl_take_transaction(
-        item_ident: &Ident,
-        config: &TakeConfig,
-        input_list: InputList,
-    ) -> syn::Result<proc_macro2::TokenStream> {
-        let TakeConfig {
-            message_ident,
-            ref_ident,
-            ..
-        } = config;
-
-        let input_macro_ident = super::input_reflection::input_macro_ident_of(
-            &parse_quote!(Take<#message_ident>),
-            &parse_quote!(#item_ident),
-        )?;
-        let input_macro = super::input_reflection::export(&input_macro_ident, &input_list);
+        let field_types = self.fields.iter().map(|field| &field.ty);
 
         let auditeur = &*crate::AUDITEUR;
-        let anyhow = auditeur.anyhow();
+        tokens.extend(quote! {
+            impl #auditeur::input::Input for #connection_ident {
+                async fn create(
+                    registry: &#auditeur::app::Registry,
+                    dependent: #auditeur::app::ComponentIdRef<'_>,
+                ) -> Result<Self, #auditeur::Error> {
+                    Self::new(registry, dependent).await
+                }
 
-        Ok(quote! {
-            impl #auditeur::resource::listener::Take<#message_ident> for #item_ident {
-                async fn on(&mut self, transaction: #message_ident) -> #anyhow::Result<()> {
-                    let reference = #ref_ident {
-                        deref: self,
-                        input: (),
-                    };
-                    (transaction.func)(reference);
-                    Ok(())
+                fn constraints() -> #auditeur::input::Constraints {
+                    #auditeur::input::Constraints::empty()
+                        .after_resource(#id_expr)
+                        #(.extend(<#field_types as #auditeur::input::Input>::constraints()))*
                 }
             }
-
-            #input_macro
-        })
+        });
     }
 
-    fn define_ref_struct(
-        item_ident: &Ident,
-        config: &TakeConfig,
-        methods: &[Method],
-        input_list: &InputList,
-        raw_fns: &RawFns,
-        hidden: Option<&proc_macro2::TokenStream>,
-    ) -> proc_macro2::TokenStream {
-        let TakeConfig { ref_ident, .. } = config;
+    fn expand_connection_impl_any(&self, tokens: &mut TokenStream) {
+        #[cfg(feature = "path-any")]
+        tokens.extend(super::path_any(
+            &self.connection_ident,
+            &CustomGenerics::default(),
+        ));
+    }
 
-        let mut methods_out = proc_macro2::TokenStream::new();
-        for method in methods {
-            let method_ident = method.snake_case_ident;
-            let arg0 = method.args.iter().map(|arg| arg.ident);
-            let arg1 = arg0.clone();
-            let ty = method.args.iter().map(|arg| arg.ty);
-            let return_type = method.return_type_to_token_stream();
-            let mutability = method.mutability;
-            let docs = &method.docs;
-            let vis = &method.vis;
-            let asyncness = &method.asyncness;
-            let maybe_await = method.maybe_await();
-
-            let input = method
-                .combination
-                .selections
+    fn expand_connection_impl_clone_as(&self, tokens: &mut TokenStream) {
+        tokens.extend(super::clone_as_struct(
+            &self.connection_ident,
+            [format_ident!("dependency_handle"), format_ident!("giver")]
                 .iter()
-                .enumerate()
-                .filter(|(_, selection)| selection.in_set)
-                .map(|(i, selection)| format_ident!("self.input.{i}", span = selection.span));
-
-            let mut body = quote! {
-                self.deref.#method_ident(#(#arg1,)* (#(#input),*)) #maybe_await
-            };
-
-            let unsafety = method.unsafety;
-            if let Some(unsafe_kw) = unsafety {
-                body = quote! { #unsafe_kw { #body } };
-            }
-
-            methods_out.extend(quote! {
-                #(#docs)*
-                #vis #asyncness #unsafety fn #method_ident(& #mutability self, #(#arg0: #ty),*) -> #return_type {
-                    #body
-                }
-            });
-        }
-
-        for method in raw_fns.ref_fns() {
-            method.to_tokens(&mut methods_out);
-        }
-
-        let input_list = input_list.clone().into_reference_list().with_lifetime("'a");
-
-        quote! {
-            #hidden
-            pub struct #ref_ident<'a> {
-                deref: &'a mut #item_ident,
-                #[allow(dead_code)]
-                input: #input_list,
-            }
-
-            impl std::ops::Deref for #ref_ident<'_> {
-                type Target = #item_ident;
-                fn deref(&self) -> &Self::Target {
-                    &self.deref
-                }
-            }
-
-            impl std::ops::DerefMut for #ref_ident<'_> {
-                fn deref_mut(&mut self) -> &mut Self::Target {
-                    &mut self.deref
-                }
-            }
-
-            impl #ref_ident<'_> { #methods_out }
-        }
+                .chain(self.field_idents()),
+            &syn::Generics::default(),
+        ));
     }
 
-    fn define_macro(
-        item_ident: &Ident,
-        config: &Config,
-        input_list: &InputList,
-    ) -> proc_macro2::TokenStream {
-        let macro_ident = macro_ident(item_ident);
-
-        let query_message = &config.query.message_ident;
-        let mut take = quote! {
-            #query_message(input = #input_list),
-        };
-
-        if let Some(transaction_config) = &config.transaction {
-            let transaction_message = &transaction_config.message_ident;
-            take.extend(quote! {
-                #transaction_message(input = #input_list),
-            });
-        }
-
-        quote! {
-            #[doc(hidden)]
-            #[allow(non_snake_case, clippy::redundant_pub_crate)]
-            #[allow(unused_imports)]
-            pub(crate) mod #macro_ident {
-                #[macro_export]
-                #[doc(hidden)]
-                macro_rules! #macro_ident {
-                    (($callback:path $(, $($callbacks:tt)*)?) ($($_params:tt)*) $_ident:ident ($($meta:tt)*) $($rest:tt)*) => {
-                        $callback!(($($($callbacks)*)?) ($($_params)*) $_ident ($($meta)* take(#take)) $($rest)*);
-                    };
+    fn expand_connection_impl_debug(&self, tokens: &mut TokenStream) {
+        let connection_ident = &self.connection_ident;
+        tokens.extend(quote! {
+            impl ::std::fmt::Debug for #connection_ident {
+                fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                    write!(f, "{} {{ .. }}", stringify!(#connection_ident))
                 }
-                pub use #macro_ident;
             }
-        }
+        });
     }
 
-    fn impl_get_ref(
-        item_ident: &Ident,
-        config: &Config,
-        generics: &Generics,
-    ) -> proc_macro2::TokenStream {
+    fn expand_respond_impl(&self, tokens: &mut TokenStream) {
+        let self_ty = &self.item.self_ty;
+        let query_ident = &self.query_ident;
+        let (impl_generics, ty_generics, where_clause) = self.item.generics.split_for_impl();
+
         let auditeur = &*crate::AUDITEUR;
-        let connection = &config.query.ref_ident;
+        tokens.extend(quote! {
+            impl #impl_generics #auditeur::resource::listener::Respond for #self_ty
+            #where_clause
+            {
+                type Query = #query_ident;
+            }
+        });
+    }
 
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    fn expand_get_ref_impl(&self, tokens: &mut TokenStream) {
+        let self_ty = &self.item.self_ty;
+        let connection_ident = &self.connection_ident;
+        let (impl_generics, ty_generics, where_clause) = self.item.generics.split_for_impl();
 
-        quote! {
-            impl #impl_generics #auditeur::input::get::GetRef for #item_ident #ty_generics #where_clause {
-                type Ref = #connection;
+        let auditeur = &*crate::AUDITEUR;
+        tokens.extend(quote! {
+            impl #impl_generics #auditeur::input::get::GetRef for #self_ty
+            #where_clause
+            {
+                type Ref = #connection_ident;
 
                 async fn get_ref(
                     &self,
                     registry: &#auditeur::app::Registry,
                     dependent: #auditeur::app::ComponentIdRef<'_>,
                 ) -> Result<Self::Ref, #auditeur::Error> {
-                    #connection::new(registry, dependent).await
+                    #connection_ident::new(registry, dependent).await
                 }
             }
-        }
-    }
-
-    fn impl_respond(
-        item_ident: &Ident,
-        config: &Config,
-        generics: &Generics,
-    ) -> proc_macro2::TokenStream {
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-        let query_ident = &config.query.message_ident;
-        let connection_ident = &config.query.ref_ident;
-
-        let auditeur = &*crate::AUDITEUR;
-        quote! {
-            impl #impl_generics #auditeur::resource::listener::Respond for #item_ident #ty_generics
-            #where_clause
-            {
-                type Query = #query_ident;
-                type Connection = #connection_ident;
-            }
-        }
-    }
-}
-
-struct RawFns {
-    raw_fns: Vec<(ImplItemFn, RawFnType)>,
-}
-
-impl RawFns {
-    fn connection_fns(&self) -> impl Iterator<Item = &ImplItemFn> {
-        self.raw_fns
-            .iter()
-            .filter(|(_, typ)| typ.connection_fn())
-            .map(|(func, _)| func)
-    }
-
-    fn ref_fns(&self) -> impl Iterator<Item = &ImplItemFn> {
-        self.raw_fns
-            .iter()
-            .filter(|(_, typ)| typ.ref_fn())
-            .map(|(func, _)| func)
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &ImplItemFn> {
-        self.raw_fns.iter().map(|(func, _)| func)
-    }
-}
-
-#[derive(Default)]
-struct MethodAttributes {
-    attributes: Punctuated<MethodAttribute, Token![,]>,
-}
-
-impl Parse for MethodAttributes {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        Ok(Self {
-            attributes: input.parse_terminated(MethodAttribute::parse, Token![,])?,
-        })
-    }
-}
-
-impl MethodAttributes {
-    fn into_config(self) -> syn::Result<MethodAttributeConfig> {
-        let span = self.attributes.span();
-
-        let (is_connection_fn, is_ref_fn, timeout, on_error) = self.attributes.into_iter().fold(
-            Default::default(),
-            |(mut is_connection_fn, mut is_ref_fn, mut timeout, mut on_error), attr| {
-                match attr {
-                    MethodAttribute::ConnectionFn(_) => is_connection_fn = true,
-                    MethodAttribute::RefFn(_) => is_ref_fn = true,
-                    MethodAttribute::Timeout(nv) => timeout = Some(Box::new(nv.value)),
-                    MethodAttribute::OnError(nv) => on_error = Some(nv.value.into_type()),
-                }
-                (is_connection_fn, is_ref_fn, timeout, on_error)
-            },
-        );
-
-        let raw_fn_attr = if is_connection_fn {
-            Some("connection_fn")
-        } else if is_ref_fn {
-            Some("ref_fn")
-        } else {
-            None
-        };
-
-        let method_attr = if timeout.is_some() {
-            Some("timeout")
-        } else if on_error.is_some() {
-            Some("on_error")
-        } else {
-            None
-        };
-
-        if let (Some(raw_fn_attr), Some(method_attr)) = (raw_fn_attr, method_attr) {
-            return Err(syn::Error::new(
-                span,
-                format!("{raw_fn_attr} and {method_attr} are mutually exclusive"),
-            ));
-        }
-
-        match (is_connection_fn, is_ref_fn) {
-            (false, false) => Ok(MethodAttributeConfig::Method {
-                timeout,
-                on_error: on_error.unwrap_or_default(),
-            }),
-            (false, true) => Ok(MethodAttributeConfig::RawFn(RawFnType::Ref)),
-            (true, false) => Ok(MethodAttributeConfig::RawFn(RawFnType::Connection)),
-            (true, true) => Ok(MethodAttributeConfig::RawFn(RawFnType::Both)),
-        }
-    }
-}
-
-enum MethodAttributeConfig {
-    RawFn(RawFnType),
-    Method {
-        timeout: Option<Box<Expr>>,
-        on_error: OnErrorType,
-    },
-}
-
-enum MethodAttribute {
-    ConnectionFn(Ident),
-    RefFn(Ident),
-    Timeout(NameValue<Expr>),
-    OnError(NameValue<OnError>),
-}
-
-impl Parse for MethodAttribute {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-        match &*ident.to_string() {
-            "connection_fn" => Ok(Self::ConnectionFn(ident)),
-            "ref_fn" => Ok(Self::RefFn(ident)),
-            "timeout" => NameValue::parse_after(ident, input).map(Self::Timeout),
-            "on_error" => NameValue::parse_after(ident, input).map(Self::OnError),
-            other => Err(input.error(format!(
-                "expected 'connection_fn', 'ref_fn', 'timeout', or 'on_error', found {other}"
-            ))),
-        }
-    }
-}
-
-impl ToTokens for MethodAttribute {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        match self {
-            Self::ConnectionFn(ident) | Self::RefFn(ident) => ident.to_tokens(tokens),
-            Self::Timeout(name_value) => name_value.to_tokens(tokens),
-            Self::OnError(name_value) => name_value.to_tokens(tokens),
-        }
-    }
-}
-
-enum OnError {
-    Panic(Ident),
-    WrapInResult(Ident),
-    ReturnErr(Ident, Option<Parenthesized<NameValue<Box<Type>>>>),
-    WrapInOption(Ident),
-    ReturnNone(Ident),
-    Return(NameValue<Box<Expr>>),
-}
-
-impl OnError {
-    fn into_type(self) -> OnErrorType {
-        match self {
-            Self::Panic(_) => OnErrorType::Panic,
-            Self::WrapInResult(_) => OnErrorType::WrapInResult,
-            Self::ReturnErr(_, option) => {
-                OnErrorType::ReturnErr(option.map(|parenthesized| parenthesized.value.value))
-            }
-            Self::WrapInOption(_) => OnErrorType::WrapInOption,
-            Self::ReturnNone(_) => OnErrorType::ReturnNone,
-            Self::Return(name_value) => OnErrorType::Return(name_value.value),
-        }
-    }
-}
-
-impl Parse for OnError {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-        match &*ident.to_string() {
-            "panic" => Ok(Self::Panic(ident)),
-            "wrap_in_result" => Ok(Self::WrapInResult(ident)),
-            "return_err" => Ok(Self::ReturnErr(ident, {
-                if input.peek(token::Paren) {
-                    Some(Parenthesized::parse_with(input, |input| {
-                        NameValue::parse(input, "type")
-                    })?)
-                } else {
-                    None
-                }
-            })),
-            "wrap_in_option" => Ok(Self::WrapInOption(ident)),
-            "return_none" => Ok(Self::ReturnNone(ident)),
-            "return" => NameValue::parse_after(ident, input).map(Self::Return),
-            other => Err(input.error(format!(
-                "expected 'panic', 'wrap_in_result', 'return_err', 'wrap_in_option', 'return_none', or 'return', found {other}"
-            ))),
-        }
-    }
-}
-
-impl ToTokens for OnError {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        match self {
-            Self::Panic(ident)
-            | Self::WrapInResult(ident)
-            | Self::WrapInOption(ident)
-            | Self::ReturnNone(ident) => ident.to_tokens(tokens),
-            Self::ReturnErr(ident, parenthesized) => {
-                ident.to_tokens(tokens);
-                parenthesized.to_tokens(tokens);
-            }
-            Self::Return(name_value) => name_value.to_tokens(tokens),
-        }
-    }
-}
-
-#[derive(Default)]
-#[expect(dead_code)] // currently unimplemented
-enum OnErrorType {
-    #[default]
-    Default,
-    Panic,
-    WrapInResult,
-    ReturnErr(Option<Box<Type>>),
-    WrapInOption,
-    ReturnNone,
-    Return(Box<Expr>),
-}
-
-impl OnErrorType {
-    /// Returns `true` if the on error type is [`Default`].
-    ///
-    /// [`Default`]: OnErrorType::Default
-    #[must_use]
-    const fn is_default(&self) -> bool {
-        matches!(self, Self::Default)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum RawFnType {
-    Connection,
-    Ref,
-    Both,
-}
-
-impl RawFnType {
-    #[must_use]
-    const fn connection_fn(self) -> bool {
-        matches!(self, Self::Connection | Self::Both)
-    }
-
-    #[must_use]
-    const fn ref_fn(self) -> bool {
-        matches!(self, Self::Ref | Self::Both)
-    }
-}
-
-struct Method<'a> {
-    snake_case_ident: &'a Ident,
-    camel_case_ident: Ident,
-    args: Vec<Arg<'a>>,
-    combination: Combination,
-    return_type: Option<&'a Type>,
-    unsafety: Option<Token![unsafe]>,
-    asyncness: Option<Token![async]>,
-    mutability: Option<Token![mut]>,
-    vis: Visibility,
-    docs: Vec<&'a Attribute>,
-    // timeout: Option<Expr>,
-    // on_error: MethodOnError,
-}
-
-struct Arg<'a> {
-    ident: &'a Ident,
-    ty: &'a Type,
-}
-
-impl<'a> Method<'a> {
-    pub fn new(
-        item: &'a ImplItemFn,
-        vis: Visibility,
-        all_inputs: &mut InputList,
-    ) -> syn::Result<Self> {
-        if !item.sig.generics.params.is_empty() || item.sig.generics.where_clause.is_some() {
-            return Err(syn::Error::new_spanned(
-                &item.sig.generics,
-                "method cannot have generics",
-            ));
-        }
-
-        let snake_case_ident = &item.sig.ident;
-        let camel_case_ident = Ident::new(
-            &crate::snake_to_upper_camel_case(&snake_case_ident.to_string()),
-            snake_case_ident.span(),
-        );
-
-        let mut typed_args = item.sig.inputs.iter().filter_map(|input| match input {
-            FnArg::Typed(typed) => Some(typed),
-            FnArg::Receiver(_) => None,
         });
+    }
+}
 
-        let Some(input_list) = typed_args.next_back() else {
-            return Err(syn::Error::new_spanned(
-                &item.sig.inputs,
-                "expected at least one typed argument to specify inputs",
-            ));
+/// Methods related to mutation.
+impl Config<'_> {
+    fn methods_to_remove(&self) -> HashSet<Ident> {
+        self.methods
+            .iter()
+            .filter(|method| method.info.is_connection_only())
+            .map(|method| &method.method.sig.ident)
+            .cloned()
+            .collect()
+    }
+}
+
+struct MethodConfig<'a> {
+    method: &'a syn::ImplItemFn,
+    docs: Vec<&'a syn::Attribute>,
+    info: MethodInfo,
+}
+
+enum MethodInfo {
+    ConnectionFn,
+    ResourceFn,
+    Default { camel_case_ident: Ident },
+}
+
+impl<'a> MethodConfig<'a> {
+    fn new(method: &'a syn::ImplItemFn) -> Continue<Self> {
+        let mut error = None;
+
+        let attrs = attr::collect_attrs::<MethodAttr, MethodAttrs>("respond", &method.attrs)
+            .filter_map(drain_results_into(&mut error));
+        // We need to go through *all* attrs *once* to get as many potential errors as possible.
+        let (connection_fn, resource_fn) =
+            attrs.fold((None, None), |(connection_fn, resource_fn), attr| {
+                (
+                    connection_fn.or_else(|| attr.as_connection_fn_flag()),
+                    resource_fn.or_else(|| attr.as_resource_fn_flag()),
+                )
+            });
+
+        let info = match (connection_fn, resource_fn) {
+            (Some(connection_fn_span), Some(resource_fn_span)) => {
+                error.combine(syn::Error::new(
+                    method.span(),
+                    "cannot combine 'connection_fn' and 'resource_fn'",
+                ));
+                error.combine(syn::Error::new(
+                    connection_fn_span,
+                    "'connection_fn' declared here",
+                ));
+                error.combine(syn::Error::new(
+                    resource_fn_span,
+                    "'resource_fn' declared here",
+                ));
+                MethodInfo::ResourceFn
+            }
+            (Some(_), _) => MethodInfo::ConnectionFn,
+            (_, Some(_)) => MethodInfo::ResourceFn,
+            _ => {
+                let camel_case_ident = Ident::new(
+                    &crate::snake_to_upper_camel_case(&method.sig.ident.to_string()),
+                    method.sig.ident.span(),
+                );
+
+                MethodInfo::Default { camel_case_ident }
+            }
         };
 
-        let input_list =
-            syn::parse2::<InputReferenceList>(input_list.ty.to_token_stream())?.into_owned_list();
-
-        let combination = all_inputs.merge(&input_list)?;
-
-        let args: Vec<Arg> = typed_args
-            .map(|arg| match &*arg.pat {
-                Pat::Ident(pat) if pat.ident != RESPONSE => Ok(Arg {
-                    ident: &pat.ident,
-                    ty: &arg.ty,
-                }),
-                _ => Err(syn::Error::new_spanned(
-                    &arg.pat,
-                    format!("expected any pattern that is not the identifier '{RESPONSE}'"),
-                )),
-            })
-            .collect::<syn::Result<_>>()?;
-
-        let return_type = match &item.sig.output {
-            ReturnType::Default => None,
-            ReturnType::Type(_, typ) => Some(&**typ),
-        };
-
-        let unsafety = item.sig.unsafety;
-        let asyncness = item.sig.asyncness;
-        let mutability = item
-            .sig
-            .inputs
-            .iter()
-            .find_map(|input| match input {
-                FnArg::Receiver(arg) => Some(arg.mutability),
-                FnArg::Typed(_) => None,
-            })
-            .flatten();
-
-        let docs = item
-            .attrs
-            .iter()
+        let docs = (method.attrs.iter())
             .filter(|item| item.path().is_ident("doc"))
             .collect();
 
-        Ok(Self {
-            snake_case_ident,
-            camel_case_ident,
-            args,
-            combination,
-            return_type,
-            unsafety,
-            asyncness,
-            mutability,
-            vis,
-            docs,
-            // TODO: read below config from attributes:
-            // #[auditeur(timeout = Duration::from_secs(2), on_error = panic)]
-            // where on_error can be panic, default, func(|| _), or propagate
-            // timeout: None,
-            // on_error: MethodOnError::Panic,
-        })
+        error.wrap(Self { method, docs, info })
     }
 
-    fn return_type_to_token_stream(&self) -> proc_macro2::TokenStream {
-        self.return_type
-            .map_or_else(|| quote! { () }, ToTokens::to_token_stream)
+    fn expand_query_variant(&self, ts: &mut TokenStream) {
+        let MethodInfo::Default { camel_case_ident } = &self.info else {
+            return;
+        };
+
+        let vis = doc_private(&self.method.vis);
+
+        let return_type = if let syn::ReturnType::Type(_, ty) = &self.method.sig.output {
+            ty.to_token_stream()
+        } else {
+            quote! { () }
+        };
+
+        let docs = &self.docs;
+
+        let fields = (self.method.sig.inputs)
+            .iter()
+            .filter(|fn_arg| matches!(fn_arg, syn::FnArg::Typed(_)));
+
+        let auditeur = &*crate::AUDITEUR;
+        ts.extend(quote! {
+            #(#docs)*
+            #[allow(rustdoc::broken_intra_doc_links)]
+            #vis #camel_case_ident {
+                response: #auditeur::tokio::sync::oneshot::Sender<#return_type>,
+                #(#fields),*
+            },
+        });
     }
 
-    fn maybe_await(&self) -> Option<proc_macro2::TokenStream> {
-        if self.asyncness.is_some() {
-            Some(quote! { .await })
+    fn expand_take_variant(&self, query_ident: &Ident, ts: &mut TokenStream) {
+        let MethodInfo::Default { camel_case_ident } = &self.info else {
+            return;
+        };
+
+        let ident = &self.method.sig.ident;
+
+        let args = (self.method.sig.inputs.iter())
+            .filter_map(fn_arg_as_typed)
+            .map(|fn_arg| &fn_arg.pat);
+
+        let call_args = args.clone();
+        let await_kw = (self.method.sig.asyncness)
+            .map(|kw| Token![await](kw.span))
+            .into_iter();
+        let unsafe_kw = self.method.sig.unsafety;
+
+        ts.extend(quote! {
+            #query_ident::#camel_case_ident { response, #(#args),* } => {
+                let result = #unsafe_kw { self.#ident(#(#call_args),*) #(.#await_kw)* } ;
+                let _ = response.send(result);
+            }
+        });
+    }
+
+    fn output(&self) -> TokenStream {
+        match &self.method.sig.output {
+            syn::ReturnType::Default => quote! { () },
+            syn::ReturnType::Type(_, ty) => ty.to_token_stream(),
+        }
+    }
+
+    fn expand_connection_method(
+        &self,
+        self_ty: &syn::Type,
+        query_ident: &Ident,
+        tokens: &mut TokenStream,
+    ) {
+        let MethodInfo::Default { camel_case_ident } = &self.info else {
+            if matches!(&self.info, MethodInfo::ConnectionFn) {
+                overlay::ImplItemFn::new(&self.method)
+                    .remove_attr("respond")
+                    .to_tokens(tokens);
+            }
+            return;
+        };
+
+        let auditeur = &*crate::AUDITEUR;
+        let ident = &self.method.sig.ident;
+
+        let output = self.output();
+        let sig = overlay::Signature::new(&self.method.vis, &self.method.sig)
+            .asyncness(false)
+            .receiver(quote! { &self })
+            .output(quote! { -> #auditeur::resource::listener::RespondFuture<
+                #output,
+                impl ::std::future::Future<Output = ()> + Send,
+                impl ::std::future::Future<Output = #output> + Send + 'static,
+            > });
+
+        let args = (self.method.sig.inputs.iter())
+            .filter_map(fn_arg_as_typed)
+            .map(|fn_arg| &fn_arg.pat);
+
+        // TODO: documentation version of methods without [`RespondFuture`]
+        tokens.extend(quote! {
+            #sig {
+                let (response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
+                #auditeur::resource::listener::RespondFuture::new(
+                    async move {
+                        let query = #query_ident::#camel_case_ident { response, #(#args),* };
+                        self.giver.give(query).await;
+                    },
+                    async move {
+                        auditeur_receiver.await.expect(concat!(
+                            "respond: ",
+                            stringify!(#self_ty), "::", stringify!(#ident),
+                            " panicked"
+                        ))
+                    },
+                )
+            }
+        });
+    }
+}
+
+impl MethodInfo {
+    /// Returns `true` if the method info is [`ConnectionOnly`].
+    ///
+    /// [`ConnectionOnly`]: MethodInfo::ConnectionOnly
+    #[must_use]
+    fn is_connection_only(&self) -> bool {
+        matches!(self, Self::ConnectionFn)
+    }
+}
+
+/// The parsable representation of the arguments to the respond macro.
+struct Attrs {
+    id: Option<field::Comma<NamespacedId>>,
+    attrs: Punctuated<Attr, Token![,]>,
+}
+
+impl Attrs {
+    fn get_component_data<T>(
+        &self,
+        attr_map: impl Fn(&Attr) -> Option<&field::List<ComponentInfo>>,
+        component_map: impl Fn(&ComponentInfo) -> Option<&T>,
+    ) -> Option<&T> {
+        (self.attrs.iter())
+            .filter_map(attr_map)
+            .flatten()
+            .filter_map(component_map)
+            .last()
+    }
+}
+
+impl Parse for Attrs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let id = input
+            .peek(syn::LitStr)
+            .then(|| field::Comma::parse(input))
+            .transpose()?;
+        let attrs = (id.as_ref().is_none_or(field::Comma::has_comma))
+            .then(|| input.parse_terminated(Attr::parse, Token![,]))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Self { id, attrs })
+    }
+}
+
+impl IntoIterator for Attrs {
+    type IntoIter = syn::punctuated::IntoIter<Attr>;
+    type Item = Attr;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.attrs.into_iter()
+    }
+}
+
+enum Attr {
+    Connection(field::List<ComponentInfo>),
+    Query(field::List<ComponentInfo>),
+    Fields(field::NameValue<Fields>),
+    TransactionFlag,
+    GetRefFlag,
+}
+
+impl Attr {
+    fn as_connection(&self) -> Option<&field::List<ComponentInfo>> {
+        if let Self::Connection(v) = self {
+            Some(v)
         } else {
             None
         }
     }
-}
 
-pub struct Config<'a> {
-    pub query: TakeConfig<'a>,
-    pub transaction: Option<TakeConfig<'a>>,
-    pub get_ref: bool,
-    pub fields: Option<&'a Fields>,
-}
-
-pub struct TakeConfig<'a> {
-    pub message_ident: Cow<'a, Ident>,
-    pub message_id: Cow<'a, NamespacedId>,
-    pub ref_ident: Cow<'a, Ident>,
-}
-
-#[derive(Clone, Copy)]
-struct TakeDefaultSuffixes {
-    message_ident: &'static str,
-    message_id: &'static str,
-    ref_ident: &'static str,
-}
-
-impl TakeDefaultSuffixes {
-    const QUERY: Self = Self {
-        message_ident: "Query",
-        message_id: "query",
-        ref_ident: "Connection",
-    };
-
-    const TRANSACTION: Self = Self {
-        message_ident: "Transaction",
-        message_id: "transaction",
-        ref_ident: "Ref",
-    };
-}
-
-#[derive(Debug)]
-pub struct Meta {
-    pub id: Option<Comma<NamespacedId>>,
-    params: Punctuated<MetaParam, Token![,]>,
-}
-
-impl Meta {
-    pub fn to_config(&self, item_ident: &Ident) -> syn::Result<Config<'_>> {
-        let query = self.to_take_config(
-            self.params.iter().filter_map(MetaParam::as_query).flatten(),
-            item_ident,
-            TakeDefaultSuffixes::QUERY,
-            "query",
-        )?;
-
-        let transaction = self
-            .params
-            .iter()
-            .any(MetaParam::is_transaction)
-            .then(|| {
-                self.to_take_config(
-                    self.params
-                        .iter()
-                        .filter_map(MetaParam::as_transaction)
-                        .flatten(),
-                    item_ident,
-                    TakeDefaultSuffixes::TRANSACTION,
-                    "transaction",
-                )
-            })
-            .transpose()?;
-
-        let get_ref = self.params.iter().any(MetaParam::is_get_ref);
-
-        let mut fields_iter = self.params.iter().filter_map(MetaParam::as_fields);
-        let fields = fields_iter.next().map(|nv| &nv.value);
-        if let Some(fields) = fields_iter.next() {
-            return Err(syn::Error::new_spanned(
-                fields,
-                "expected a maximum of one fields argument",
-            ));
-        }
-
-        Ok(Config {
-            query,
-            transaction,
-            get_ref,
-            fields,
-        })
-    }
-
-    fn id(&self) -> Option<&NamespacedId> {
-        self.id.as_ref().map(|id| &id.value)
-    }
-
-    fn to_take_config<'a>(
-        &self,
-        params: impl Iterator<Item = &'a TakeTypesParam>,
-        item_ident: &Ident,
-        defaults: TakeDefaultSuffixes,
-        param_name: &'static str,
-    ) -> syn::Result<TakeConfig<'a>> {
-        let (message_ident, message_id, ref_ident) = params.fold(
-            (None, None, None),
-            |(message_ident, message_id, ref_ident), param| {
-                (
-                    param.message_ident().or(message_ident),
-                    param.message_id().or(message_id),
-                    param.ref_ident().or(ref_ident),
-                )
-            },
-        );
-
-        let message_ident = message_ident.map_or_else(
-            || Cow::Owned(format_ident!("{item_ident}{}", defaults.message_ident)),
-            Cow::Borrowed,
-        );
-
-        let message_id = message_id
-            .map(Cow::Borrowed)
-            .or_else(|| {
-                self.id().map(|id| {
-                    Cow::Owned(NamespacedId {
-                        namespace: id.namespace.clone(),
-                        id: format!("{}_{}", id.id, defaults.message_id),
-                    })
-                })
-            })
-            .ok_or_else(|| {
-                syn::Error::new(
-                    self.span(),
-                    format!(
-                        "expected a namespaced id for the {param_name}'s message. \
-                    Try specifying '{param_name}(message_id = ...)' \
-                    or use the default by passing in the resource's namespaced id \
-                    as the first argument (ex: #[respond(\"namespace:id\")])"
-                    ),
-                )
-            })?;
-
-        let ref_ident = ref_ident.map_or_else(
-            || Cow::Owned(format_ident!("{item_ident}{}", defaults.ref_ident)),
-            Cow::Borrowed,
-        );
-
-        Ok(TakeConfig {
-            message_ident,
-            message_id,
-            ref_ident,
-        })
-    }
-}
-
-impl Parse for Meta {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let id = input
-            .peek(LitStr)
-            .then(|| Comma::parse(input))
-            .transpose()?;
-        let params = id
-            .as_ref()
-            .is_none_or(Comma::has_comma)
-            .then(|| input.parse_terminated(MetaParam::parse, Token![,]))
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Self { id, params })
-    }
-}
-
-impl ToTokens for Meta {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.id.to_tokens(tokens);
-        self.params.to_tokens(tokens);
-    }
-}
-
-#[derive(Debug)]
-enum MetaParam {
-    Query(List<TakeTypesParam>),
-    Transaction(List<TakeTypesParam>),
-    TransactionAutoFlag(Ident),
-    GetRefFlag(Ident),
-    Fields(NameValue<Fields>),
-}
-
-impl MetaParam {
-    const fn as_query(&self) -> Option<&List<TakeTypesParam>> {
+    fn as_query(&self) -> Option<&field::List<ComponentInfo>> {
         if let Self::Query(v) = self {
             Some(v)
         } else {
@@ -1373,230 +841,214 @@ impl MetaParam {
         }
     }
 
-    const fn as_transaction(&self) -> Option<&List<TakeTypesParam>> {
-        if let Self::Transaction(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    const fn is_transaction(&self) -> bool {
-        matches!(self, Self::Transaction(_) | Self::TransactionAutoFlag(_))
-    }
-
-    /// Returns `true` if the meta param is [`GetRefFlag`].
-    ///
-    /// [`GetRefFlag`]: MetaParam::GetRefFlag
-    #[must_use]
-    const fn is_get_ref(&self) -> bool {
-        matches!(self, Self::GetRefFlag(..))
-    }
-
-    const fn as_fields(&self) -> Option<&NameValue<Fields>> {
+    fn as_fields(&self) -> Option<&field::NameValue<Fields>> {
         if let Self::Fields(v) = self {
             Some(v)
         } else {
             None
         }
     }
+
+    /// Returns `true` if the attr is [`TransactionFlag`].
+    ///
+    /// [`TransactionFlag`]: Attr::TransactionFlag
+    #[must_use]
+    fn is_transaction_flag(&self) -> bool {
+        matches!(self, Self::TransactionFlag)
+    }
+
+    /// Returns `true` if the attr is [`GetRefFlag`].
+    ///
+    /// [`GetRefFlag`]: Attr::GetRefFlag
+    #[must_use]
+    fn is_get_ref_flag(&self) -> bool {
+        matches!(self, Self::GetRefFlag)
+    }
 }
 
-impl Parse for MetaParam {
+impl Parse for Attr {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-        match &*ident.to_string() {
-            "query" => List::parse_after(ident, input).map(Self::Query),
-            "transaction" => {
-                if input.peek(token::Paren) {
-                    List::parse_after(ident, input).map(Self::Transaction)
+        let ident_res = input.parse();
+        let ident: Ident = match ident_res {
+            Ok(ident) => ident,
+            Err(err) => {
+                return Err(if input.peek(syn::LitStr) {
+                    input.error(format!(
+                        "{err}: an id can only be specified as the first argument",
+                    ))
                 } else {
-                    Ok(Self::TransactionAutoFlag(ident))
-                }
+                    err
+                });
             }
-            "get_ref" => Ok(Self::GetRefFlag(ident)),
-            "fields" => NameValue::parse_after(ident, input).map(Self::Fields),
-            other => Err(input.error(format!(
-                "expected 'query', 'transaction', 'get_ref', or 'fields', found {other}"
-            ))),
+        };
+
+        if ident == "connection" {
+            field::List::parse_after(ident, input).map(Self::Connection)
+        } else if ident == "query" {
+            field::List::parse_after(ident, input).map(Self::Query)
+        } else if ident == "fields" {
+            field::NameValue::parse_after(ident, input).map(Self::Fields)
+        } else if ident == "transaction" {
+            Ok(Self::TransactionFlag)
+        } else if ident == "get_ref" {
+            Ok(Self::GetRefFlag)
+        } else {
+            Err(input.error(format!(
+                "expected 'connection', 'query', 'fields', 'transaction', or 'get_ref', found {ident}"
+            )))
         }
     }
 }
 
-impl ToTokens for MetaParam {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        match self {
-            Self::Query(list) | Self::Transaction(list) => list.to_tokens(tokens),
-            Self::TransactionAutoFlag(ident) | Self::GetRefFlag(ident) => ident.to_tokens(tokens),
-            Self::Fields(fields) => fields.to_tokens(tokens),
+enum ComponentInfo {
+    Id(field::NameValue<NamespacedId>),
+    Ident(field::NameValue<Ident>),
+}
+
+impl ComponentInfo {
+    fn as_id(&self) -> Option<&NamespacedId> {
+        if let Self::Id(v) = self {
+            Some(&v.value)
+        } else {
+            None
+        }
+    }
+
+    fn as_ident(&self) -> Option<&Ident> {
+        if let Self::Ident(v) = self {
+            Some(&v.value)
+        } else {
+            None
         }
     }
 }
 
-#[derive(Debug)]
-enum TakeTypesParam {
-    MessageId(NameValue<NamespacedId>),
-    MessageIdent(NameValue<Ident>),
-    RefIdent(NameValue<Ident>),
-}
-
-impl TakeTypesParam {
-    fn message_ident(&self) -> Option<&Ident> {
-        match self {
-            Self::MessageIdent(name_value) => Some(name_value),
-            _ => None,
-        }
-    }
-
-    fn message_id(&self) -> Option<&NamespacedId> {
-        match self {
-            Self::MessageId(name_value) => Some(name_value),
-            _ => None,
-        }
-    }
-
-    fn ref_ident(&self) -> Option<&Ident> {
-        match self {
-            Self::RefIdent(name_value) => Some(name_value),
-            _ => None,
-        }
-    }
-}
-
-impl Parse for TakeTypesParam {
+impl Parse for ComponentInfo {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let ident: Ident = input.parse()?;
-        match &*ident.to_string() {
-            "message_ident" => NameValue::parse_after(ident, input).map(Self::MessageIdent),
-            "message_id" => NameValue::parse_after(ident, input).map(Self::MessageId),
-            "ref_ident" => NameValue::parse_after(ident, input).map(Self::RefIdent),
-            other => Err(input.error(format!(
-                "expected 'message_ident', 'message_id, or 'ref_ident', found {other}"
-            ))),
+        if ident == "ident" {
+            field::NameValue::parse_after(ident, input).map(Self::Ident)
+        } else if ident == "id" {
+            field::NameValue::parse_after(ident, input).map(Self::Id)
+        } else {
+            Err(input.error(format!("expected 'ident' or 'id', found {ident}")))
         }
     }
 }
 
-impl ToTokens for TakeTypesParam {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        match self {
-            Self::MessageId(name_value) => name_value.to_tokens(tokens),
-            Self::MessageIdent(name_value) | Self::RefIdent(name_value) => {
-                name_value.to_tokens(tokens);
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Fields {
-    brace: Brace,
-    list: Punctuated<Field, Token![,]>,
+struct Fields {
+    fields: Punctuated<Field, Token![,]>,
 }
 
 impl Parse for Fields {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let content;
+        braced!(content in input);
         Ok(Self {
-            brace: braced!(content in input),
-            list: content.parse_terminated(Field::parse, Token![,])?,
+            fields: content.parse_terminated(Field::parse, Token![,])?,
         })
     }
 }
 
-impl ToTokens for Fields {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.brace.surround(tokens, |tokens| {
-            self.list.to_tokens(tokens);
-        });
-    }
-}
-
-#[derive(Debug)]
 struct Field {
     ident: Ident,
-    colon: Token![:],
-    ty: Box<Type>,
+    ty: syn::Type,
 }
 
 impl Parse for Field {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        Ok(Self {
-            ident: input.parse()?,
-            colon: input.parse()?,
-            ty: input.parse()?,
-        })
+        let ident = input.parse()?;
+        let _: Token![:] = input.parse()?;
+        let ty = input.parse()?;
+        Ok(Self { ident, ty })
     }
 }
 
-impl ToTokens for Field {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.ident.to_tokens(tokens);
-        self.colon.to_tokens(tokens);
-        self.ty.to_tokens(tokens);
+struct MethodAttrs {
+    attrs: Punctuated<MethodAttr, Token![,]>,
+}
+
+impl Parse for MethodAttrs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        input
+            .parse_terminated(MethodAttr::parse, Token![,])
+            .map(|attrs| Self { attrs })
     }
 }
 
-#[derive(Default)]
-struct SearchTypes {
-    ty: HashMap<Ident, bool>,
-    cnst: HashMap<Ident, bool>,
-    lifetime: HashMap<Lifetime, bool>,
-}
+impl IntoIterator for MethodAttrs {
+    type IntoIter = syn::punctuated::IntoIter<MethodAttr>;
+    type Item = MethodAttr;
 
-impl SearchTypes {
-    fn from_generics(generics: &Generics) -> Self {
-        let mut this = Self::default();
-        for param in &generics.params {
-            match param {
-                GenericParam::Lifetime(lt) => this.lifetime.insert(lt.lifetime.clone(), false),
-                GenericParam::Type(ty) => this.ty.insert(ty.ident.clone(), false),
-                GenericParam::Const(cnst) => this.cnst.insert(cnst.ident.clone(), false),
-            };
-        }
-        this
-    }
-
-    fn any(&self) -> bool {
-        (self.ty.values())
-            .chain(self.cnst.values())
-            .chain(self.lifetime.values())
-            .any(|val| *val)
+    fn into_iter(self) -> Self::IntoIter {
+        self.attrs.into_iter()
     }
 }
 
-impl<'ast> Visit<'ast> for SearchTypes {
-    fn visit_type_path(&mut self, i: &'ast syn::TypePath) {
-        if i.path.segments.len() == 1
-            && i.qself.is_none()
-            && i.path.leading_colon.is_none()
-            && let Some(segment) = i.path.segments.first()
-            && let Some(is_present) = self.ty.get_mut(&segment.ident)
-        {
-            *is_present = true;
-        }
+enum MethodAttr {
+    ConnectionFnFlag(Span),
+    ResourceFnFlag(Span),
+}
 
-        syn::visit::visit_type_path(self, i);
+impl MethodAttr {
+    fn as_connection_fn_flag(&self) -> Option<Span> {
+        if let Self::ConnectionFnFlag(v) = self {
+            Some(*v)
+        } else {
+            None
+        }
     }
 
-    fn visit_expr_path(&mut self, i: &'ast syn::ExprPath) {
-        if i.path.segments.len() == 1
-            && i.qself.is_none()
-            && i.path.leading_colon.is_none()
-            && let Some(segment) = i.path.segments.first()
-            && let Some(is_present) = self.cnst.get_mut(&segment.ident)
-        {
-            *is_present = true;
+    fn as_resource_fn_flag(&self) -> Option<Span> {
+        if let Self::ResourceFnFlag(v) = self {
+            Some(*v)
+        } else {
+            None
         }
-
-        syn::visit::visit_expr_path(self, i);
     }
+}
 
-    fn visit_lifetime(&mut self, i: &'ast syn::Lifetime) {
-        if let Some(is_present) = self.lifetime.get_mut(i) {
-            *is_present = true;
+impl Parse for MethodAttr {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        if ident == "connection_fn" {
+            Ok(Self::ConnectionFnFlag(ident.span()))
+        } else if ident == "resource_fn" {
+            Ok(Self::ResourceFnFlag(ident.span()))
+        } else {
+            Err(input.error(format!(
+                "expected 'connection_fn' or 'resource_fn', found {ident}"
+            )))
         }
+    }
+}
 
-        syn::visit::visit_lifetime(self, i);
+fn impl_item_as_fn(item: &syn::ImplItem) -> Option<&syn::ImplItemFn> {
+    if let syn::ImplItem::Fn(func) = item {
+        Some(func)
+    } else {
+        None
+    }
+}
+
+fn fn_arg_as_typed(fn_arg: &syn::FnArg) -> Option<&syn::PatType> {
+    if let syn::FnArg::Typed(typed) = fn_arg {
+        Some(typed)
+    } else {
+        None
+    }
+}
+
+fn doc_private(vis: &syn::Visibility) -> TokenStream {
+    if matches!(
+        vis,
+        syn::Visibility::Inherited | syn::Visibility::Restricted(_)
+    ) {
+        quote! {
+            #[doc(hidden)]
+            #[allow(private_interfaces)]
+        }
+    } else {
+        quote! {}
     }
 }

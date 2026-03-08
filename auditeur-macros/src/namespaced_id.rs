@@ -4,8 +4,8 @@ use std::{
 };
 
 use proc_macro2::Span;
-use quote::ToTokens;
 use quote::quote;
+use quote::{ToTokens, quote_spanned};
 use syn::{LitStr, parse::Parse};
 use thiserror::Error;
 
@@ -15,12 +15,13 @@ use crate::Auditeur;
 pub struct NamespacedId {
     pub namespace: String,
     pub id: String,
+    pub span: Span,
 }
 
 impl NamespacedId {
     pub fn to_lit_str(&self) -> LitStr {
         let combined = format!("{}:{}", self.namespace, self.id);
-        LitStr::new(&combined, Span::call_site())
+        LitStr::new(&combined, self.span)
     }
 }
 
@@ -43,6 +44,7 @@ impl FromStr for NamespacedId {
         Ok(Self {
             namespace: namespace.to_string(),
             id: id.to_string(),
+            span: Span::call_site(),
         })
     }
 }
@@ -58,10 +60,15 @@ pub enum ParseError {
 impl Parse for NamespacedId {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let string: LitStr = input.parse()?;
-        string
+        let id: Self = string
             .value()
             .parse()
-            .map_err(|err| syn::Error::new_spanned(&string, format!("{err:?}")))
+            .map_err(|err| syn::Error::new_spanned(&string, format!("{err:?}")))?;
+        let id = Self {
+            span: string.span(),
+            ..id
+        };
+        Ok(id)
     }
 }
 
@@ -72,16 +79,17 @@ impl ToTokens for NamespacedId {
         let namespace_size = self.namespace.len();
         let string = self.to_string();
         let bytes = string.bytes();
+        let span = self.span;
 
-        tokens.extend(quote! {
-            {
+        tokens.extend(quote_spanned! {
+            span => {
                 const COERCE: &#namespaced_id::NamespacedIdRef = unsafe {
                     const COERCE: &#namespaced_id::Coerce<[u8]> = &#namespaced_id::Coerce {
                         namespace_size: #namespace_size,
                         data: [#(#bytes),*],
                     };
-                    // SAFETY: Coerce<[u8]>, Coerce<str>, and NamespacedIdRef all have the same layout
-                    // and this is valid utf-8.
+                    // SAFETY: Coerce<[u8]>, Coerce<str>, and NamespacedIdRef all have the same
+                    // layout and this is valid utf-8.
                     std::mem::transmute(COERCE)
                 };
                 COERCE

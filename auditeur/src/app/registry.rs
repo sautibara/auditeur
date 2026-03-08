@@ -408,7 +408,7 @@ impl Registry {
         let resource_map: &mut ResourceMap = (resource_map.resource_mut() as &mut dyn crate::Any)
             .downcast_mut()
             .expect("ResourceMap downcast shouldn't fail");
-        resource_map.add_channels_pub(building_registry.channels);
+        resource_map.add_channels(building_registry.channels);
 
         // Now that we initialized the ResourceMap, we could continue to the other resources.
 

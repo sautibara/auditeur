@@ -366,7 +366,6 @@ impl PluginRegistry {
     pub async unsafe fn load_binaries(
         &mut self,
         binaries: Vec<(PluginName, PathBuf)>,
-        (): (),
     ) -> (HashMap<PluginName, NamespacedId>, Result<(), Vec<Error>>) {
         // SAFETY: upheld by caller
         unsafe {
@@ -376,7 +375,7 @@ impl PluginRegistry {
         }
     }
 
-    pub async fn unload_plugins(&mut self, plugins: Vec<PluginName>, (): ()) {
+    pub async fn unload_plugins(&mut self, plugins: Vec<PluginName>) {
         self.inner
             .unload_plugins(plugins, &self.resource_map, &self.registry)
             .await;

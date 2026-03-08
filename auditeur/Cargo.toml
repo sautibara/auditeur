@@ -24,6 +24,7 @@ send-future = "0.1.0"
 slice-dst = "1.5.1"
 serde = "1.0.219"
 hashbrown = "0.15"
+pin-project = "1.1.11"
 
 [lints.clippy]
 enum_glob_use = "warn"
