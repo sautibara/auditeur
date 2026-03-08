@@ -104,9 +104,8 @@ impl<'a> Config<'a> {
             .flat_map(|fields| fields.fields.iter())
             .collect();
 
-        let vis = if methods
-            .iter()
-            .all(|method| matches!(method.method.vis, syn::Visibility::Public(_)))
+        let vis = if (methods.iter())
+            .any(|method| matches!(method.method.vis, syn::Visibility::Public(_)))
         {
             syn::Visibility::Public(Token![pub](Span::call_site()))
         } else {
@@ -748,9 +747,13 @@ impl<'a> MethodConfig<'a> {
             .filter_map(fn_arg_as_typed)
             .map(|fn_arg| &fn_arg.pat);
 
-        // TODO: documentation version of methods without [`RespondFuture`]
+        let docs1 = (self.method.attrs.iter()).filter(|attr| attr.path().is_ident("doc"));
+        let docs2 = docs1.clone();
+
         tokens.extend(quote! {
             #[allow(clippy::needless_pass_by_value)]
+            #[cfg(not(doc))]
+            #(#docs1)*
             #sig {
                 let (response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
                 #auditeur::resource::listener::RespondFuture::new(
@@ -767,6 +770,16 @@ impl<'a> MethodConfig<'a> {
                     },
                 )
             }
+        });
+
+        let doc_sig = overlay::Signature::new(&self.method.vis, &self.method.sig)
+            .asyncness(true)
+            .receiver(quote! { &self });
+
+        tokens.extend(quote! {
+            #[cfg(doc)]
+            #(#docs2)*
+            #doc_sig { unreachable!() }
         });
     }
 }

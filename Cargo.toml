@@ -14,6 +14,10 @@ resolver = "2"
 enum_glob_use = "warn"
 pedantic = "warn"
 nursery = "warn"
+# i just disagree with it
+option_if_let_else = "allow"
+# so many false positives
+literal_string_with_formatting_args = "allow"
 
 # copy below this line
 
