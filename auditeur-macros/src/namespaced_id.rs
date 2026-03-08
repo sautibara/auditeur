@@ -4,7 +4,6 @@ use std::{
 };
 
 use proc_macro2::Span;
-use quote::quote;
 use quote::{ToTokens, quote_spanned};
 use syn::{LitStr, parse::Parse};
 use thiserror::Error;
@@ -16,13 +15,6 @@ pub struct NamespacedId {
     pub namespace: String,
     pub id: String,
     pub span: Span,
-}
-
-impl NamespacedId {
-    pub fn to_lit_str(&self) -> LitStr {
-        let combined = format!("{}:{}", self.namespace, self.id);
-        LitStr::new(&combined, self.span)
-    }
 }
 
 impl Display for NamespacedId {

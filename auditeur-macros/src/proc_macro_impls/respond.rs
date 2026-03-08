@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::HashSet};
 
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, TokenStreamExt, format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     Ident, Token, braced, fold::Fold, parse::Parse, punctuated::Punctuated, spanned::Spanned,
 };
@@ -50,18 +50,20 @@ pub fn respond_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenSt
 
     // Mutation
     let item = FoldAttr::remove("respond").fold_item_impl(item);
-    let item = item_impl_remove_methods(item, methods_to_remove);
+    let item = item_impl_remove_methods(item, &methods_to_remove);
 
     // Combination
     let error = error.map(syn::Error::into_compile_error);
     Ok(quote! {
+        #[allow(clippy::needless_pass_by_value)]
         #item
+
         #respond_impls
         #error
     })
 }
 
-fn item_impl_remove_methods(mut item: syn::ItemImpl, methods: HashSet<Ident>) -> syn::ItemImpl {
+fn item_impl_remove_methods(mut item: syn::ItemImpl, methods: &HashSet<Ident>) -> syn::ItemImpl {
     item.items
         .retain(|item| impl_item_as_fn(item).is_none_or(|item| !methods.contains(&item.sig.ident)));
     item
@@ -77,7 +79,7 @@ struct Config<'a> {
     transaction: bool,
     get_ref: bool,
 
-    vis: syn::Visibility,
+    doc_vis: TokenStream,
     id_expr: TokenStream,
 
     methods: Vec<MethodConfig<'a>>,
@@ -110,6 +112,7 @@ impl<'a> Config<'a> {
         } else {
             syn::Visibility::Inherited
         };
+        let doc_vis = doc_private(&vis);
 
         let transaction = attrs.attrs.iter().any(Attr::is_transaction_flag);
         let get_ref = attrs.attrs.iter().any(Attr::is_get_ref_flag);
@@ -123,7 +126,7 @@ impl<'a> Config<'a> {
             connection_ident,
             transaction,
             get_ref,
-            vis,
+            doc_vis,
             id_expr,
             methods,
             fields,
@@ -223,19 +226,20 @@ impl<'a> Config<'a> {
         error: &mut MaybeError,
     ) -> Cow<'a, NamespacedId> {
         let cow = id.get_or_insert_with(|| {
-            if let Some(id) = &attrs.id {
-                Cow::Borrowed(&id.value)
-            } else {
-                error.combine(syn::Error::new(
-                    Span::call_site(),
-                    "cannot get the item's `NamespacedId`, expected one as the first argument",
-                ));
-                Cow::Owned(NamespacedId {
-                    namespace: "error".to_string(),
-                    id: "recovery".to_string(),
-                    span: Span::call_site(),
-                })
-            }
+            attrs.id.as_ref().map_or_else(
+                || {
+                    error.combine(syn::Error::new(
+                        Span::call_site(),
+                        "cannot get the item's `NamespacedId`, expected one as the first argument",
+                    ));
+                    Cow::Owned(NamespacedId {
+                        namespace: "error".to_string(),
+                        id: "recovery".to_string(),
+                        span: Span::call_site(),
+                    })
+                },
+                |id| Cow::Borrowed(&id.value),
+            )
         });
         cow.clone()
     }
@@ -284,12 +288,13 @@ impl Config<'_> {
         }
 
         let ident = &self.query_ident;
+        let doc_vis = &self.doc_vis;
 
-        let message_impl =
-            super::derive_message(&ident, &self.query_id, &CustomGenerics::default());
+        let message_impl = super::derive_message(ident, &self.query_id, &CustomGenerics::default());
 
         tokens.extend(quote! {
             #[non_exhaustive]
+            #doc_vis
             pub enum #ident {
                 #variants
             }
@@ -308,7 +313,7 @@ impl Config<'_> {
     }
 
     fn expand_take_impl(&self, tokens: &mut TokenStream) {
-        let (impl_generics, ty_generics, where_clause) = self.item.generics.split_for_impl();
+        let (impl_generics, _, where_clause) = self.item.generics.split_for_impl();
 
         let self_ty = &self.item.self_ty;
         let query_ident = &self.query_ident;
@@ -351,12 +356,14 @@ impl Config<'_> {
     fn expand_connection_struct(&self, tokens: &mut TokenStream) {
         let query_ident = &self.query_ident;
         let connection_ident = &self.connection_ident;
+        let doc_vis = &self.doc_vis;
 
         let field_idents = self.field_idents();
         let field_types = self.field_types();
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
+            #doc_vis
             pub struct #connection_ident {
                 dependency_handle: #auditeur::input::dependency::Handle,
                 giver: #auditeur::app::channels::Giver<#query_ident>,
@@ -537,7 +544,7 @@ impl Config<'_> {
     fn expand_respond_impl(&self, tokens: &mut TokenStream) {
         let self_ty = &self.item.self_ty;
         let query_ident = &self.query_ident;
-        let (impl_generics, ty_generics, where_clause) = self.item.generics.split_for_impl();
+        let (impl_generics, _, where_clause) = self.item.generics.split_for_impl();
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
@@ -552,7 +559,7 @@ impl Config<'_> {
     fn expand_get_ref_impl(&self, tokens: &mut TokenStream) {
         let self_ty = &self.item.self_ty;
         let connection_ident = &self.connection_ident;
-        let (impl_generics, ty_generics, where_clause) = self.item.generics.split_for_impl();
+        let (impl_generics, _, where_clause) = self.item.generics.split_for_impl();
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
@@ -717,7 +724,7 @@ impl<'a> MethodConfig<'a> {
     ) {
         let MethodInfo::Default { camel_case_ident } = &self.info else {
             if matches!(&self.info, MethodInfo::ConnectionFn) {
-                overlay::ImplItemFn::new(&self.method)
+                overlay::ImplItemFn::new(self.method)
                     .remove_attr("respond")
                     .to_tokens(tokens);
             }
@@ -743,6 +750,7 @@ impl<'a> MethodConfig<'a> {
 
         // TODO: documentation version of methods without [`RespondFuture`]
         tokens.extend(quote! {
+            #[allow(clippy::needless_pass_by_value)]
             #sig {
                 let (response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
                 #auditeur::resource::listener::RespondFuture::new(
@@ -768,7 +776,7 @@ impl MethodInfo {
     ///
     /// [`ConnectionOnly`]: MethodInfo::ConnectionOnly
     #[must_use]
-    fn is_connection_only(&self) -> bool {
+    const fn is_connection_only(&self) -> bool {
         matches!(self, Self::ConnectionFn)
     }
 }
@@ -825,7 +833,7 @@ enum Attr {
 }
 
 impl Attr {
-    fn as_connection(&self) -> Option<&field::List<ComponentInfo>> {
+    const fn as_connection(&self) -> Option<&field::List<ComponentInfo>> {
         if let Self::Connection(v) = self {
             Some(v)
         } else {
@@ -833,7 +841,7 @@ impl Attr {
         }
     }
 
-    fn as_query(&self) -> Option<&field::List<ComponentInfo>> {
+    const fn as_query(&self) -> Option<&field::List<ComponentInfo>> {
         if let Self::Query(v) = self {
             Some(v)
         } else {
@@ -841,7 +849,7 @@ impl Attr {
         }
     }
 
-    fn as_fields(&self) -> Option<&field::NameValue<Fields>> {
+    const fn as_fields(&self) -> Option<&field::NameValue<Fields>> {
         if let Self::Fields(v) = self {
             Some(v)
         } else {
@@ -853,7 +861,7 @@ impl Attr {
     ///
     /// [`TransactionFlag`]: Attr::TransactionFlag
     #[must_use]
-    fn is_transaction_flag(&self) -> bool {
+    const fn is_transaction_flag(&self) -> bool {
         matches!(self, Self::TransactionFlag)
     }
 
@@ -861,7 +869,7 @@ impl Attr {
     ///
     /// [`GetRefFlag`]: Attr::GetRefFlag
     #[must_use]
-    fn is_get_ref_flag(&self) -> bool {
+    const fn is_get_ref_flag(&self) -> bool {
         matches!(self, Self::GetRefFlag)
     }
 }
@@ -906,7 +914,7 @@ enum ComponentInfo {
 }
 
 impl ComponentInfo {
-    fn as_id(&self) -> Option<&NamespacedId> {
+    const fn as_id(&self) -> Option<&NamespacedId> {
         if let Self::Id(v) = self {
             Some(&v.value)
         } else {
@@ -914,7 +922,7 @@ impl ComponentInfo {
         }
     }
 
-    fn as_ident(&self) -> Option<&Ident> {
+    const fn as_ident(&self) -> Option<&Ident> {
         if let Self::Ident(v) = self {
             Some(&v.value)
         } else {
@@ -991,7 +999,7 @@ enum MethodAttr {
 }
 
 impl MethodAttr {
-    fn as_connection_fn_flag(&self) -> Option<Span> {
+    const fn as_connection_fn_flag(&self) -> Option<Span> {
         if let Self::ConnectionFnFlag(v) = self {
             Some(*v)
         } else {
@@ -999,7 +1007,7 @@ impl MethodAttr {
         }
     }
 
-    fn as_resource_fn_flag(&self) -> Option<Span> {
+    const fn as_resource_fn_flag(&self) -> Option<Span> {
         if let Self::ResourceFnFlag(v) = self {
             Some(*v)
         } else {
@@ -1023,7 +1031,7 @@ impl Parse for MethodAttr {
     }
 }
 
-fn impl_item_as_fn(item: &syn::ImplItem) -> Option<&syn::ImplItemFn> {
+const fn impl_item_as_fn(item: &syn::ImplItem) -> Option<&syn::ImplItemFn> {
     if let syn::ImplItem::Fn(func) = item {
         Some(func)
     } else {
@@ -1031,7 +1039,7 @@ fn impl_item_as_fn(item: &syn::ImplItem) -> Option<&syn::ImplItemFn> {
     }
 }
 
-fn fn_arg_as_typed(fn_arg: &syn::FnArg) -> Option<&syn::PatType> {
+const fn fn_arg_as_typed(fn_arg: &syn::FnArg) -> Option<&syn::PatType> {
     if let syn::FnArg::Typed(typed) = fn_arg {
         Some(typed)
     } else {

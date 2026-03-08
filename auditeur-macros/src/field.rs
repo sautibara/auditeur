@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use quote::ToTokens;
 use syn::{
     Ident, Token, bracketed, parenthesized,
-    parse::{Parse, ParseStream, Peek},
+    parse::{Parse, ParseStream},
     punctuated::Punctuated,
     token::{Bracket, Paren},
 };
@@ -209,65 +209,5 @@ impl<T: Parse> Parse for Comma<T> {
 impl<T: ToTokens> ToTokens for Comma<T> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         self.to_tokens_with(tokens, |tokens| self.value.to_tokens(tokens));
-    }
-}
-
-#[derive(Clone, Default, Debug)]
-pub struct Parenthesized<T> {
-    pub paren: Paren,
-    pub value: T,
-}
-
-impl<T> Parenthesized<T> {
-    pub fn default_with(value: T) -> Self {
-        Self {
-            paren: Paren::default(),
-            value,
-        }
-    }
-
-    pub fn parse_with(
-        input: ParseStream<'_>,
-        parser: fn(_: ParseStream<'_>) -> syn::Result<T>,
-    ) -> syn::Result<Self> {
-        let content;
-        Ok(Self {
-            paren: parenthesized!(content in input),
-            value: parser(&content)?,
-        })
-    }
-
-    pub fn to_tokens_with(
-        &self,
-        tokens: &mut proc_macro2::TokenStream,
-        func: impl FnOnce(&mut proc_macro2::TokenStream),
-    ) {
-        self.paren.surround(tokens, func);
-    }
-}
-
-impl<T: Parse> Parse for Parenthesized<T> {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Self::parse_with(input, T::parse)
-    }
-}
-
-impl<T: Parse, P: Parse> Parenthesized<Punctuated<T, P>> {
-    pub fn parse_punctuated<PT: Peek<Token = P>>(
-        input: ParseStream,
-        punctuation: PT,
-    ) -> syn::Result<Self> {
-        let content;
-        Ok(Self {
-            paren: parenthesized!(content in input),
-            value: content.parse_terminated(T::parse, punctuation)?,
-        })
-    }
-}
-
-impl<T: ToTokens> ToTokens for Parenthesized<T> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.paren
-            .surround(tokens, |tokens| self.value.to_tokens(tokens));
     }
 }

@@ -1,14 +1,13 @@
 #![doc = include_str!("listener_docs.md")]
 
-use std::{marker::PhantomData, pin::Pin};
+use std::{marker::PhantomData, pin::Pin, task::Poll};
 
 use crate::{
     Message,
     app::{
         LoadedResource, Loader, Runner,
-        channels::{self, EventReceiver, EventSender, Giver, Taker},
+        channels::{self, EventReceiver, EventSender, Taker},
     },
-    input::{dependency, subset::Subset},
     prelude::*,
 };
 
@@ -299,17 +298,6 @@ pub trait Respond: Listener {
     type Query: crate::Message;
 }
 
-fn func2() {
-    func(async |map: &mut crate::app::ResourceMap| {
-        let _ = map.loaded_bundles();
-        let _ = map.loaded_resources();
-    })
-}
-
-fn func(val: impl for<'a> TransactionFnOnce<'a, crate::app::ResourceMap, Output = ()>) {
-    let _ = val;
-}
-
 pub trait TransactionFnOnce<'a, R: Respond>: Send + Sync + 'static {
     type Output: Send;
 
@@ -330,6 +318,7 @@ where
     }
 }
 
+#[allow(clippy::type_complexity)] // wi wi wi
 pub struct BoxedTransactionFnOnce<R: Respond>(
     Box<
         dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
@@ -385,7 +374,7 @@ where
     Fut2: Future<Output = RT> + Send + 'static,
 {
     #[doc(hidden)]
-    pub fn new(fut1: Fut1, fut2: Fut2) -> Self {
+    pub const fn new(fut1: Fut1, fut2: Fut2) -> Self {
         Self {
             fut1,
             fut2,
@@ -393,6 +382,7 @@ where
         }
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn send_blocking(self) -> impl Future<Output = RT> + Send + 'static {
         match self.state {
             RespondFutureState::Fut1 => {
@@ -414,21 +404,24 @@ where
 {
     type Output = RT;
 
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         match this.state {
             RespondFutureState::Fut1 => match this.fut1.poll(cx) {
-                std::task::Poll::Ready(()) => {
-                    *this.state = RespondFutureState::Fut2;
-                    this.fut2.poll(cx)
-                }
-                _ => std::task::Poll::Pending,
+                Poll::Ready(()) => match this.fut2.poll(cx) {
+                    ready @ Poll::Ready(_) => {
+                        *this.state = RespondFutureState::End;
+                        ready
+                    }
+                    pending => {
+                        *this.state = RespondFutureState::Fut2;
+                        pending
+                    }
+                },
+                Poll::Pending => Poll::Pending,
             },
             RespondFutureState::Fut2 => match this.fut2.poll(cx) {
-                ready @ std::task::Poll::Ready(_) => {
+                ready @ Poll::Ready(_) => {
                     *this.state = RespondFutureState::End;
                     ready
                 }

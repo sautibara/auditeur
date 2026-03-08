@@ -1062,6 +1062,7 @@ impl ResourceMap {
     }
 
     /// Returns a static view into the resources and bundles that fit `query`
+    #[must_use]
     pub fn query(&self, query: Query) -> SubMap {
         query.get(self)
     }

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt};
 use syn::Token;
@@ -13,7 +11,7 @@ pub struct Signature<'a> {
 }
 
 impl<'a> Signature<'a> {
-    pub fn new(vis: &'a syn::Visibility, sig: &'a syn::Signature) -> Self {
+    pub const fn new(vis: &'a syn::Visibility, sig: &'a syn::Signature) -> Self {
         Self {
             vis,
             sig,
@@ -45,7 +43,7 @@ impl<'a> Signature<'a> {
     }
 }
 
-impl<'a> ToTokens for Signature<'a> {
+impl ToTokens for Signature<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.vis.to_tokens(tokens);
         self.sig.constness.to_tokens(tokens);
@@ -96,14 +94,14 @@ pub struct ImplItemFn<'a> {
 }
 
 impl<'a> ImplItemFn<'a> {
-    pub fn new(item: &'a syn::ImplItemFn) -> Self {
+    pub const fn new(item: &'a syn::ImplItemFn) -> Self {
         Self {
             item,
             remove_attr: None,
         }
     }
 
-    pub fn remove_attr(self, attr: &'static str) -> Self {
+    pub const fn remove_attr(self, attr: &'static str) -> Self {
         Self {
             remove_attr: Some(attr),
             ..self
@@ -137,21 +135,15 @@ impl ToTokens for ImplItemFn<'_> {
 }
 
 fn outer_attrs(attrs: &[syn::Attribute]) -> impl Iterator<Item = &syn::Attribute> {
-    fn is_outer(attr: &&syn::Attribute) -> bool {
-        match attr.style {
-            syn::AttrStyle::Outer => true,
-            syn::AttrStyle::Inner(_) => false,
-        }
-    }
-    attrs.iter().filter(is_outer)
+    attrs.iter().filter(|attr| match attr.style {
+        syn::AttrStyle::Outer => true,
+        syn::AttrStyle::Inner(_) => false,
+    })
 }
 
 fn inner_attrs(attrs: &[syn::Attribute]) -> impl Iterator<Item = &syn::Attribute> {
-    fn is_inner(attr: &&syn::Attribute) -> bool {
-        match attr.style {
-            syn::AttrStyle::Inner(_) => true,
-            syn::AttrStyle::Outer => false,
-        }
-    }
-    attrs.iter().filter(is_inner)
+    attrs.iter().filter(|attr| match attr.style {
+        syn::AttrStyle::Inner(_) => true,
+        syn::AttrStyle::Outer => false,
+    })
 }

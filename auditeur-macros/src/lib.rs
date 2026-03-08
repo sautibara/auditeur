@@ -3,7 +3,6 @@ use std::sync::LazyLock;
 use custom_generics::CustomGenerics;
 use namespaced_id::NamespacedId;
 use proc_macro::TokenStream;
-use proc_macro_impls::HasInput;
 use proc_macro2::Span;
 use quote::{ToTokens, quote, quote_spanned};
 use syn::{
@@ -16,7 +15,6 @@ use crate::proc_macro_impls::AllCombinations;
 mod attr;
 mod custom_generics;
 mod field;
-mod input_list;
 mod maybe_error;
 mod namespaced_id;
 mod overlay;
@@ -60,10 +58,6 @@ mod proc_macro_impls {
 
     mod identifiable;
     pub use identifiable::{identifiable, identifiable_with_generics};
-
-    pub mod input_reflection;
-    pub use input_reflection::HasInput;
-    pub use input_reflection::export as export_input;
 
     mod listener;
     pub use listener::listener_attr;
@@ -524,14 +518,6 @@ pub fn all_combinations(params: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro_impls::listener_attr(attr.into(), item.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[proc_macro_attribute]
-pub fn has_input(attr: TokenStream, item: TokenStream) -> TokenStream {
-    HasInput::parse_entire(item, attr)
-        .and_then(HasInput::expand)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
