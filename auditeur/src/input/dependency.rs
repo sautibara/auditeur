@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{input::CloneAs, prelude::*};
 
 #[cfg(doc)]
@@ -45,6 +47,28 @@ impl Handle {
     pub fn new(sender: EventSender, dep: Full) -> Self {
         sender.send(RegistryEvent::IncrementDependency(dep.clone()));
         Self { sender, dep }
+    }
+
+    /// Returns a new [`HandleBuilder`], see [`HandleBuilder::new`].
+    #[must_use]
+    pub const fn builder(
+        event_sender: EventSender,
+        dependency: ComponentId,
+        dependent: ComponentId,
+    ) -> HandleBuilder<'static> {
+        HandleBuilder::new(event_sender, dependency, dependent)
+    }
+
+    /// Starts building a new [`Handle`] using this handle's information.
+    #[must_use]
+    pub fn clone_builder(&self) -> HandleBuilder<'_> {
+        From::from(self)
+    }
+
+    /// Returns a reference to the dependency that this handle keeps alive.
+    #[must_use]
+    pub const fn dep(&self) -> &Full {
+        &self.dep
     }
 
     /// Create a new handle to an uncreated resource, listing that `dep` should be maintained as
@@ -100,14 +124,104 @@ impl CloneAs for Handle {
     where
         Self: Sized,
     {
-        let sender = self.sender.clone();
-        let dep = Full {
-            link: Link {
-                dependency: self.dep.link.dependency.clone(),
-                dependent: dependent.into_owned(),
+        self.clone_builder().dependent(dependent).build()
+    }
+}
+
+pub struct HandleBuilder<'a> {
+    event_sender: EventSender,
+    dependency: Cow<'a, ComponentId>,
+    dependent: Cow<'a, ComponentId>,
+    removable: Removable,
+}
+
+impl HandleBuilder<'static> {
+    /// Returns a new [`HandleBuilder`] with the specified information
+    /// and `removable` set to [`Removable::Inherit`].
+    #[must_use]
+    pub const fn new(
+        event_sender: EventSender,
+        dependency: ComponentId,
+        dependent: ComponentId,
+    ) -> Self {
+        Self {
+            event_sender,
+            dependency: Cow::Owned(dependency),
+            dependent: Cow::Owned(dependent),
+            removable: Removable::Inherit,
+        }
+    }
+}
+
+impl<'a> From<&'a Handle> for HandleBuilder<'a> {
+    fn from(value: &'a Handle) -> Self {
+        Self {
+            event_sender: value.sender.clone(),
+            dependency: Cow::Borrowed(&value.dep.link.dependency),
+            dependent: Cow::Borrowed(&value.dep.link.dependent),
+            removable: value.dep.removable,
+        }
+    }
+}
+
+impl HandleBuilder<'_> {
+    fn into_parts(self) -> (EventSender, Full) {
+        let Self {
+            event_sender,
+            dependency,
+            dependent,
+            removable,
+        } = self;
+
+        (
+            event_sender,
+            Full {
+                link: Link {
+                    dependency: dependency.into_owned(),
+                    dependent: dependent.into_owned(),
+                },
+                removable,
             },
-            removable: self.dep.removable,
-        };
-        Self::new(sender, dep)
+        )
+    }
+
+    /// See [`Handle::new`].
+    #[must_use]
+    pub fn build(self) -> Handle {
+        let (event_sender, full) = self.into_parts();
+        Handle::new(event_sender, full)
+    }
+
+    /// See [`Handle::new_to_faux_resource`].
+    #[must_use]
+    pub fn build_to_faux_resource(self, bundle: NamespacedId) -> Handle {
+        let (event_sender, full) = self.into_parts();
+        Handle::new_to_faux_resource(event_sender, full, bundle)
+    }
+}
+
+impl HandleBuilder<'_> {
+    #[must_use]
+    pub fn removable(self, new_value: bool) -> Self {
+        Self {
+            removable: Removable::Set(new_value),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn inherit_removable(self) -> Self {
+        Self {
+            removable: Removable::Inherit,
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn dependent(self, dependent: impl Into<ComponentId>) -> Self {
+        Self {
+            dependent: Cow::Owned(dependent.into()),
+            ..self
+        }
     }
 }

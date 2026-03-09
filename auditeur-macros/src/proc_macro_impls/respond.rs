@@ -34,6 +34,9 @@ use crate::{
 
 // TODO: `timeout` and `on_error`
 
+// TODO: private `dependency_handle` and `dependent` functions,
+// meant for automatically adding dependencies when ingesting foreign closures
+
 pub fn respond_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let mut error = None;
 

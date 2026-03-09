@@ -62,6 +62,11 @@ mod workspace;
 // make sure the file system agrees with the state
 // FIXME: setting config.arena.retain_build_artifacts to false still doesn't do anything
 
+// TODO: add auditeur dependencies for plugin dependencies. That is, for something like
+// sautibara-rpc, add a dependency in auditeur from sautibara-rpc's bundle to sautibara-core's.
+// This'll ensure that any code from sautibara-core that sautibara-rpc passes around will be
+// retained.
+
 pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn default_config(&self) -> config::Host;
 
