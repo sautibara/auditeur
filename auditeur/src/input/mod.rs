@@ -12,6 +12,13 @@ pub mod dependency;
 pub mod get;
 pub mod subset;
 
+/// Values that can be obtained from the [`Registry`] when building resources.
+///
+/// # Dependencies
+///
+/// These must hold [`dependency::Handle`]s for all dependencies that these inputs contain. If this
+/// is derived, then it is already handled for you. But if it's done manually, then please make
+/// sure that this is the case.
 pub trait Input: Sized + Send + Sync + 'static {
     /// Create `Self` using the given [`Registry`] and id `as_resource`
     ///

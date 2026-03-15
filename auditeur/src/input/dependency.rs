@@ -51,12 +51,12 @@ impl Handle {
 
     /// Returns a new [`HandleBuilder`], see [`HandleBuilder::new`].
     #[must_use]
-    pub const fn builder(
+    pub fn builder(
         event_sender: EventSender,
-        dependency: ComponentId,
-        dependent: ComponentId,
+        dependency: impl Into<ComponentId>,
+        dependent: impl Into<ComponentId>,
     ) -> HandleBuilder<'static> {
-        HandleBuilder::new(event_sender, dependency, dependent)
+        HandleBuilder::new(event_sender, dependency.into(), dependent.into())
     }
 
     /// Starts building a new [`Handle`] using this handle's information.

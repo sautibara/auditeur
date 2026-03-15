@@ -2,14 +2,35 @@ use std::ops::{Deref, DerefMut};
 
 #[cfg(feature = "runtime-loading")]
 use crate::input::CloneAs;
-use crate::prelude::*;
+use crate::{input::dependency, prelude::*};
 
-pub struct Get<T: Resource + GetRef>(T::Ref);
+pub struct Get<T: GetRef> {
+    reference: T::Ref,
+    _dependency: dependency::Handle,
+}
+
+impl<T: Resource + GetRef> Get<T> {
+    pub(crate) fn new(
+        reference: T::Ref,
+        dependent: ComponentIdRef<'_>,
+        event_sender: EventSender,
+    ) -> Self {
+        let dependency = dependency::Handle::builder(
+            event_sender,
+            ComponentIdRef::Resource(T::const_ident()),
+            dependent,
+        )
+        .build();
+        Self {
+            reference,
+            _dependency: dependency,
+        }
+    }
+}
 
 impl<T: Resource + GetRef> Input for Get<T> {
     async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
-        let reference = registry.get_as::<T>(dependent).await?;
-        Ok(Self(reference))
+        registry.get_as::<T>(dependent).await
     }
 
     fn constraints() -> Constraints {
@@ -17,16 +38,16 @@ impl<T: Resource + GetRef> Input for Get<T> {
     }
 }
 
-impl<T: Resource + GetRef> Deref for Get<T> {
+impl<T: GetRef> Deref for Get<T> {
     type Target = T::Ref;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    fn deref(&self) -> &T::Ref {
+        &self.reference
     }
 }
 
-impl<T: Resource + GetRef> DerefMut for Get<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl<T: GetRef> DerefMut for Get<T> {
+    fn deref_mut(&mut self) -> &mut T::Ref {
+        &mut self.reference
     }
 }
 
@@ -129,13 +150,11 @@ pub mod maybe_get_ref {
 ///
 /// This trait is used only in [`MaybeGetRef`] and is implemented for all types that implement
 /// [`Clone`] and [`Any`](crate::Any).
-#[cfg(feature = "runtime-loading")]
 pub trait ResourceRef: CloneAs + crate::Any + Send + Sync {
     #[must_use]
     fn clone_as_boxed(&self, dependent: ComponentIdRef<'_>) -> Box<dyn ResourceRef>;
 }
 
-#[cfg(feature = "runtime-loading")]
 impl<T: CloneAs + crate::Any + Send + Sync> ResourceRef for T {
     fn clone_as_boxed(&self, dependent: ComponentIdRef<'_>) -> Box<dyn ResourceRef> {
         Box::new(self.clone_as(dependent))

@@ -70,7 +70,7 @@ impl RegistryState {
 
     #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
     #[inline]
-    async fn get_as<R: Resource + GetRef>(
+    async fn get_reference_as<R: Resource + GetRef>(
         &self,
         dependent: ComponentIdRef<'_>,
         event_sender: &EventSender,
@@ -542,10 +542,12 @@ impl Registry {
     pub async fn get_as<R: Resource + GetRef>(
         &self,
         dependent: ComponentIdRef<'_>,
-    ) -> Result<R::Ref, crate::Error> {
-        self.state
-            .get_as::<R>(dependent, &self.event_sender, self)
-            .await
+    ) -> Result<Get<R>, crate::Error> {
+        let reference = self
+            .state
+            .get_reference_as::<R>(dependent, &self.event_sender, self)
+            .await?;
+        Ok(Get::new(reference, dependent, self.event_sender()))
     }
 }
 
