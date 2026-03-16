@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -15,7 +15,7 @@ pub struct Binaries {
 
 impl Binaries {
     pub async fn new(path: PathBuf) -> Result<Self, Error> {
-        let this = Self {
+        let mut this = Self {
             path,
             binaries: HashMap::new(),
         };
@@ -23,8 +23,26 @@ impl Binaries {
         Ok(this)
     }
 
-    pub async fn init(&self) -> Result<(), Error> {
+    pub async fn init(&mut self) -> Result<(), Error> {
         tokio::fs::create_dir_all(&self.path).await?;
+
+        // this mimics [`HashSet::retain`], but we can't use it because of the `await`
+        let mut binaries_to_remove = HashSet::new();
+        for (plugin, path) in &self.binaries {
+            if !tokio::fs::try_exists(path).await.is_ok_and(|exists| exists) {
+                binaries_to_remove.insert(plugin.clone());
+            }
+        }
+
+        for plugin in binaries_to_remove {
+            if let Some(path) = self.binaries.remove(&plugin) {
+                warn!(
+                    "lockfile referenced binary for plugin '{plugin}' at '{}', but no file was found there - removing reference",
+                    path.display()
+                );
+            }
+        }
+
         Ok(())
     }
 
