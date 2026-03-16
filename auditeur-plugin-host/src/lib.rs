@@ -26,7 +26,6 @@ use futures::Future;
 use ron::{extensions::Extensions, ser::PrettyConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::error;
 
 pub mod arena;
 pub mod config;

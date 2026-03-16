@@ -46,7 +46,7 @@ pub mod any {
 }
 
 #[doc(hidden)]
-pub use anyhow;
+pub use ::anyhow;
 #[doc(hidden)]
 pub use async_trait;
 #[doc(hidden)]

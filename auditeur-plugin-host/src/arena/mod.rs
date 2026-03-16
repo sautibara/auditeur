@@ -194,7 +194,7 @@ pub struct ArenaImpl<O: Opts> {
     opts: O,
 }
 
-/// Information retained about an ArenaImpl.
+/// Information retained about an [`ArenaImpl`].
 #[derive(Deserialize)]
 #[expect(clippy::unsafe_derive_deserialize)] // I don't see this method...
 pub struct Lockfile {
@@ -560,7 +560,7 @@ impl<O: Opts> ArenaImpl<O> {
         let BuildArtifacts { artifacts, errors } = self.workspace.compile(plugin_names).await?;
 
         let names: Vec<_> = artifacts.keys().cloned().collect();
-        self.binaries.insert_copies(artifacts.into_iter()).await?;
+        self.binaries.insert_copies(artifacts).await?;
 
         for name in names {
             self.loader.queue_reload(name);

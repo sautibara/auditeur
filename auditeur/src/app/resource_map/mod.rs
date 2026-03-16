@@ -939,10 +939,10 @@ impl listener::Component<ResourceMap> for MainComponent {
                     None,
                 )?;
             }
-            RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle } => {
-                if map.get_resource(&id).is_none() {
-                    map.add_resource(id, bundle)?;
-                }
+            RegistryEvent::Resolving { id, bundle } | RegistryEvent::Loading { id, bundle }
+                if map.get_resource(&id).is_none() =>
+            {
+                map.add_resource(id, bundle)?;
             }
             RegistryEvent::ListenMessageLoaded { id, bundle } => {
                 map.add_message(&id, Some(bundle), None)?;
@@ -950,21 +950,19 @@ impl listener::Component<ResourceMap> for MainComponent {
             RegistryEvent::TakeMessageLoaded { id, bundle } => {
                 map.add_message(&id, Some(bundle), None)?;
             }
-            RegistryEvent::IncrementDependency(dependency) => {
+            RegistryEvent::IncrementDependency(dependency)
                 if (dependency.link.dependent)
                     .as_resource()
-                    .is_none_or(|resource_id| !RESERVED_IDENTS.contains(&resource_id))
-                {
-                    map.add_dependency(dependency)?;
-                }
+                    .is_none_or(|resource_id| !RESERVED_IDENTS.contains(&resource_id)) =>
+            {
+                map.add_dependency(dependency)?;
             }
-            RegistryEvent::DecrementDependency(dependency) => {
+            RegistryEvent::DecrementDependency(dependency)
                 if (dependency.link.dependent)
                     .as_resource()
-                    .is_none_or(|resource_id| !RESERVED_IDENTS.contains(&resource_id))
-                {
-                    map.remove_dependency(dependency)?;
-                }
+                    .is_none_or(|resource_id| !RESERVED_IDENTS.contains(&resource_id)) =>
+            {
+                map.remove_dependency(dependency)?;
             }
             RegistryEvent::Running(id) => {
                 map.reference_resource(&id)?;

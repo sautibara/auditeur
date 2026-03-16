@@ -126,7 +126,7 @@ pub struct SubMapBundle {
     /// The direct descendent messages that are currently loaded from this bundle.
     pub messages: HashMap<NamespacedId, HashSet<ResourceSource>>,
     /// The direct descendent bundles that are currently loaded from this bundle.
-    pub bundles: HashMap<NamespacedId, SubMapBundle>,
+    pub bundles: HashMap<NamespacedId, Self>,
     /// `true` if this has all children that are currently loaded from this bundle.
     pub complete: bool,
     /// A function that could initialize the bundle, used for [reloading](SubMap::reload_in).
