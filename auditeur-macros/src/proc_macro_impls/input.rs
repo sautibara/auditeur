@@ -76,9 +76,9 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
     }
 }
 
-pub fn expand_named_struct<'a, I: ToTokens>(
+pub fn expand_named_struct<I: ToTokens, T: ToTokens>(
     idents: impl IntoIterator<Item = I, IntoIter: Clone>,
-    types: impl IntoIterator<Item = &'a syn::Type, IntoIter: Clone>,
+    types: impl IntoIterator<Item = T, IntoIter: Clone>,
 ) -> TokenStream {
     let auditeur = &*crate::AUDITEUR;
     let idents_0 = idents.into_iter();

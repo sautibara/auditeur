@@ -57,15 +57,16 @@ impl<'a> ConfigStruct<'a> {
     }
 
     fn fields_of_type(&self, is_input: bool) -> impl Iterator<Item = &ConfigField<'a>> + Clone {
-        (self.fields.0.iter()).filter(move |field| field.is_input == is_input)
+        (self.fields.0.iter()).filter(move |field| field.is_input(is_input))
     }
 
     fn field_idents(&self, is_input: bool) -> impl Iterator<Item = FieldIdent<'a>> + Clone {
         self.fields_of_type(is_input).map(|field| field.ident)
     }
 
-    fn field_types(&self, is_input: bool) -> impl Iterator<Item = &'a syn::Type> + Clone {
-        self.fields_of_type(is_input).map(|field| field.ty)
+    fn field_types(&self, is_input: bool) -> impl Iterator<Item = FieldType<'_>> + Clone {
+        self.fields_of_type(is_input)
+            .map(move |field| field.ty(is_input))
     }
 
     fn expand(&self) -> TokenStream {
@@ -99,20 +100,29 @@ impl<'a> ConfigStruct<'a> {
         let external_input = &self.shared.external_inputs;
 
         let fields = self.fields.0.iter().map(|field| {
-            let struct_ident = if field.is_input {
-                quote! { input }
-            } else {
-                quote! { plain }
-            };
-
+            let inner_field = field.ident;
             let combined_field = match field.ident {
                 FieldIdent::Ident(ident) => quote! { #ident },
                 FieldIdent::Index(index) => quote! { #index },
             };
 
-            let inner_field = field.ident;
+            if field.construction.is_create() {
+                let ty = field.ty;
+                quote! {
+                    #combined_field: <#ty as #auditeur::resource::Create>::create(
+                        input.#inner_field,
+                        plain.#inner_field,
+                    ).await?
+                }
+            } else {
+                let struct_ident = if field.construction.is_input() {
+                    quote! { input }
+                } else {
+                    quote! { plain }
+                };
 
-            quote! { #combined_field: #struct_ident.#inner_field }
+                quote! { #combined_field: #struct_ident.#inner_field }
+            }
         });
 
         let (impl_generics, type_generics, where_clause) = self.shared.split_generics();
@@ -126,8 +136,10 @@ impl<'a> ConfigStruct<'a> {
 
                 type External = (#(#external_input),*);
 
-                fn combine(input: #input_ident, plain: #plain_ident #type_generics) -> Self {
-                    Self { #(#fields),* }
+                async fn combine(input: #input_ident, plain: #plain_ident #type_generics)
+                    -> #auditeur::anyhow::Result<Self>
+                {
+                    Ok(Self { #(#fields),* })
                 }
             }
         }
@@ -209,23 +221,68 @@ impl<'a> ConfigFields<'a> {
 struct ConfigField<'a> {
     ident: FieldIdent<'a>,
     ty: &'a syn::Type,
-    is_input: bool,
+    construction: FieldConstruction,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum FieldConstruction {
+    #[default]
+    Manual,
+    Input,
+    Create,
+}
+
+impl FieldConstruction {
+    /// Returns `true` if the field construction is [`Create`].
+    ///
+    /// [`Create`]: FieldConstruction::Create
+    #[must_use]
+    const fn is_create(self) -> bool {
+        matches!(self, Self::Create)
+    }
+
+    /// Returns `true` if the field construction is [`Input`].
+    ///
+    /// [`Input`]: FieldConstruction::Input
+    #[must_use]
+    const fn is_input(self) -> bool {
+        matches!(self, Self::Input)
+    }
 }
 
 impl<'a> ConfigField<'a> {
     fn new(field: &'a syn::Field, index: usize) -> Continue<Self> {
         let mut error = None;
 
-        let mut is_input = false;
+        let mut construction: Option<(FieldConstruction, Ident)> = None;
+        let mut construction_errors = None;
         for val in crate::attr::collect_attrs::<FieldAttr, FieldAttrs>("create", &field.attrs)
             .filter_map(drain_results_into(&mut error))
         {
             match val {
-                FieldAttr::InputFlag => {
-                    is_input = true;
+                FieldAttr::InputFlag(ident) | FieldAttr::CreateFlag(ident)
+                    if let Some((_, old_ident)) = &construction =>
+                {
+                    construction_errors.combine(syn::Error::new(
+                        ident.span(),
+                        format!("cannot combine '{ident}' and '{old_ident}'"),
+                    ));
+                    construction_errors.combine(syn::Error::new(
+                        old_ident.span(),
+                        format!("'{old_ident}' previously declared here"),
+                    ));
+                }
+                FieldAttr::InputFlag(ident) => {
+                    construction = Some((FieldConstruction::Input, ident));
+                }
+                FieldAttr::CreateFlag(ident) => {
+                    construction = Some((FieldConstruction::Create, ident));
                 }
             }
         }
+        error.combine_maybe(construction_errors);
+        let construction =
+            construction.map_or_else(Default::default, |(construction, _)| construction);
 
         error.wrap(Self {
             ident: field
@@ -233,8 +290,46 @@ impl<'a> ConfigField<'a> {
                 .as_ref()
                 .map_or(FieldIdent::Index(index), FieldIdent::Ident),
             ty: &field.ty,
-            is_input,
+            construction,
         })
+    }
+
+    const fn is_input(&self, is_input: bool) -> bool {
+        self.construction.is_create() || is_input == self.construction.is_input()
+    }
+
+    const fn ty(&self, is_input: bool) -> FieldType<'_> {
+        FieldType {
+            ty: self.ty,
+            is_create: self.construction.is_create(),
+            is_input,
+        }
+    }
+}
+
+struct FieldType<'a> {
+    ty: &'a syn::Type,
+    is_create: bool,
+    is_input: bool,
+}
+
+impl ToTokens for FieldType<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let ty = &self.ty;
+        if self.is_create {
+            let auditeur = &*crate::AUDITEUR;
+            if self.is_input {
+                tokens.extend(quote! {
+                    <#ty as #auditeur::resource::Create>::RegistryInput
+                });
+            } else {
+                tokens.extend(quote! {
+                    <#ty as #auditeur::resource::Create>::ExternalInput
+                });
+            }
+        } else {
+            ty.to_tokens(tokens);
+        }
     }
 }
 
@@ -380,16 +475,19 @@ impl IntoIterator for FieldAttrs {
 }
 
 enum FieldAttr {
-    InputFlag,
+    InputFlag(Ident),
+    CreateFlag(Ident),
 }
 
 impl Parse for FieldAttr {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let ident: Ident = input.parse()?;
         if ident == "input" {
-            Ok(Self::InputFlag)
+            Ok(Self::InputFlag(ident))
+        } else if ident == "create" {
+            Ok(Self::CreateFlag(ident))
         } else {
-            Err(input.error(format!("expected 'input', found {ident}")))
+            Err(input.error(format!("expected 'input' or 'create', found {ident}")))
         }
     }
 }

@@ -67,17 +67,20 @@ impl<T: CreateDerive> Create for T {
         external: Self::ExternalInput,
     ) -> Result<Self, anyhow::Error> {
         let plain = <Self as CreateDerive>::create(external, &registry).await?;
-        Ok(Self::combine(registry, plain))
+        Self::combine(registry, plain).await
     }
 }
 
-pub trait CreateDeriveTypes {
+pub trait CreateDeriveTypes: Sized {
     type External: Send;
 
     type Input: Input;
     type Plain: Send;
 
-    fn combine(input: Self::Input, plain: Self::Plain) -> Self;
+    fn combine(
+        input: Self::Input,
+        plain: Self::Plain,
+    ) -> impl Future<Output = anyhow::Result<Self>> + Send + Sync;
 }
 
 pub trait CreateDerive: CreateDeriveTypes {
