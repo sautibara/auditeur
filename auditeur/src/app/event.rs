@@ -278,7 +278,7 @@ impl GetRequest {
     /// Returns `true` if `R` if the resource that is asked for by this request
     #[inline]
     pub fn matches<R: Resource>(&self) -> bool {
-        R::const_ident() == &self.id
+        R::const_ident() == self.id
     }
 
     /// Check if `resource` is the resource that is asked for by the request, and if so, call
@@ -304,7 +304,7 @@ impl GetRequest {
     /// Returns `true` if `resource` if the resource that is asked for by this request
     #[inline]
     pub fn matches_ref(&self, resource: &dyn Resource) -> bool {
-        resource.ident() == &self.id
+        resource.ident() == self.id
     }
 
     /// Returns the [id](NamespacedId) of the resource that the request is asking for

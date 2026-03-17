@@ -7,24 +7,6 @@ use crate::prelude::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // used for doc links
 use crate::resource::listener::*;
 
-/// Returns a parsed static reference to a [`NamespacedIdRef`].
-///
-/// # Examples
-///
-/// ```
-/// # // see the doctest for bundle::Supplier for why this is necessary
-/// # use auditeur::namespaced_id;
-/// # pub fn main() {
-/// use auditeur::prelude::*;
-///
-/// assert_eq!(
-///     ident!("namespace:id"),
-///     &NamespacedId::new("namespace", "id"),
-/// );
-/// # }
-/// ```
-pub use auditeur_macros::ident;
-
 /// Implements [`Resource`] for any type.
 ///
 /// This automatically implements [`Identifiable`], [`Any`](crate::Any), and if necessary,
@@ -99,20 +81,13 @@ pub use auditeur_macros::message;
 
 /// Implements [`Listener`] for any type.
 ///
-/// Like [`#[resource]`](resource), the first argument in the attribute must be a [`NamespacedId`]
-/// string literal (see [`ident!`]). Using this, the macro implements everything that
-/// [`#[resource]`](resource) does, making the item a valid [`Resource`]. After, arguments can be
-/// inserted in any order to give the [`Listener`] implementation
-/// [`Component`](crate::resource::listener::Component)s. Each component added automatically pulls
-/// inputs from [`has_input`] - unless the inputs are manually specified.
-///
 /// # Examples
 ///
 /// ```no_run
 /// # use auditeur::*;
 /// # use auditeur::resource::listener::{Listener, Listen};
 /// use auditeur::prelude::*;
-/// use auditeur::resource::listener::{ListenComponent, RegistryComponent};
+/// # use auditeur::resource::listener::{ListenComponent, RegistryComponent};
 ///
 /// # mod shared {
 /// # use auditeur::prelude::*;
@@ -120,8 +95,8 @@ pub use auditeur_macros::message;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
 /// # }
 /// use shared::*;
 ///
@@ -129,7 +104,8 @@ pub use auditeur_macros::message;
 /// // The inputs for these blocks are collected by the attribute and combined into a single tuple,
 /// //     so that the two components can share them :).
 /// #[derive(Runnable)]
-/// #[listener("test:double_listener", listen(Message1, Message2))]
+/// #[resource("test:double_listener")]
+/// #[listener(listen(Message1, Message2))]
 /// struct DoubleListener;
 /// #
 /// # fn main() {}
@@ -158,11 +134,11 @@ pub use auditeur_macros::message;
 ///
 /// # /*
 ///     // (code omitted for brevity - they both just return `Ok(())`)
-///     #[has_input] impl Listen<Message1> for DoubleListener { ... }
-///     #[has_input] impl Listen<Message2> for DoubleListener { ... }
+///     impl Listen<Message1> for DoubleListener { ... }
+///     impl Listen<Message2> for DoubleListener { ... }
 /// # */
-/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
 /// }
 /// # fn main() {}
 /// ```
@@ -174,8 +150,7 @@ pub use auditeur_macros::message;
 /// ## `Listen`
 ///
 /// To listen to messages using [`Listen`](crate::resource::listener::Listen), provide the list of
-/// them wrapped by `listen(<message>,*)`. To manually provide inputs for a message, use
-/// `listen(<message>(input = <inputs>))`.
+/// them wrapped by `listen(<message>,*)`.
 ///
 /// ### Examples
 ///
@@ -183,7 +158,7 @@ pub use auditeur_macros::message;
 /// # use auditeur::*;
 /// # use auditeur::resource::listener::{Listener, Listen};
 /// use auditeur::prelude::*;
-/// use auditeur::resource::listener::{ListenComponent, RegistryComponent};
+/// use auditeur::resource::listener::{ListenComponent, RegistryComponent, Unbiased};
 ///
 /// # mod shared {
 /// # use auditeur::prelude::*;
@@ -191,18 +166,15 @@ pub use auditeur_macros::message;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
 /// # }
 /// use shared::*;
 ///
 ///
-/// #[listener("test:double_listener", listen(
-///     // You can pull the inputs from a `#[has_input]` block,
-///     Message1,
-///     // or specify the inputs directly (which just happen to be empty).
-///     Message2(input = ()),
-/// ))]
+/// #[create(default)]
+/// #[resource("test:double_listener")]
+/// #[listener(listen(Message1, Message2))]
 /// #[derive(Runnable)]
 /// struct DoubleListener;
 ///
@@ -213,7 +185,7 @@ pub use auditeur_macros::message;
 /// fn assert_components_for<L>(_: L)
 /// where
 ///     L: Listener<Components = (
-///            (), // all components lists start with ()
+///            Unbiased,
 ///            RegistryComponent,
 ///            ListenComponent<L, Message1>,
 ///            ListenComponent<L, Message2>
@@ -224,32 +196,11 @@ pub use auditeur_macros::message;
 /// ## `Take`
 ///
 /// Much like [`Listen`], to take messages with [`Take`], provide the list of
-/// them wrapped by `take(<message>,*)`. To manually provide inputs for a message, use
-/// `take(<message>(input = <inputs>))`.
-///
-/// ## `OnLoad`
-///
-/// Like [`Listen`] and [`Take`], to run a function when a resource loads with [`OnLoad`], provide
-/// the list of them wrapped by `on_load(<message>,*)`. To manually provide inputs for a message,
-/// use `on_load(<message>(input = <inputs>))`.
-///
-/// ## `ListenToRegistry`
-///
-/// To listen to the [registry message stream](crate::app::channels::EventReceiver), use the flag
-/// `listen_to_registry`. To manually provide inputs, use `listen_to_registry(input = <inputs>)`.
+/// them wrapped by `take(<message>,*)`.
 ///
 /// ## Components
 ///
-/// To use other [`Component`]s, use a `components` list. Each component is surrounded in
-/// parenthesees and at least specifies `component = <component_type>` - the type of the component
-/// including its generics. After, it optionally follows with a [specifier](#specifier). If a
-/// specifier isn't given, it queries the component for the specifier (see [`#[component]`]).
-///
-/// ### Specifier
-///
-/// A specifier gives more clarity to where to find the inputs of a component. It could either give
-/// a trait that the component wraps (like [`Listen`] for [`Listener`]) with `implementation =
-/// <trait>`, or the inputs themselves with `input = <inputs>`.
+/// To use other [`Component`]s, provide a list of component types in a `components` list.
 ///
 /// ### Examples
 ///
@@ -257,7 +208,7 @@ pub use auditeur_macros::message;
 /// # use auditeur::*;
 /// # use auditeur::resource::listener::{Listener, Listen};
 /// use auditeur::prelude::*;
-/// use auditeur::resource::listener::{ListenComponent, RegistryComponent};
+/// use auditeur::resource::listener::{ListenComponent, RegistryComponent, Unbiased};
 ///
 ///
 /// # mod shared {
@@ -266,29 +217,16 @@ pub use auditeur_macros::message;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
 /// # }
 /// use shared::*;
 ///
-/// #[listener("test:double_listener", components(
-///     // (
-///     //      // You can pull a default specifier from the component itself.
-///     //      component = ListenComponent<Self, Message1>
-///     // ),
-///     // // (This is only commented off since we can't specify this component twice)
-///     (
-///         component = ListenComponent<Self, Message1>,
-///         // You can pull the inputs from a `#[has_input]` block implementing the
-///         //   `implementation` trait.
-///         // For example, this is the default specifier for ListenComponent.
-///         implementation = Listen<Message1>,
-///     ),
-///     (
-///         component = ListenComponent<Self, Message2>,
-///         // Or you can also specify the inputs directly.
-///         input = (),
-///     ),
+/// #[create(default)]
+/// #[resource("test:double_listener")]
+/// #[listener(components(
+///     ListenComponent<Self, Message1>,
+///     ListenComponent<Self, Message2>,
 /// ))]
 /// #[derive(Runnable)]
 /// struct DoubleListener;
@@ -300,7 +238,7 @@ pub use auditeur_macros::message;
 /// fn assert_components_for<L>(_: L)
 /// where
 ///     L: Listener<Components = (
-///            (), // all components lists start with ()
+///            Unbiased,
 ///            RegistryComponent,
 ///            ListenComponent<L, Message1>,
 ///            ListenComponent<L, Message2>
@@ -332,13 +270,14 @@ pub use auditeur_macros::message;
 /// # use super::DoubleListener;
 /// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
 /// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # #[has_input] impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1, (): ()) -> Result<()> { Ok(()) } }
-/// # #[has_input] impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2, (): ()) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
+/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
 /// # }
 /// use shared::*;
 ///
+/// #[create(default)]
+/// #[resource("test:double_listener")]
 /// #[listener(
-///     "test:double_listener",
 ///     registry_component = false,
 ///     listen(Message1, Message2)
 /// )]
@@ -352,7 +291,7 @@ pub use auditeur_macros::message;
 /// fn assert_components_for<L>(_: L)
 /// where
 ///     L: Listener<Components = (
-///            (), // all components lists start with ()
+///            Unbiased,
 ///            // notice the lack of RegistryComponent
 ///            ListenComponent<L, Message1>,
 ///            ListenComponent<L, Message2>
@@ -367,27 +306,6 @@ pub use auditeur_macros::message;
 /// components in order instead. That is, the listener will always choose earlier components over
 /// later components, if they have new things to do.
 ///
-/// # Errors
-///
-/// Most errors are caught directly by the macro and have dedicated error messages, but some
-/// errors can arise from missing macro callbacks. That is, when the macro gets inputs defined in
-/// [`#[has_input]`](has_input) blocks or [`#[component]`](component) specifiers.
-///
-/// - "use of undeclared crate or module `auditeur_input_of_impl_<trait>_for_<type>`"
-///     - This macro was trying to get the input from a [`#[has_input]`](has_input) block, but it
-///       couldn't find it. This could be caused by the necessary trait not being implemented, a
-///       missing [`#[has_input]`](has_input) annotation, or the trait being implemented in another
-///       crate. To fix this, make sure that the trait is implemented with a
-///       [`#[has_input]`](has_input) annotation or specify the input with `input = <input>`. Note
-///       that, in the string representation of the trait and type, all instances of `<` are
-///       replaced with `_lt_`, `>` with `_gt_`, `::` with `_sep_`, and `_` with `__`.
-/// - "use of undeclared crate or module `auditeur_input_of_<method>_in_impl_Runnable_for_<type>`"
-///     - The macro couldn't find the input for the listener's [`Runnable`] implementation. See
-///       above for possible fixes.
-/// - "cannot find macro `<component_type>` in this scope"
-///     - The macro was trying to get a specifier from a [`#[component]`](component) attribute, but
-///       it couldn't find it. To fix this, try specifying the input directly, or if you defined the
-///       component, make sure the attribute is attached.
 ///
 /// # Syntax
 ///
@@ -396,25 +314,13 @@ pub use auditeur_macros::message;
 ///
 /// ```text
 /// <attribute>:
-///   | #[listener("<namespace>:<id>", <parameter>,*)]
+///   | #[listener(<parameter>,*)]
 ///
 /// <parameter>:
 ///   | registry_component = <boolean>
-///   | listen(<message>,*)
-///   | components(<component>,*)
-///
-/// <message>:
-///   | <type>
-///   | <type>(input = <input>)
-///
-/// <component>:
-///   | (component = <component_type>)
-///   | (component = <component_type>, <specifier>)
-///
-/// <specifier>:
-///   | /* an empty specifier is accepted, in which case it will pull the from the component */
-///   | implementation = <trait>
-///   | input = <input>
+///   | listen(<type>,*)
+///   | take(<type>,*)
+///   | components(<type>,*)
 /// ```
 ///
 /// </details>
@@ -445,10 +351,9 @@ pub use auditeur_macros::listener;
 ///
 /// struct Runner;
 ///
-/// #[has_input]
 /// impl Runnable for Runner {
-///     async fn init(&mut self, (): ()) -> Result<()> { Ok(()) }
-///     async fn exit(&mut self, (): ()) -> Result<()> { Ok(()) }
+///     async fn init(&mut self) -> Result<()> { Ok(()) }
+///     async fn exit(&mut self) -> Result<()> { Ok(()) }
 /// }
 ///
 /// fn assert_is_runnable<R: Runnable>() {}
@@ -539,7 +444,7 @@ pub use auditeur_macros::PathAny;
 ///     // use transactions, clone items, or use `Arc`s.
 ///     // Thankfully here we don't have to worry about that, since `usize` is copyable.
 ///     // The last parameter must be an [`Input`], but it isn't needed here so we just use `()`.
-///     pub fn get(&self, (): ()) -> usize {
+///     pub fn get(&self) -> usize {
 ///         self.value
 ///     }
 ///
@@ -601,11 +506,11 @@ pub use auditeur_macros::PathAny;
 ///
 /// #[respond("test:vec_resource", get_ref, transaction)]
 /// impl VecResource {
-///     pub fn push_usize(&mut self, value: usize, (): ()) {
+///     pub fn push_usize(&mut self, value: usize) {
 ///         self.items.push(value);
 ///     }
 ///
-///     pub fn get_unwrap(&self, index: usize, (): ()) -> usize {
+///     pub fn get_unwrap(&self, index: usize) -> usize {
 ///         *self.items.get(index).unwrap()
 ///     }
 /// }
@@ -672,7 +577,7 @@ pub use auditeur_macros::PathAny;
 ///
 /// #[respond("test:attribute_example", get_ref, transaction)]
 /// impl IdentList {
-///     pub fn push_ident(&mut self, ident: NamespacedId, (): ()) {
+///     pub fn push_ident(&mut self, ident: NamespacedId) {
 ///         self.idents.push(ident);
 ///     }
 ///
@@ -687,7 +592,7 @@ pub use auditeur_macros::PathAny;
 ///         self.push_ident(I::const_ident().to_owned()).await
 ///     }
 ///
-///     pub fn index(&self, index: usize, (): ()) -> NamespacedId {
+///     pub fn index(&self, index: usize) -> NamespacedId {
 ///         self.idents[index].clone()
 ///     }
 /// }
@@ -802,7 +707,7 @@ pub use auditeur_macros::PathAny;
 ///     get_ref
 /// )]
 /// impl Example {
-///     pub fn func(&self, val: usize, (): ()) -> usize { val }
+///     pub fn func(&self, val: usize) -> usize { val }
 /// }
 ///
 /// fn enforce_trait_bounds<Example>()

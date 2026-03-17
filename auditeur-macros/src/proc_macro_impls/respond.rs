@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet};
+use std::borrow::Cow;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
@@ -66,9 +66,12 @@ pub fn respond_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenSt
     })
 }
 
-fn item_impl_remove_methods(mut item: syn::ItemImpl, methods: &HashSet<Ident>) -> syn::ItemImpl {
-    item.items
-        .retain(|item| impl_item_as_fn(item).is_none_or(|item| !methods.contains(&item.sig.ident)));
+fn item_impl_remove_methods(mut item: syn::ItemImpl, methods: &[usize]) -> syn::ItemImpl {
+    item.items = (item.items.into_iter())
+        .enumerate()
+        .filter(|(i, _)| !methods.contains(i))
+        .map(|(_, item)| item)
+        .collect();
     item
 }
 
@@ -98,8 +101,9 @@ impl<'a> Config<'a> {
             Self::get_component_data(attrs, item, &mut error);
 
         let methods: Vec<_> = (item.items.iter())
-            .filter_map(impl_item_as_fn)
-            .map(MethodConfig::new)
+            .enumerate()
+            .filter_map(|(i, item)| impl_item_as_fn(item).map(|item| (i, item)))
+            .map(|(i, item)| MethodConfig::new(item, i))
             .map(drain_continues_into(&mut error))
             .collect();
         let fields = (attrs.attrs.iter())
@@ -166,7 +170,7 @@ impl<'a> Config<'a> {
 
         if let Some(id) = attrs.get_component_data(Attr::as_connection, ComponentInfo::as_id) {
             error.combine(syn::Error::new(
-                id.span,
+                id.span(),
                 "unexpected id argument - connection does not use an id",
             ));
         }
@@ -217,9 +221,8 @@ impl<'a> Config<'a> {
         error: &mut MaybeError,
     ) -> NamespacedId {
         let id = Self::item_id(attrs, id, error);
-        let mut id = id.into_owned();
-        id.id += "_query";
-        id
+        let id = id.into_owned();
+        id.concat("_query")
     }
 
     fn item_id(
@@ -234,11 +237,7 @@ impl<'a> Config<'a> {
                         Span::call_site(),
                         "cannot get the item's `NamespacedId`, expected one as the first argument",
                     ));
-                    Cow::Owned(NamespacedId {
-                        namespace: "error".to_string(),
-                        id: "recovery".to_string(),
-                        span: Span::call_site(),
-                    })
+                    Cow::Owned(NamespacedId::new("error:recovery", Span::call_site()))
                 },
                 |id| Cow::Borrowed(&id.value),
             )
@@ -261,7 +260,7 @@ impl<'a> Config<'a> {
                 Span::call_site(),
                 "id must be specified for a resource with generics",
             ));
-            quote! { &#auditeur::namespaced_id::NamespacedId::new("error", "recovery") }
+            quote! { #auditeur::namespaced_id::ident!("error:recovery") }
         };
 
         error.wrap(expr)
@@ -584,12 +583,11 @@ impl Config<'_> {
 
 /// Methods related to mutation.
 impl Config<'_> {
-    fn methods_to_remove(&self) -> HashSet<Ident> {
+    fn methods_to_remove(&self) -> Vec<usize> {
         self.methods
             .iter()
-            .filter(|method| method.info.is_connection_only())
-            .map(|method| &method.method.sig.ident)
-            .cloned()
+            .filter(|method| method.info.is_connection_fn())
+            .map(|method| method.index)
             .collect()
     }
 }
@@ -598,6 +596,7 @@ struct MethodConfig<'a> {
     method: &'a syn::ImplItemFn,
     docs: Vec<&'a syn::Attribute>,
     info: MethodInfo,
+    index: usize,
 }
 
 enum MethodInfo {
@@ -607,7 +606,7 @@ enum MethodInfo {
 }
 
 impl<'a> MethodConfig<'a> {
-    fn new(method: &'a syn::ImplItemFn) -> Continue<Self> {
+    fn new(method: &'a syn::ImplItemFn, index: usize) -> Continue<Self> {
         let mut error = None;
 
         let attrs = attr::collect_attrs::<MethodAttr, MethodAttrs>("respond", &method.attrs)
@@ -653,7 +652,12 @@ impl<'a> MethodConfig<'a> {
             .filter(|item| item.path().is_ident("doc"))
             .collect();
 
-        error.wrap(Self { method, docs, info })
+        error.wrap(Self {
+            method,
+            docs,
+            info,
+            index,
+        })
     }
 
     fn expand_query_variant(&self, ts: &mut TokenStream) {
@@ -788,11 +792,11 @@ impl<'a> MethodConfig<'a> {
 }
 
 impl MethodInfo {
-    /// Returns `true` if the method info is [`ConnectionOnly`].
+    /// Returns `true` if the method info is [`ConnectionFn`].
     ///
-    /// [`ConnectionOnly`]: MethodInfo::ConnectionOnly
+    /// [`ConnectionFn`]: MethodInfo::ConnectionFn
     #[must_use]
-    const fn is_connection_only(&self) -> bool {
+    const fn is_connection_fn(&self) -> bool {
         matches!(self, Self::ConnectionFn)
     }
 }

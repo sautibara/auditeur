@@ -23,7 +23,7 @@ use crate::app::{BuiltBundle, Loader};
 #[allow(clippy::module_name_repetitions)]
 macro_rules! new_bundle {
     ($str:tt) => {
-        $crate::bundle::Bundle::new($crate::ident!($str))
+        $crate::bundle::Bundle::new($crate::namespaced_id::ident!($str))
     };
 }
 

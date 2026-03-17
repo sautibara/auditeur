@@ -20,23 +20,6 @@ providing a mechanism for forming one-to-one conversations.
 For example, [`#[respond]`] uses `Take` to allow other resources to call methods with return values
 on a listener.
 
-# Inputs
-
-Each component can use their own separate [`Input`], which is the main way that resources can talk
-to each other. Please refer to that trait's documentation for more information.
-
-Much of the underlying implementation complexity of the [`Listener`] trait (which is handled
-through [macros](#macros)) comes from the fact that [`Input`]s can be shared between all of the
-components. Generally, user inputs (such as those specified in [`Listen::OnInput`]) are shared,
-while inputs specific to the components themselves (like the message channel backing
-[`ListenComponent`]) are not shared.
-
-Since the amount of trait definitions for [`Subset`] grows at an exponential rate as the amount of
-accepted inputs increases, only 8 unique [`Input`]s for a [`Listener`] are accepted at this time.
-To work around this, try using a nested tuple or struct with a
-[`derive(Input)`](macro@crate::Input) annotation, which will only be shared if the entire tuple or
-struct is the same between different components.
-
 # Runnable
 
 [`Listener`] has [`Runnable`](trait@Runnable) as a supertrait, which provides callbacks for when
@@ -49,10 +32,7 @@ instead.
 
 # Macros
 
-To implement the [`Listener`] trait, see the [`listener`] proc-macro. It pulls in the [`Input`]s for
-each component, combines them, and implements the trait. Note that the implementations for traits
-with inputs must also be attached with the [`has_input`] proc-macro to provide the input information
-to the listener macro.
+To implement the [`Listener`] trait, see the [`listener`] proc-macro.
 
 # Examples
 

@@ -196,16 +196,6 @@ impl Auditeur {
         &self.root
     }
 
-    pub fn id(&self) -> proc_macro2::TokenStream {
-        let root = &self.root;
-        quote! { #root::namespaced_id }
-    }
-
-    pub fn resource(&self) -> proc_macro2::TokenStream {
-        let root = &self.root;
-        quote! { #root::resource }
-    }
-
     pub fn input(&self) -> proc_macro2::TokenStream {
         let root = &self.root;
         quote! { #root::input }

@@ -92,7 +92,7 @@ pub trait LoadedResource: Identifiable + Send + Sync {
     ///
     /// # Errors
     ///
-    /// - Returns [`Err(Self)`] if this resource doesn't provide a runner
+    /// - Returns `Err(Self)` if this resource doesn't provide a runner
     fn runner(self: Box<Self>) -> Result<Box<dyn Runner>, Box<dyn LoadedResource>>;
     /// Obtain a reference to the original resource within a trait object
     fn resource(&self) -> &dyn Resource;

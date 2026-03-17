@@ -1,91 +1,36 @@
-use std::{
-    fmt::{self, Display},
-    str::FromStr,
-};
-
 use proc_macro2::Span;
 use quote::{ToTokens, quote_spanned};
 use syn::{LitStr, parse::Parse};
-use thiserror::Error;
-
-use crate::Auditeur;
 
 #[derive(Debug, Clone)]
-pub struct NamespacedId {
-    pub namespace: String,
-    pub id: String,
-    pub span: Span,
-}
+pub struct NamespacedId(LitStr);
 
-impl Display for NamespacedId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.namespace, self.id)
+impl NamespacedId {
+    pub fn new(value: &str, span: Span) -> Self {
+        Self(LitStr::new(value, span))
     }
-}
 
-impl FromStr for NamespacedId {
-    type Err = ParseError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut components = s.split(':');
-        let (namespace, id) = (components.next())
-            .zip(components.next())
-            .ok_or(ParseError::NotEnoughComponents)?;
-        if components.next().is_some() {
-            return Err(ParseError::TooManyComponents);
-        }
-        Ok(Self {
-            namespace: namespace.to_string(),
-            id: id.to_string(),
-            span: Span::call_site(),
-        })
+    pub fn concat(self, value: &str) -> Self {
+        let mut string = self.0.value();
+        string += value;
+        Self::new(&string, self.0.span())
     }
-}
-
-#[derive(Debug, Error)]
-pub enum ParseError {
-    #[error("the id should not have more than one colon")]
-    TooManyComponents,
-    #[error("the id should have a colon in the middle")]
-    NotEnoughComponents,
 }
 
 impl Parse for NamespacedId {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let string: LitStr = input.parse()?;
-        let id: Self = string
-            .value()
-            .parse()
-            .map_err(|err| syn::Error::new_spanned(&string, format!("{err:?}")))?;
-        let id = Self {
-            span: string.span(),
-            ..id
-        };
-        Ok(id)
+        input.parse().map(Self)
     }
 }
 
 impl ToTokens for NamespacedId {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let namespaced_id = Auditeur::new().id();
+        let string = &self.0;
+        let span = self.0.span();
 
-        let namespace_size = self.namespace.len();
-        let string = self.to_string();
-        let bytes = string.bytes();
-        let span = self.span;
-
+        let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote_spanned! {
-            span => {
-                const COERCE: &#namespaced_id::NamespacedIdRef = unsafe {
-                    const COERCE: &#namespaced_id::Coerce<[u8]> = &#namespaced_id::Coerce {
-                        namespace_size: #namespace_size,
-                        data: [#(#bytes),*],
-                    };
-                    // SAFETY: Coerce<[u8]>, Coerce<str>, and NamespacedIdRef all have the same
-                    // layout and this is valid utf-8.
-                    std::mem::transmute(COERCE)
-                };
-                COERCE
-            }
+            span => #auditeur::namespaced_id::ident!(#string)
         });
     }
 }

@@ -4,10 +4,11 @@ use thiserror::Error;
 pub mod app;
 pub mod bundle;
 pub mod input;
-pub mod namespaced_id;
 #[cfg(feature = "path-any")]
 pub mod path_any;
 pub mod resource;
+
+pub use ::namespaced_id;
 
 mod macros;
 pub use macros::*;
@@ -65,10 +66,9 @@ pub mod prelude {
         bundle::Bundle,
         input::{Constraints, get::Get},
         macros::{
-            GetRef, Input, Runnable, create, ident, identifiable, listener, message, resource,
-            respond,
+            GetRef, Input, Runnable, create, identifiable, listener, message, resource, respond,
         },
-        namespaced_id::{NamespacedId, NamespacedIdRef},
+        namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
         resource::{
@@ -106,16 +106,6 @@ pub trait Message: Identifiable + Send + Sync + 'static {}
 pub trait ListenMessage: Message + Clone {}
 
 impl<M: Message + Clone> ListenMessage for M {}
-
-#[macro_export]
-macro_rules! bake_message {
-    ($message:ty) => {
-        pub type App = $crate::app::App<$message>;
-        pub type Registry = $crate::app::Registry<$message>;
-        pub type Get<T> = $crate::input::get::Get<T>;
-        pub type Bundle = $crate::bundle::Bundle<$message>;
-    };
-}
 
 use prelude::*;
 
