@@ -207,8 +207,7 @@ pub struct Lockfile {
 impl<O: Opts> Arena<O> {
     pub async fn refresh(&mut self) {
         if let Err(err) = self.inner.reload_config().await {
-            self.sender
-                .send_error(Self::const_ident(), anyhow::Error::from(err));
+            self.sender.send_error(Self::id(), anyhow::Error::from(err));
         }
     }
 }
@@ -831,7 +830,7 @@ impl<O: Opts> Component<Arena<O>> for MainComponent {
         if let Some(action) = listener.inner.actions.pop_front() {
             let res = listener.inner.run_action(action, &listener.registry).await;
             if let Err(errs) = res {
-                listener.sender.send_errors(Arena::<O>::const_ident(), errs);
+                listener.sender.send_errors(Arena::<O>::id(), errs);
             }
         }
 

@@ -180,20 +180,20 @@ impl BuildingRegistry {
     }
 
     fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
-        self.resources.insert(resource.ident().into(), resource);
+        self.resources.insert(resource.dyn_id().into(), resource);
     }
 
     fn add_bundle(&mut self, bundle: NamespacedId) {
         self.bundles.insert(bundle);
     }
 
-    #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
+    #[instrument(skip_all, fields(from = %dependent, to = %R::id()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
         dependent: ComponentIdRef<'_>,
         parent: &Registry,
     ) -> Result<R::Ref, crate::Error> {
-        let id = R::const_ident();
+        let id = R::id();
         let loaded = self
             .resources
             .get(id)
@@ -240,13 +240,13 @@ impl RunningRegistry {
         let _ = self.resource_sender.send(resource).await;
     }
 
-    #[instrument(skip_all, fields(from = %dependent, to = %R::const_ident()))]
+    #[instrument(skip_all, fields(from = %dependent, to = %R::id()))]
     async fn get_as<R: Resource + GetRef>(
         &self,
         dependent: ComponentIdRef<'_>,
         event_sender: &EventSender,
     ) -> Result<R::Ref, crate::Error> {
-        let id = R::const_ident();
+        let id = R::id();
         let (get_request, receiver) = event::GetRequest::new(id.to_owned(), dependent.into_owned());
         // FIXME: by using an EventSender, the requests actually never get dropped
         // - it all stays in the main Vec, awaiting new receivers
@@ -403,7 +403,7 @@ impl Registry {
 
         let resource_map = building_registry
             .resources
-            .get_mut(ResourceMap::const_ident())
+            .get_mut(ResourceMap::id())
             .expect("ResourceMap should be loaded");
         let resource_map: &mut ResourceMap = (resource_map.resource_mut() as &mut dyn crate::Any)
             .downcast_mut()
@@ -451,7 +451,7 @@ impl Registry {
     }
 
     async fn run_runner(runner: Box<dyn Runner>, sender: EventSender) {
-        let id = runner.ident().to_owned();
+        let id = runner.dyn_id().to_owned();
         sender.send(RegistryEvent::Running(id.clone()));
         // We actually don't know if the runner will be unwind safe
         // (for example, the runner could use interior mutability
@@ -498,7 +498,7 @@ impl Registry {
     /// [`Self::get_as`], and if it provides a [`Runner`], the runner will be run in the main loop
     pub async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) -> &mut Self {
         self.event_sender
-            .send(RegistryEvent::Loaded(resource.ident().into()));
+            .send(RegistryEvent::Loaded(resource.dyn_id().into()));
         self.state.add_boxed_resource(resource).await;
         self
     }

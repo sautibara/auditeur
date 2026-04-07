@@ -1,14 +1,15 @@
 use proc_macro2::Ident;
 
-use crate::{custom_generics::CustomGenerics, namespaced_id::NamespacedId};
+use crate::{namespaced_id::NamespacedId, proc_macro_impls::ComponentType};
 use quote::quote;
 
 pub fn derive_message(
     ident: &Ident,
     id: &NamespacedId,
-    generics: &CustomGenerics,
+    generics: &syn::Generics,
 ) -> proc_macro2::TokenStream {
-    let identifiable_impl = super::identifiable_with_generics(id, ident, generics);
+    let identifiable_impl = super::identifiable(id, ident, generics);
+    let component_impl = super::component(ident, generics, ComponentType::Message);
 
     #[cfg(feature = "path-any")]
     let path_any_impl = super::path_any(ident, generics);
@@ -21,6 +22,7 @@ pub fn derive_message(
         impl #auditeur::Message for #ident {}
 
         #identifiable_impl
+        #component_impl
         #path_any_impl
     }
 }

@@ -58,12 +58,12 @@ impl<W: Watcher + Create> WatcherLoader<W> {
 #[async_trait]
 impl<W: Watcher + Create> Loader for WatcherLoader<W> {
     async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let ident = ComponentIdRef::Resource(W::const_ident());
+        let ident = ComponentIdRef::Resource(W::id());
         let registry_input = W::RegistryInput::create(registry, ident).await?;
         let watcher = W::create(registry_input, self.external_input)
             .await
             .map_err(|error| Error::FromResource {
-                id: W::const_ident().into(),
+                id: W::id().into(),
                 error,
             })?;
         let runner = LoadedWatcher::build(watcher, registry).await?;
@@ -77,7 +77,7 @@ impl<W: Watcher + Create> Loader for WatcherLoader<W> {
     }
 
     fn ident(&self) -> &NamespacedIdRef {
-        W::const_ident()
+        W::id()
     }
 
     fn channels(&self) -> Channels {
@@ -101,8 +101,11 @@ impl<W: Watcher> LoadedWatcher<W> {
             registry: registry.handle(),
             event_receiver: registry.event_receiver(),
             event_sender: registry.event_sender(),
-            input: <W::Input as Input>::create(registry, ComponentIdRef::Resource(watcher.ident()))
-                .await?,
+            input: <W::Input as Input>::create(
+                registry,
+                ComponentIdRef::Resource(watcher.dyn_id()),
+            )
+            .await?,
             inner: watcher,
         })
     }
@@ -119,13 +122,13 @@ impl<W: Watcher> LoadedWatcher<W> {
             return ControlFlow::Break(());
         };
         let to_exit = match message {
-            RegistryEvent::Stop(ref id) if id == W::const_ident() => true,
+            RegistryEvent::Stop(ref id) if id == W::id() => true,
             RegistryEvent::Exit => true,
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(ref get_request) => {
                 trace!("recieved get request");
 
-                if get_request.id() == W::const_ident() {
+                if get_request.id() == W::id() {
                     #[allow(clippy::option_if_let_else)] // doesn't return anything
                     if let Ok(reference) = reference {
                         let ident = get_request.dependent();
@@ -163,7 +166,7 @@ impl<W: Watcher> Runner for LoadedWatcher<W> {
     async fn run(mut self: Box<Self>) {
         // precompute get requests before running the watcher
         #[cfg(feature = "runtime-loading")]
-        let ident = crate::app::ComponentIdRef::Resource(W::const_ident());
+        let ident = crate::app::ComponentIdRef::Resource(W::id());
         #[cfg(feature = "runtime-loading")]
         let reference = self.inner.maybe_get_ref(&self.registry, ident).await;
 
@@ -186,7 +189,7 @@ impl<W: Watcher> Runner for LoadedWatcher<W> {
                     }
                     res = &mut run => {
                         if let Err(err) = res {
-                            self.event_sender.send_error(W::const_ident(), err);
+                            self.event_sender.send_error(W::id(), err);
                         }
                         break;
                     },
@@ -196,7 +199,7 @@ impl<W: Watcher> Runner for LoadedWatcher<W> {
 
         let res = self.inner.exit(&mut self.input).await;
         if let Err(err) = res {
-            self.event_sender.send_error(W::const_ident(), err);
+            self.event_sender.send_error(W::id(), err);
         }
 
         debug!("exit");
@@ -204,14 +207,14 @@ impl<W: Watcher> Runner for LoadedWatcher<W> {
 }
 
 impl<W: Watcher> Identifiable for LoadedWatcher<W> {
-    fn ident(&self) -> &'static NamespacedIdRef {
-        self.inner.ident()
+    fn dyn_id(&self) -> &'static NamespacedIdRef {
+        self.inner.dyn_id()
     }
 
-    fn const_ident() -> &'static NamespacedIdRef
+    fn id() -> &'static NamespacedIdRef
     where
         Self: Sized,
     {
-        W::const_ident()
+        W::id()
     }
 }

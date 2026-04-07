@@ -69,7 +69,7 @@ impl<L: Listen<M>, M: ListenMessage> Input for ListenComponent<L, M> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_message(M::const_ident())
+        Constraints::empty().after_message(M::id())
     }
 }
 
@@ -154,7 +154,7 @@ impl<L: OnLoad<R>, R: Resource> Input for OnLoadComponent<L, R> {
         let mut receiver = registry.event_receiver();
         receiver.mark_seen();
 
-        let should_init = registry.loaded_resources().await.contains(R::const_ident());
+        let should_init = registry.loaded_resources().await.contains(R::id());
 
         Ok(Self {
             receiver,
@@ -186,7 +186,7 @@ impl<L: OnLoad<R>, R: Resource> Component<L> for OnLoadComponent<L, R> {
         listener: &mut L,
     ) -> anyhow::Result<ControlFlow<()>> {
         if message.is_none()
-            || matches!(&message, Some(RegistryEvent::Running(id)) if *id == *R::const_ident())
+            || matches!(&message, Some(RegistryEvent::Running(id)) if *id == *R::id())
         {
             listener.on_load().send().await?;
         }
@@ -208,7 +208,7 @@ impl<R: Take<M>, M: Message> Input for TakeComponent<R, M> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_message(M::const_ident())
+        Constraints::empty().after_message(M::id())
     }
 }
 
@@ -282,7 +282,7 @@ impl<L: Listener> Component<L> for RegistryComponent {
         listener: &mut L,
     ) -> anyhow::Result<ControlFlow<()>> {
         Ok(match event {
-            RegistryEvent::Stop(ref id) if id == L::const_ident() => ControlFlow::Break(()),
+            RegistryEvent::Stop(ref id) if id == L::id() => ControlFlow::Break(()),
             RegistryEvent::Exit => ControlFlow::Break(()),
             #[cfg(feature = "runtime-loading")]
             RegistryEvent::Get(ref get_request) => {
@@ -298,47 +298,36 @@ pub trait Respond: Listener {
     type Query: crate::Message;
 }
 
-pub trait TransactionFnOnce<'a, R: Respond>: Send + Sync + 'static {
-    type Output: Send;
-
-    fn run(self, resource: &'a mut R) -> impl Future<Output = Self::Output> + Send + 'a;
+// Credit: `https://stackoverflow.com/a/79744535`
+pub trait SendAsyncFnOnce<A, O>: FnOnce(A) -> Self::Fut + Send + 'static {
+    type Fut: Future<Output = O> + Send;
 }
 
-impl<'a, Out, Res, Fn, Fut> TransactionFnOnce<'a, Res> for Fn
+impl<A, O, Out, F> SendAsyncFnOnce<A, O> for F
 where
-    Out: Send,
-    Res: Respond,
-    Fn: FnOnce(&'a mut Res) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Out> + Send + 'a,
+    Out: Future<Output = O> + Send,
+    F: FnOnce(A) -> Out + Send + 'static,
 {
-    type Output = Out;
-
-    fn run(self, resource: &'a mut Res) -> impl Future<Output = Self::Output> + Send + 'a {
-        (self)(resource)
-    }
+    type Fut = Out;
 }
 
 #[allow(clippy::type_complexity)] // wi wi wi
 pub struct BoxedTransactionFnOnce<R: Respond>(
-    Box<
-        dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
-            + Send
-            + Sync,
-    >,
+    Box<dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send>,
 );
 
 impl<R: Respond> BoxedTransactionFnOnce<R> {
-    pub fn new(func: impl for<'a> TransactionFnOnce<'a, R, Output = ()>) -> Self {
-        Self(Box::new(|resource| Box::pin(func.run(resource))))
+    pub fn new(func: impl for<'a> SendAsyncFnOnce<&'a mut R, ()>) -> Self {
+        Self(Box::new(|resource| Box::pin((func)(resource))))
     }
 
-    pub fn new_with_sender<T: Send + Sync + 'static>(
-        func: impl for<'a> TransactionFnOnce<'a, R, Output = T>,
+    pub fn new_with_sender<T: Send + 'static>(
+        func: impl for<'a> SendAsyncFnOnce<&'a mut R, T>,
         sender: tokio::sync::oneshot::Sender<T>,
     ) -> Self {
         Self(Box::new(|resource| {
             Box::pin(async {
-                let res = func.run(resource).send().await;
+                let res = (func)(resource).send().await;
                 let _ = sender.send(res);
             })
         }))
@@ -479,12 +468,12 @@ macro_rules! impl_component_list {
                 loop {
                     select! { $($bias)* $(
                         res = $c.wait(&listener) => {
-                            let Some(val) = sender.handle_error(res, listener.ident()) else { continue; };
+                            let Some(val) = sender.handle_error(res, listener.dyn_id()) else { continue; };
                             let ControlFlow::Continue(val) = val else { break; };
 
                             let res = $c.handle(val, listener).send().await;
 
-                            let Some(val) = sender.handle_error(res, listener.ident()) else { continue; };
+                            let Some(val) = sender.handle_error(res, listener.dyn_id()) else { continue; };
                             if val.is_break() { break; }
                         },
                     )*}
@@ -517,7 +506,7 @@ pub(crate) struct LoadedListener<L: Listener> {
 
 impl<L: Listener> LoadedListener<L> {
     pub(crate) async fn build(listener: L, registry: &Registry) -> Result<Self, Error> {
-        let ident = ComponentIdRef::Resource(listener.ident());
+        let ident = ComponentIdRef::Resource(listener.dyn_id());
         Ok(Self {
             listener,
             components: L::Components::create(registry, ident).await?,
@@ -530,7 +519,7 @@ impl<L: Listener> LoadedListener<L> {
 impl<L: Listener> Runner for LoadedListener<L> {
     async fn run(mut self: Box<Self>) {
         let res = self.listener.init().send().await;
-        self.event_sender.handle_error(res, self.listener.ident());
+        self.event_sender.handle_error(res, self.listener.dyn_id());
 
         <L::Components as ComponentList<L>>::run(
             &mut self.components,
@@ -540,22 +529,22 @@ impl<L: Listener> Runner for LoadedListener<L> {
         .await;
 
         let res = self.listener.exit().send().await;
-        self.event_sender.handle_error(res, self.listener.ident());
+        self.event_sender.handle_error(res, self.listener.dyn_id());
 
         debug!("exit");
     }
 }
 
 impl<L: Listener> Identifiable for LoadedListener<L> {
-    fn const_ident() -> &'static NamespacedIdRef
+    fn id() -> &'static NamespacedIdRef
     where
         Self: Sized,
     {
-        L::const_ident()
+        L::id()
     }
 
-    fn ident(&self) -> &'static NamespacedIdRef {
-        self.listener.ident()
+    fn dyn_id(&self) -> &'static NamespacedIdRef {
+        self.listener.dyn_id()
     }
 }
 
@@ -586,12 +575,12 @@ impl<L: Listener + Create> ListenerLoader<L> {
 #[async_trait]
 impl<L: Listener + Create> Loader for ListenerLoader<L> {
     async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let ident = ComponentIdRef::Resource(L::const_ident());
+        let ident = ComponentIdRef::Resource(L::id());
         let registry_input = L::RegistryInput::create(registry, ident).await?;
         let listener = L::create(registry_input, self.external_input)
             .await
             .map_err(|error| Error::FromResource {
-                id: L::const_ident().into(),
+                id: L::id().into(),
                 error,
             })?;
         let runner = LoadedListener::build(listener, registry).await?;
@@ -603,7 +592,7 @@ impl<L: Listener + Create> Loader for ListenerLoader<L> {
     }
 
     fn ident(&self) -> &NamespacedIdRef {
-        L::const_ident()
+        L::id()
     }
 
     fn channels(&self) -> Channels {

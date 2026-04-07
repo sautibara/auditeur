@@ -16,12 +16,12 @@ impl<R: Resource + Create> NonRunnableLoader<R> {
 #[async_trait]
 impl<R: Resource + Create> Loader for NonRunnableLoader<R> {
     async fn load(self: Box<Self>, registry: &Registry) -> Result<Box<dyn LoadedResource>, Error> {
-        let ident = ComponentIdRef::Resource(R::const_ident());
+        let ident = ComponentIdRef::Resource(R::id());
         let registry_input = R::RegistryInput::create(registry, ident).await?;
         let resource = R::create(registry_input, self.external_input)
             .await
             .map_err(|error| Error::FromResource {
-                id: R::const_ident().into(),
+                id: R::id().into(),
                 error,
             })?;
         Ok(Box::new(LoadedNonRunnable::new(resource)))
@@ -32,7 +32,7 @@ impl<R: Resource + Create> Loader for NonRunnableLoader<R> {
     }
 
     fn ident(&self) -> &NamespacedIdRef {
-        R::const_ident()
+        R::id()
     }
 }
 
@@ -61,14 +61,14 @@ impl<R: Resource> LoadedResource for LoadedNonRunnable<R> {
 }
 
 impl<R: Resource> Identifiable for LoadedNonRunnable<R> {
-    fn ident(&self) -> &'static NamespacedIdRef {
-        self.resource.ident()
+    fn dyn_id(&self) -> &'static NamespacedIdRef {
+        self.resource.dyn_id()
     }
 
-    fn const_ident() -> &'static NamespacedIdRef
+    fn id() -> &'static NamespacedIdRef
     where
         Self: Sized,
     {
-        R::const_ident()
+        R::id()
     }
 }

@@ -1,11 +1,11 @@
 use quote::quote;
 use syn::{Ident, Item};
 
-use crate::{custom_generics::CustomGenerics, namespaced_id::NamespacedId};
+use crate::{namespaced_id::NamespacedId, proc_macro_impls::ComponentType};
 
-pub fn resource(mut item: Item, id: &NamespacedId) -> syn::Result<proc_macro2::TokenStream> {
-    let (ident, generics) = CustomGenerics::from_item(&mut item)?;
-    let impls = resource_impls_with_generics(ident, id, &generics);
+pub fn resource(item: &Item, id: &NamespacedId) -> syn::Result<proc_macro2::TokenStream> {
+    let (ident, generics, _) = crate::extract_item_values(item)?;
+    let impls = resource_impls_with_generics(ident, id, generics);
 
     Ok(quote! {
         #item
@@ -16,7 +16,7 @@ pub fn resource(mut item: Item, id: &NamespacedId) -> syn::Result<proc_macro2::T
 pub fn resource_impls_with_generics(
     ident: &Ident,
     id: &NamespacedId,
-    generics: &CustomGenerics,
+    generics: &syn::Generics,
 ) -> proc_macro2::TokenStream {
     #[cfg(feature = "path-any")]
     let path_any_impl = super::path_any(ident, generics);
@@ -28,10 +28,12 @@ pub fn resource_impls_with_generics(
     #[cfg(not(feature = "runtime-loading"))]
     let maybe_get_ref_impl = quote!();
 
-    let identifiable_impl = super::identifiable_with_generics(id, ident, generics);
+    let identifiable_impl = super::identifiable(id, ident, generics);
+    let component_impl = super::component(ident, generics, ComponentType::Resource);
 
     quote!(
         #identifiable_impl
+        #component_impl
         #path_any_impl
         #maybe_get_ref_impl
     )

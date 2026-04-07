@@ -229,7 +229,7 @@ impl App {
                 .map(|id| (id, None)),
         );
 
-        if !self.loaders.contains_key(ResourceMap::const_ident()) {
+        if !self.loaders.contains_key(ResourceMap::id()) {
             self.add_bundle(resource_map::init);
         }
 

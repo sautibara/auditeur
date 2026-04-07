@@ -1,17 +1,12 @@
 use syn::Ident;
 
-use crate::custom_generics::CustomGenerics;
 
 use quote::quote;
 
-pub fn maybe_get_ref(ident: &Ident, generics: &CustomGenerics) -> proc_macro2::TokenStream {
+pub fn maybe_get_ref(ident: &Ident, generics: &syn::Generics) -> proc_macro2::TokenStream {
     let auditeur = &*crate::AUDITEUR;
 
-    let CustomGenerics {
-        impl_generics,
-        type_generics,
-        where_clause,
-    } = generics;
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     quote! {
         #[#auditeur::async_trait::async_trait]

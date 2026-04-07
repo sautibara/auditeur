@@ -10,14 +10,6 @@ pub mod listener;
 pub(crate) mod non_runnable;
 pub mod watcher;
 
-/// A type that has an associated [`NamespacedId`] that uniquely represents it
-pub trait Identifiable {
-    fn ident(&self) -> &'static NamespacedIdRef;
-    fn const_ident() -> &'static NamespacedIdRef
-    where
-        Self: Sized;
-}
-
 /// An item that can be added to an [`App`]
 ///
 /// Resources are [`Identifiable`] by a specific [`NamespacedId`] that uniquely represents them.

@@ -33,10 +33,10 @@ pub struct PluginManager;
 ///       github: "sautibara/sautibara-media-keys",
 ///       enabled: false,
 ///     ),
-///     ( builtin: ( path: "libsautibara-rpc.dll", name: "sautibara_rpc" ) ),
+///     ( builtin: ( path: "libsautibara-rpc.dll", name: "sautibara_rpc", version: "0.1.0" ) ),
 ///   ]
 /// )
-/// # "#; ron::de::from_str::<auditeur_plugin_host::config::Host>(file).map(drop) }
+/// # "#; ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME).from_str::<auditeur_plugin_host::config::Host>(file).map(drop) }
 ///  ```
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Config {

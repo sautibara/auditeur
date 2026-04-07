@@ -25,7 +25,7 @@ use crate::resource::listener::*;
 ///
 /// fn assert_is_resource<R: auditeur::resource::Resource>(_: R) {}
 ///
-/// assert_eq!(UsefulResource.ident(), ident!("test:useful_resource"));
+/// assert_eq!(UsefulResource::id(), ident!("test:useful_resource"));
 /// assert_is_resource(UsefulResource);
 /// # }
 /// ```
@@ -37,16 +37,16 @@ pub use auditeur_macros::resource;
 ///
 /// ```
 /// # // see the doctest for bundle::Supplier for why this is necessary
-/// # use auditeur::{namespaced_id, resource, path_any, input};
+/// # use auditeur::*;
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 ///
 /// #[identifiable("test:has_identifier")]
 /// struct HasIdentifier;
 ///
-/// fn assert_is_identifiable<I: auditeur::resource::Identifiable>(_: I) {}
+/// fn assert_is_identifiable<I: auditeur::app::Identifiable>(_: I) {}
 ///
-/// assert_eq!(HasIdentifier.ident(), ident!("test:has_identifier"));
+/// assert_eq!(HasIdentifier::id(), ident!("test:has_identifier"));
 /// assert_is_identifiable(HasIdentifier);
 /// # }
 /// ```
@@ -63,7 +63,7 @@ pub use auditeur_macros::identifiable;
 ///
 /// ```
 /// # // see the doctest for bundle::Supplier for why this is necessary
-/// # use auditeur::{namespaced_id, resource, path_any, input, Message};
+/// # use auditeur::*;
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 ///
@@ -73,7 +73,7 @@ pub use auditeur_macros::identifiable;
 ///
 /// fn assert_is_message<M: auditeur::Message>(_: M) {}
 ///
-/// assert_eq!(Message.ident(), ident!("test:message"));
+/// assert_eq!(Message::id(), ident!("test:message"));
 /// assert_is_message(Message);
 /// # }
 /// ```
@@ -81,117 +81,12 @@ pub use auditeur_macros::message;
 
 /// Implements [`Listener`] for any type.
 ///
-/// # Examples
-///
-/// ```no_run
-/// # use auditeur::*;
-/// # use auditeur::resource::listener::{Listener, Listen};
-/// use auditeur::prelude::*;
-/// # use auditeur::resource::listener::{ListenComponent, RegistryComponent};
-///
-/// # mod shared {
-/// # use auditeur::prelude::*;
-/// # use auditeur::resource::listener::Listen;
-/// # use super::DoubleListener;
-/// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
-/// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
-/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
-/// # }
-/// use shared::*;
-///
-/// // This implements [`Listener`] by listening to both [`Message1`] and [`Message2`].
-/// // The inputs for these blocks are collected by the attribute and combined into a single tuple,
-/// //     so that the two components can share them :).
-/// #[derive(Runnable)]
-/// #[resource("test:double_listener")]
-/// #[listener(listen(Message1, Message2))]
-/// struct DoubleListener;
-/// #
-/// # fn main() {}
-/// ```
-///
-/// <details>
-///   <summary>Shared code for all examples:</summary>
-///
-/// ```no_run
-/// # #[listener("test:listener")]
-/// # #[derive(Runnable)]
-/// # struct DoubleListener;
-/// # use auditeur::*;
-/// mod shared {
-///     use auditeur::prelude::*;
-/// # use auditeur::resource::listener::Listen;
-///     use super::DoubleListener;
-///
-///     #[derive(Clone)]
-///     #[message("test:message1")]
-///     pub struct Message1;
-///
-///     #[derive(Clone)]
-///     #[message("test:message2")]
-///     pub struct Message2;
-///
-/// # /*
-///     // (code omitted for brevity - they both just return `Ok(())`)
-///     impl Listen<Message1> for DoubleListener { ... }
-///     impl Listen<Message2> for DoubleListener { ... }
-/// # */
-/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
-/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
-/// }
-/// # fn main() {}
-/// ```
-///
-/// </details>
-///
 /// # Parameters
 ///
 /// ## `Listen`
 ///
 /// To listen to messages using [`Listen`](crate::resource::listener::Listen), provide the list of
 /// them wrapped by `listen(<message>,*)`.
-///
-/// ### Examples
-///
-/// ```no_run
-/// # use auditeur::*;
-/// # use auditeur::resource::listener::{Listener, Listen};
-/// use auditeur::prelude::*;
-/// use auditeur::resource::listener::{ListenComponent, RegistryComponent, Unbiased};
-///
-/// # mod shared {
-/// # use auditeur::prelude::*;
-/// # use auditeur::resource::listener::Listen;
-/// # use super::DoubleListener;
-/// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
-/// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
-/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
-/// # }
-/// use shared::*;
-///
-///
-/// #[create(default)]
-/// #[resource("test:double_listener")]
-/// #[listener(listen(Message1, Message2))]
-/// #[derive(Runnable)]
-/// struct DoubleListener;
-///
-///
-/// # fn main() {
-/// assert_components_for(DoubleListener);
-/// # }
-/// fn assert_components_for<L>(_: L)
-/// where
-///     L: Listener<Components = (
-///            Unbiased,
-///            RegistryComponent,
-///            ListenComponent<L, Message1>,
-///            ListenComponent<L, Message2>
-///        )> + Listen<Message1> + Listen<Message2>
-/// {}
-/// ```
 ///
 /// ## `Take`
 ///
@@ -202,50 +97,6 @@ pub use auditeur_macros::message;
 ///
 /// To use other [`Component`]s, provide a list of component types in a `components` list.
 ///
-/// ### Examples
-///
-/// ```no_run
-/// # use auditeur::*;
-/// # use auditeur::resource::listener::{Listener, Listen};
-/// use auditeur::prelude::*;
-/// use auditeur::resource::listener::{ListenComponent, RegistryComponent, Unbiased};
-///
-///
-/// # mod shared {
-/// # use auditeur::prelude::*;
-/// # use auditeur::resource::listener::Listen;
-/// # use super::DoubleListener;
-/// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
-/// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
-/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
-/// # }
-/// use shared::*;
-///
-/// #[create(default)]
-/// #[resource("test:double_listener")]
-/// #[listener(components(
-///     ListenComponent<Self, Message1>,
-///     ListenComponent<Self, Message2>,
-/// ))]
-/// #[derive(Runnable)]
-/// struct DoubleListener;
-///
-///
-/// # fn main() {
-/// assert_components_for(DoubleListener);
-/// # }
-/// fn assert_components_for<L>(_: L)
-/// where
-///     L: Listener<Components = (
-///            Unbiased,
-///            RegistryComponent,
-///            ListenComponent<L, Message1>,
-///            ListenComponent<L, Message2>
-///        )> + Listen<Message1> + Listen<Message2>
-/// {}
-/// ```
-///
 /// ## Registry Component
 ///
 /// All listeners by default have a [`RegistryComponent`], which automatically handles exiting when
@@ -254,50 +105,6 @@ pub use auditeur_macros::message;
 /// another component that handles these two things.
 ///
 /// To disable adding a [`RegistryComponent`], specify `registry_component = false`.
-///
-/// ### Examples
-///
-/// ```no_run
-/// # use auditeur::*;
-/// # use auditeur::resource::listener::{Listener, Listen};
-/// use auditeur::prelude::*;
-/// use auditeur::resource::listener::{ListenComponent, RegistryComponent};
-///
-///
-/// # mod shared {
-/// # use auditeur::prelude::*;
-/// # use auditeur::resource::listener::Listen;
-/// # use super::DoubleListener;
-/// # #[derive(Clone)] #[message("test:message1")] pub struct Message1;
-/// # #[derive(Clone)] #[message("test:message2")] pub struct Message2;
-/// # impl Listen<Message1> for DoubleListener { async fn on(&mut self, _: Message1) -> Result<()> { Ok(()) } }
-/// # impl Listen<Message2> for DoubleListener { async fn on(&mut self, _: Message2) -> Result<()> { Ok(()) } }
-/// # }
-/// use shared::*;
-///
-/// #[create(default)]
-/// #[resource("test:double_listener")]
-/// #[listener(
-///     registry_component = false,
-///     listen(Message1, Message2)
-/// )]
-/// #[derive(Runnable)]
-/// struct DoubleListener;
-///
-///
-/// # fn main() {
-/// assert_components_for(DoubleListener);
-/// # }
-/// fn assert_components_for<L>(_: L)
-/// where
-///     L: Listener<Components = (
-///            Unbiased,
-///            // notice the lack of RegistryComponent
-///            ListenComponent<L, Message1>,
-///            ListenComponent<L, Message2>
-///        )> + Listen<Message1> + Listen<Message2>
-/// {}
-/// ```
 ///
 /// ## Bias
 ///
@@ -369,27 +176,6 @@ pub use auditeur_macros::create;
 pub use auditeur_macros::Input;
 
 /// Implements [`GetRef`](crate::input::get::GetRef) using [`Clone`].
-///
-/// # Examples
-///
-/// ```
-/// # // see the doc test for bundle::Supplier for why this is necessary
-/// # use auditeur::{input, path_any, app};
-/// # pub fn main() {
-/// use auditeur::prelude::*;
-/// use auditeur::input::get::GetRef;
-/// use std::sync::Arc;
-///
-/// #[derive(Clone, GetRef, PathAny)]
-/// pub struct Shared(Arc<usize>);
-///
-/// let shared: Shared = Shared(Arc::new(0));
-/// let registry = Registry::new(0);
-/// let reference: Shared = shared.get_ref(&registry);
-///
-/// assert!(Arc::ptr_eq(&shared.0, &reference.0));
-/// # }
-/// ```
 pub use auditeur_macros::GetRef;
 
 /// Automatically provides an implementation of [`MaybeGetRef`](crate::input::get::MaybeGetRef).
@@ -422,15 +208,20 @@ pub use auditeur_macros::PathAny;
 /// ```
 /// use auditeur::prelude::*;
 /// use tokio::sync::broadcast;
-/// # use auditeur::*;
+/// # use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
+/// # use namespaced_id;
 ///
-/// #[derive(Default, Create, Runnable)]
+/// #[derive(Runnable)]
 /// // All that needs to be done in the `#[listener]` macro is to pass in a `respond` flag.
 /// // The macro then pulls the necessary information from the `impl` block for which messages
 /// // to listen to.
-/// #[listener("test:counter", respond)]
+/// #[create(default)]
+/// #[resource("test:counter")]
+/// #[listener(respond)]
 /// struct Counter {
 ///     value: usize,
+///     #[create(input)]
+///     sender: Shouter<CounterChanged>,
 /// }
 ///
 /// // The macro takes the NamespacedId of the listener as the first argument to fill out the id
@@ -443,7 +234,6 @@ pub use auditeur_macros::PathAny;
 ///     // types can hold references (since they're sent using messages). To get around this,
 ///     // use transactions, clone items, or use `Arc`s.
 ///     // Thankfully here we don't have to worry about that, since `usize` is copyable.
-///     // The last parameter must be an [`Input`], but it isn't needed here so we just use `()`.
 ///     pub fn get(&self) -> usize {
 ///         self.value
 ///     }
@@ -451,9 +241,9 @@ pub use auditeur_macros::PathAny;
 ///     // If methods are provided that return nothing, when they're called on the connection
 ///     // and awaited, the future will await until the listener is finished handling the method.
 ///     // This is used here to allow other resources to wait until the value is fully set.
-///     pub fn set(&mut self, value: usize, sender: &mut broadcast::Sender<CounterChanged>) {
+///     pub fn set(&mut self, value: usize) {
 ///         self.value = value;
-///         let _ = sender.send(CounterChanged);
+///         self.sender.send(CounterChanged);
 ///     }
 /// }
 ///
@@ -463,13 +253,18 @@ pub use auditeur_macros::PathAny;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), auditeur::Error> {
-///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<Counter>(()));
+///     let app = App::new().with_bundle(
+///         new_bundle!("test:test")
+///             .with_listener::<Counter>(())
+///             .with_listen_channel::<CounterChanged>()
+///     );
 ///     app.run_with(
-///         1024,
-///         |(counter, receiver): (Get<Counter>, broadcast::Receiver<CounterChanged>)| async move {
+///         |(counter, receiver): (
+///             Get<Counter>,
+///             auditeur::app::channels::Listener<CounterChanged>
+///         ) | async move {
 ///             // All methods on a `Connection` struct take `&self` and are asynchronous since they
-///             // send and receive messages. They also don't take in any inputs, because the listener
-///             // already handles the inputs.
+///             // send and receive messages.
 ///             assert!(receiver.is_empty());
 ///             assert_eq!(counter.get().await, 0);
 ///             counter.set(5).await;
@@ -483,11 +278,7 @@ pub use auditeur_macros::PathAny;
 /// # Transaction
 ///
 /// If specified, `Connection`s can also accept transactions, which allow running multiple methods
-/// at the same time on the listener. Specifically, they accept closures with a `Ref` argument.
-/// The `Ref` acts as a mutable reference to the listener and allows running methods directly on the
-/// listener without specifying inputs (the inputs are held in the ref alongside the listener). It
-/// also implements [`Deref`](std::ops::Deref) and [`DerefMut`](std::ops::DerefMut) so other
-/// public methods on the listener can be run.
+/// at the same time on the listener.
 ///
 /// Note that these aren't SQL type transactions - if they don't succeed, they will not
 /// automatically be cancelled.
@@ -496,10 +287,12 @@ pub use auditeur_macros::PathAny;
 ///
 /// ```
 /// use auditeur::prelude::*;
-/// # use auditeur::*;
+/// # use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
 ///
-/// #[derive(Default, Create, Runnable)]
-/// #[listener("test:vec_resource", respond)]
+/// #[derive(Default, Runnable)]
+/// #[create(default)]
+/// #[resource("test:vec_resource")]
+/// #[listener(respond)]
 /// pub struct VecResource {
 ///     items: Vec<usize>,
 /// }
@@ -518,11 +311,11 @@ pub use auditeur_macros::PathAny;
 /// #[tokio::main]
 /// async fn main() -> Result<(), auditeur::Error> {
 ///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<VecResource>(()));
-///     app.run_with(1024, |vec: Get<VecResource>| async move {
+///     app.run_with(|vec: Get<VecResource>| async move {
 ///         // Use `spawn_transaction` to run a transaction without returning a value.
 ///         // While the future does have to be `await`ed, it will not await the listener fully
 ///         // running the future - use `run_transaction` for that.
-///         vec.spawn_transaction(|mut vec| {
+///         vec.spawn_transaction(async |vec: &mut VecResource| {
 ///             for val in (0..5).rev() {
 ///                 // Note that transactions are run by the listener itself, so we don't have to
 ///                 // await any messages being sent.
@@ -531,7 +324,7 @@ pub use auditeur_macros::PathAny;
 ///         }).await;
 ///
 ///         // Here, run_transaction is used to return a value: the first five elements in the vec.
-///         let vals: Vec<usize> = vec.run_transaction(|vec| {
+///         let vals: Vec<usize> = vec.run_transaction(async |vec: &mut VecResource| {
 ///             (0..5).map(|index| vec.get_unwrap(index)).collect()
 ///         }).await;
 ///
@@ -545,18 +338,16 @@ pub use auditeur_macros::PathAny;
 /// ## `connection_fn`
 ///
 /// Indicates that this method should be put directly in the `Connection` struct. Thus, the method
-/// will only be able to call the other methods in `Connection` and can't use inputs, but may use
+/// will only be able to call the other methods in `Connection`, but may use
 /// things that the other methods may not accept - like generics.
 ///
 // /// <div class="warning">
 // /// This works with `ref_fn`, but is exclusive with `timeout` and `on_error`.
 // /// </div>
 // ///
-/// ## `ref_fn`
+/// ## `resource_fn`
 ///
-/// Indicates that this method should be put directly in the `Ref` struct. Thus, the method will
-/// only be able to call the other methods in `Ref` and can't use inputs, but may use things that
-/// the other methods may not accept - like generics.
+/// Indicates that this method should be unchanged and put in the resource struct.
 ///
 // /// <div class="warning">
 // /// This works with `connection_fn`, but is exclusive with `timeout` and `on_error`.
@@ -566,11 +357,13 @@ pub use auditeur_macros::PathAny;
 ///
 /// ```
 /// use auditeur::prelude::*;
-/// use auditeur::resource::Identifiable;
-/// # use auditeur::*;
+/// use auditeur::app::Identifiable;
+/// # use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
 ///
-/// #[derive(Default, Create, Runnable)]
-/// #[listener("test:attribute_example", respond)]
+/// #[derive(Default, Runnable)]
+/// #[create(default)]
+/// #[resource("test:attribute_example")]
+/// #[listener(respond)]
 /// pub struct IdentList {
 ///     idents: Vec<NamespacedId>,
 /// }
@@ -582,14 +375,14 @@ pub use auditeur_macros::PathAny;
 ///     }
 ///
 ///     // These use generics, which other methods can't.
-///     #[respond(ref_fn)]
+///     #[respond(resource_fn)]
 ///     pub fn push_ident_of<I: Identifiable>(&mut self) {
-///         self.push_ident(I::const_ident().to_owned())
+///         self.push_ident(I::id().to_owned())
 ///     }
 ///
 ///     #[respond(connection_fn)]
 ///     pub async fn push_ident_of<I: Identifiable>(&self) {
-///         self.push_ident(I::const_ident().to_owned()).await
+///         self.push_ident(I::id().to_owned()).await
 ///     }
 ///
 ///     pub fn index(&self, index: usize) -> NamespacedId {
@@ -600,7 +393,7 @@ pub use auditeur_macros::PathAny;
 /// #[tokio::main]
 /// async fn main() -> Result<(), auditeur::Error> {
 ///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<IdentList>(()));
-///     app.run_with(1024, |conn: Get<IdentList>| async move {
+///     app.run_with(|conn: Get<IdentList>| async move {
 ///         #[identifiable("test:identifiable1")]
 ///         struct TestIdentifiable1;
 ///         #[identifiable("test:identifiable2")]
@@ -608,7 +401,7 @@ pub use auditeur_macros::PathAny;
 ///
 ///         conn.push_ident(ident!("test:ident1").to_owned()).await;
 ///         conn.push_ident_of::<TestIdentifiable1>().await;
-///         conn.run_transaction(|mut reference| {
+///         conn.run_transaction(async |reference: &mut IdentList| {
 ///             reference.push_ident_of::<TestIdentifiable2>();
 ///         }).await;
 ///
@@ -659,15 +452,18 @@ pub use auditeur_macros::PathAny;
 ///   | <Param>,*
 ///
 /// <Param>:
+///   | connection(<TypesParam>,*)
 ///   | query(<TypesParam>,*)
-///   | transaction(<TypesParam>,*)
+///   | fields = {<Field>,*}
 ///   | transaction
 ///   | get_ref
 ///
-/// <TypesParam>
-///   | message_ident = <Ident>
-///   | message_id = <NamespacedId>
-///   | ref_ident = <Ident>
+/// <TypesParam>:
+///   | id = <NamespacedId>
+///   | ident = <Ident>
+///
+/// <Field>:
+///   | <Ident>: <Type>
 /// ```
 ///
 /// Components:
@@ -688,35 +484,4 @@ pub use auditeur_macros::PathAny;
 ///       the methods.
 ///         - Default: `<ident>Ref`
 /// - `get_ref`: If the macro should generate a [`GetRef`] implementation for the listener.
-///
-/// ## Examples
-///
-/// ```no_run
-/// use auditeur::prelude::*;
-/// use std::future::Future;
-/// # use auditeur::*;
-///
-/// #[derive(Default, Create, Runnable)]
-/// #[listener("test:example", respond)]
-/// pub struct Example;
-///
-/// #[respond(
-///     "test:example",
-///     query(message_ident = Query, message_id = "test:query", ref_ident = Connection),
-///     transaction(message_ident = Transaction, message_id = "test:transaction", ref_ident = Ref),
-///     get_ref
-/// )]
-/// impl Example {
-///     pub fn func(&self, val: usize) -> usize { val }
-/// }
-///
-/// fn enforce_trait_bounds<Example>()
-/// where
-///     Example: Take<Query> + Take<Transaction>,
-/// {}
-///
-/// # fn main() {
-/// enforce_trait_bounds::<Example>();
-/// # }
-/// ```
 pub use auditeur_macros::respond;

@@ -39,10 +39,8 @@ To implement the [`Listener`] trait, see the [`listener`] proc-macro.
 ```rust
 use auditeur::prelude::*;
 use std::time::Duration;
-# // TODO: add to prelude
-# use auditeur::resource::listener::*;
 # // proc_macro_crate shenanigans
-# use auditeur::*;
+# use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
 
 /// A message that tells [`ExitListener`] to exit the program
 #[derive(Clone, Debug)]
@@ -75,20 +73,27 @@ impl Listen<Exit> for ExitListener {
 # #[tokio::main]
 # async fn main() {
 // Create a new App with only an ExitListener
-let app =
-    App::new().with_bundle(new_bundle!("test:exit").with_listener::<ExitListener>(()));
+let app = App::new().with_bundle(
+    new_bundle!("test:exit")
+        .with_listener::<ExitListener>(())
+        .with_listen_channel::<Exit>()
+);
 // Build it into a Registry so that we can get the message sender before running it
 // Usually, it's simpler just to call app.run(_)
-let registry = app.build(1024).await.expect("failed to build app");
+let registry = app.build().await.expect("failed to build app");
 
 // Get a message sender from the registry
-let sender = registry.message_sender::<Exit>();
+let sender = registry.channels().shouter::<Exit>(ExitListener::component_id()).await
+    .expect("we added the channel in the bundle we added");
 // Start the registry running in the background now that we got the message sender
 let running_registry = tokio::task::spawn(registry.run());
 
 // Send the exit message in the registry, telling the ExitListener to exit the program
 // Usually, resources send messages to other resources, but the main function can send them too
-sender.send(Exit).expect("failed to send message");
+sender.send(Exit);
+// Drop the sender, telling the app that ExitListener is no longer using it (necessary since we 
+// used its id to get it from the registry)
+drop(sender);
 
 // Make sure the app exits within an acceptable time frame
 tokio::time::timeout(Duration::from_secs(1), running_registry)

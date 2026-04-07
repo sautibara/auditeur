@@ -25,36 +25,6 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 1024;
 /// For [`Listen`], however, since there isn't a central resource that owns the messages, this can't
 /// be done. Instead, channels must be declared in the parent bundle before use by using
 /// [`Bundle::with_channels`].
-///
-/// # Examples
-///
-/// ```
-/// use auditeur::prelude::*;
-/// # use auditeur::*;
-///
-/// #[derive(Clone)]
-/// #[message("test:added_message")]
-/// struct AddedMessage;
-///
-/// #[derive(Clone)]
-/// #[message("test:unadded_message")]
-/// struct UnaddedMessage;
-///
-/// # #[tokio::main]
-/// # fn main() {
-///
-/// let channels = Channels::new()
-///     .with_listen_channel<AddedMessage>();
-///
-/// assert!(channels.listener<AddedMessage>().await.is_ok());
-/// assert!(channels.listener<UnaddedMessage>().await.is_err());
-///
-///
-/// // you can also add a [`Channels`] to a [`Bundle`]
-/// let _ = new_bundle!("test:bundle").with_channels(channels);
-/// # }
-/// ```
-// TODO: write doctest for adding the channels to a registry w/ resources using the channels
 #[derive(Default, Clone)]
 pub struct Channels {
     pub(crate) listen: HashMap<NamespacedId, AnyListenChannel>,
@@ -73,7 +43,7 @@ impl Channels {
         let shouter = Shouter::new(sender);
         let channel: ListenChannel<M> = shouter.clone_erased();
         self.listen
-            .insert(M::const_ident().to_owned(), AnyListenChannel::new(channel));
+            .insert(M::id().to_owned(), AnyListenChannel::new(channel));
         shouter
     }
 
@@ -84,7 +54,7 @@ impl Channels {
         let receiver_cell = Arc::new(tokio::sync::Mutex::new(Some(receiver)));
         let channel: TakeChannel<M> = (giver.clone_erased(), receiver_cell);
         self.take
-            .insert(M::const_ident().to_owned(), AnyTakeChannel::new(channel));
+            .insert(M::id().to_owned(), AnyTakeChannel::new(channel));
         giver
     }
 
@@ -103,7 +73,7 @@ impl Channels {
     pub(crate) fn listener<M: ListenMessage>(&self) -> Result<Listener<M>, crate::Error> {
         let any_channel = self
             .listen
-            .get(M::const_ident())
+            .get(M::id())
             .ok_or_else(AnyListenChannel::error::<M>)?;
         any_channel.listener()
     }
@@ -111,7 +81,7 @@ impl Channels {
     pub(crate) fn shouter<M: ListenMessage>(&self) -> Result<Shouter<M>, crate::Error> {
         let any_channel = self
             .listen
-            .get(M::const_ident())
+            .get(M::id())
             .ok_or_else(AnyListenChannel::error::<M>)?;
         any_channel.shouter()
     }
@@ -119,7 +89,7 @@ impl Channels {
     pub(crate) async fn taker<M: Message>(&self) -> Result<Taker<M>, crate::Error> {
         let any_channel = self
             .take
-            .get(M::const_ident())
+            .get(M::id())
             .ok_or_else(AnyTakeChannel::error::<M>)?;
         any_channel.taker().await
     }
@@ -127,7 +97,7 @@ impl Channels {
     pub(crate) fn giver<M: Message>(&self) -> Result<Giver<M>, crate::Error> {
         let any_channel = self
             .take
-            .get(M::const_ident())
+            .get(M::id())
             .ok_or_else(AnyTakeChannel::error::<M>)?;
         any_channel.giver()
     }
@@ -477,7 +447,7 @@ impl AnyListenChannel {
 
     pub fn error<M: ListenMessage>() -> crate::Error {
         crate::Error::ListenMessageNotFound {
-            id: M::const_ident().to_owned(),
+            id: M::id().to_owned(),
         }
     }
 }
@@ -502,7 +472,7 @@ impl AnyTakeChannel {
         let (_, receiver_cell_arc) = self.take_channel()?;
         let receiver_res = receiver_cell_arc.lock().await.take();
         let receiver = receiver_res.ok_or_else(|| crate::Error::TakeTakerTaken {
-            id: M::const_ident().to_owned(),
+            id: M::id().to_owned(),
         })?;
         Ok(Taker {
             receiver,
@@ -522,7 +492,7 @@ impl AnyTakeChannel {
 
     pub fn error<M: Message>() -> crate::Error {
         crate::Error::TakeMessageNotFound {
-            id: M::const_ident().to_owned(),
+            id: M::id().to_owned(),
         }
     }
 }
@@ -546,7 +516,7 @@ pub struct ChannelsRefRunning<'a> {
 impl ChannelsRefRunning<'_> {
     async fn listener<M: ListenMessage>(&self) -> Result<Listener<M>, crate::Error> {
         self.resource_map
-            .listen_channel(M::const_ident().to_owned())
+            .listen_channel(M::id().to_owned())
             .await
             .ok_or_else(|| AnyListenChannel::error::<M>())?
             .listener()
@@ -554,7 +524,7 @@ impl ChannelsRefRunning<'_> {
 
     async fn shouter<M: ListenMessage>(&self) -> Result<Shouter<M>, crate::Error> {
         self.resource_map
-            .listen_channel(M::const_ident().to_owned())
+            .listen_channel(M::id().to_owned())
             .await
             .ok_or_else(|| AnyListenChannel::error::<M>())?
             .shouter()
@@ -562,7 +532,7 @@ impl ChannelsRefRunning<'_> {
 
     async fn taker<M: Message>(&self) -> Result<Taker<M>, crate::Error> {
         self.resource_map
-            .take_channel(M::const_ident().to_owned())
+            .take_channel(M::id().to_owned())
             .await
             .ok_or_else(|| AnyTakeChannel::error::<M>())?
             .taker()
@@ -571,7 +541,7 @@ impl ChannelsRefRunning<'_> {
 
     async fn giver<M: Message>(&self) -> Result<Giver<M>, crate::Error> {
         self.resource_map
-            .take_channel(M::const_ident().to_owned())
+            .take_channel(M::id().to_owned())
             .await
             .ok_or_else(|| AnyTakeChannel::error::<M>())?
             .giver()
@@ -590,7 +560,7 @@ fn dependency<M: Message>(
         sender.clone(),
         dependency::Full {
             link: dependency::Link {
-                dependency: ComponentId::Message(M::const_ident().to_owned()),
+                dependency: ComponentId::Message(M::id().to_owned()),
                 dependent: dependent.into_owned(),
             },
             removable: dependency::Removable::Inherit,
@@ -655,7 +625,7 @@ impl<M: ListenMessage> Input for Shouter<M> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_message(M::const_ident())
+        Constraints::empty().after_message(M::id())
     }
 }
 
@@ -687,6 +657,11 @@ impl<M: ListenMessage> Listener<M> {
         self.receiver.recv().await.ok()
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
+    }
+
     fn with_dependent(self, sender: &EventSender, dependent: ComponentIdRef<'_>) -> Self {
         Self {
             _dependency: Some(dependency::<M>(sender, dependent)),
@@ -704,7 +679,7 @@ impl<M: ListenMessage> Input for Listener<M> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_message(M::const_ident())
+        Constraints::empty().after_message(M::id())
     }
 }
 
@@ -780,7 +755,7 @@ impl<M: Message> Input for Giver<M> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_message(M::const_ident())
+        Constraints::empty().after_message(M::id())
     }
 }
 
@@ -846,7 +821,7 @@ impl<M: Message> Input for Taker<M> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_message(M::const_ident())
+        Constraints::empty().after_message(M::id())
     }
 }
 
@@ -1035,7 +1010,7 @@ impl Stopper {
     /// Stop the resource `R`, if it exists
     #[inline]
     pub fn stop<R: Identifiable>(&self) {
-        self.stop_id(R::const_ident());
+        self.stop_id(R::id());
     }
 
     /// Stop the resource with id `id`, if it exists

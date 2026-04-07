@@ -387,7 +387,7 @@ impl LoadedResource {
     fn supply_owned(&mut self, resource: Box<dyn super::LoadedResource>) {
         tracing::trace!(
             "adding {} to the ResourceMap as a NonRunnable",
-            resource.ident()
+            resource.dyn_id()
         );
         self.resource = Some(resource);
     }
@@ -1109,8 +1109,7 @@ impl ResourceMapConnection {
                 event_sender,
                 dependency::Full {
                     link: dependency::Link {
-                        dependency: ComponentIdRef::Resource(ResourceMap::const_ident())
-                            .into_owned(),
+                        dependency: ComponentIdRef::Resource(ResourceMap::id()).into_owned(),
                         dependent: ComponentIdRef::Resource(ident!("auditeur:registry"))
                             .into_owned(),
                     },

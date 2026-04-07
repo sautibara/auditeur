@@ -1,29 +1,16 @@
 use proc_macro2::TokenStream;
 use syn::ItemStruct;
 
-use crate::{Auditeur, custom_generics::CustomGenerics};
-
 use quote::{ToTokens, format_ident, quote};
 
 #[allow(clippy::cognitive_complexity)] // sorry...
 pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
-    let (ident, generics, attrs) = (&strct.ident, &strct.generics, &strct.attrs);
+    let (ident, generics) = (&strct.ident, &strct.generics);
 
-    let generics = CustomGenerics::from_attr_or_generics(attrs, generics);
-    let generics = match generics {
-        Ok(generics) => generics,
-        Err(error) => return error.into_compile_error(),
-    };
-
-    let auditeur = Auditeur::new();
+    let auditeur = &*crate::AUDITEUR;
     let input_mod = auditeur.input();
-    let auditeur = auditeur.crate_name();
 
-    let CustomGenerics {
-        impl_generics,
-        type_generics,
-        where_clause,
-    } = generics;
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let implementations = match &strct.fields {
         syn::Fields::Named(_) => {

@@ -17,7 +17,7 @@ impl<T: Resource + GetRef> Get<T> {
     ) -> Self {
         let dependency = dependency::Handle::builder(
             event_sender,
-            ComponentIdRef::Resource(T::const_ident()),
+            ComponentIdRef::Resource(T::id()),
             dependent,
         )
         .build();
@@ -34,7 +34,7 @@ impl<T: Resource + GetRef> Input for Get<T> {
     }
 
     fn constraints() -> Constraints {
-        Constraints::empty().after_resource(T::const_ident())
+        Constraints::empty().after_resource(T::id())
     }
 }
 
@@ -55,27 +55,6 @@ impl<T: GetRef> DerefMut for Get<T> {
 ///
 /// Most of the time, this is implemented using the [derive macro](crate::GetRef). The macro falls
 /// back to [`Clone`], which works for special pointers like [`Arc<_>`](std::sync::Arc).
-///
-/// # Examples
-///
-/// ```
-/// # // see the doc test for bundle::Supplier for why this is necessary
-/// # use auditeur::{input, path_any, app};
-/// # pub fn main() {
-/// use auditeur::prelude::*;
-/// use auditeur::input::get::GetRef;
-/// use std::sync::Arc;
-///
-/// #[derive(Clone, GetRef, PathAny)]
-/// pub struct Shared(Arc<usize>);
-///
-/// let shared: Shared = Shared(Arc::new(0));
-/// let registry = Registry::new(0);
-/// let reference: Shared = shared.get_ref(&registry);
-///
-/// assert!(Arc::ptr_eq(&shared.0, &reference.0));
-/// # }
-/// ```
 #[allow(clippy::module_name_repetitions)] // no
 pub trait GetRef {
     /// A synchronized reference to the original [`Resource`]

@@ -17,7 +17,7 @@ use crate::prelude::*;
 ///     "sautibara_core": "0.0.1"
 ///   }
 /// )
-/// # "#; ron::de::from_str::<auditeur_plugin_host::config::Plugin>(file).map(drop) }
+/// # "#; ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME).from_str::<auditeur_plugin_host::config::Plugin>(file).map(drop) }
 ///  ```
 ///
 ///  ```
@@ -28,7 +28,7 @@ use crate::prelude::*;
 ///     "sautibara-media-keys",
 ///   ]
 /// )
-/// # "#; ron::de::from_str::<auditeur_plugin_host::config::Plugin>(file).map(drop) }
+/// # "#; ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME).from_str::<auditeur_plugin_host::config::Plugin>(file).map(drop) }
 ///  ```
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(try_from = "Fields", into = "Fields")]

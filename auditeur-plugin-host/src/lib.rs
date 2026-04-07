@@ -147,10 +147,7 @@ impl AppExt for App {
                 .with_listener::<Arena<O>>(arena.map_err(Into::into))
                 .with_listener::<PluginRegistry>(registry),
         );
-        self.add_errors(
-            Arena::<O>::const_ident(),
-            errors.into_iter().map(Into::into),
-        );
+        self.add_errors(Arena::<O>::id(), errors.into_iter().map(Into::into));
         self
     }
 }

@@ -7,7 +7,7 @@ use syn::{
 };
 
 use crate::{
-    CustomGenerics, NamespacedId,
+    NamespacedId,
     attr::{self, FoldAttr},
     field,
     maybe_error::{
@@ -251,7 +251,7 @@ impl<'a> Config<'a> {
         let auditeur = &*crate::AUDITEUR;
         let expr = if item.generics.params.is_empty() && item.generics.where_clause.is_none() {
             let item_ident = &item.self_ty;
-            quote! { <#item_ident as #auditeur::resource::Identifiable>::const_ident() }
+            quote! { <#item_ident as #auditeur::app::Identifiable>::id() }
         } else if let Some(id) = &attrs.id {
             let id = &id.value;
             quote! { #id }
@@ -291,7 +291,7 @@ impl Config<'_> {
         let ident = &self.query_ident;
         let doc_vis = &self.doc_vis;
 
-        let message_impl = super::derive_message(ident, &self.query_id, &CustomGenerics::default());
+        let message_impl = super::derive_message(ident, &self.query_id, &syn::Generics::default());
 
         tokens.extend(quote! {
             #[non_exhaustive]
@@ -407,7 +407,7 @@ impl Config<'_> {
             pub fn run_transaction<T: Send + Sync + 'static>(
                 &self,
                 transaction: impl for<'a>
-                    #auditeur::resource::listener::TransactionFnOnce<'a, #self_ty, Output = T>,
+                    #auditeur::resource::listener::SendAsyncFnOnce<&'a mut #self_ty, T>,
             ) -> #auditeur::resource::listener::RespondFuture<
                 T,
                 impl ::std::future::Future<Output = ()> + Send,
@@ -435,7 +435,7 @@ impl Config<'_> {
             pub async fn spawn_transaction(
                 &self,
                 transaction: impl for<'a>
-                    #auditeur::resource::listener::TransactionFnOnce<'a, #self_ty, Output = ()>,
+                    #auditeur::resource::listener::SendAsyncFnOnce<&'a mut #self_ty, ()>,
             ) {
                 self.giver.give(#query_ident::Transaction(
                     #auditeur::resource::listener::BoxedTransactionFnOnce::new(transaction)
@@ -517,7 +517,7 @@ impl Config<'_> {
         #[cfg(feature = "path-any")]
         tokens.extend(super::path_any(
             &self.connection_ident,
-            &CustomGenerics::default(),
+            &syn::Generics::default(),
         ));
     }
 

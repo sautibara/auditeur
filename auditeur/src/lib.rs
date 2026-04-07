@@ -56,7 +56,8 @@ pub use futures::try_join;
 pub use tokio;
 
 pub mod prelude {
-    pub use crate::resource::Identifiable as _;
+    pub use crate::app::Identifiable as _;
+    pub use crate::app::IdentifiableComponent as _;
     pub use crate::{
         app::{
             App, ComponentId, ComponentIdRef, Registry,
@@ -81,11 +82,9 @@ pub mod prelude {
     #[cfg(feature = "path-any")]
     pub use crate::macros::PathAny;
     pub(crate) use crate::{
-        Error, ListenMessage, app::channels::EventSender, input::Input, resource::Identifiable,
+        Error, ListenMessage, app::Identifiable, app::channels::EventSender, input::Input,
         resource::Resource,
     };
-
-    pub use crate::resource::Identifiable as _;
 
     pub(crate) use tracing::Instrument as _;
     pub use tracing::{
@@ -101,7 +100,7 @@ pub mod prelude {
 }
 
 #[cfg_supertrait(feature = "path-any", crate::path_any::PathAnyConst)]
-pub trait Message: Identifiable + Send + Sync + 'static {}
+pub trait Message: Identifiable + Send + 'static {}
 
 pub trait ListenMessage: Message + Clone {}
 

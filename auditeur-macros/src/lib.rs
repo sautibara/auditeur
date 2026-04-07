@@ -1,19 +1,16 @@
 use std::sync::LazyLock;
 
-use custom_generics::CustomGenerics;
 use namespaced_id::NamespacedId;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{ToTokens, quote, quote_spanned};
 use syn::{
-    GenericParam, Ident, Item, ItemStruct, ItemTrait, Token, TypeParamBound, parse_macro_input,
-    punctuated::Punctuated, spanned::Spanned,
+    Ident, Item, ItemStruct, ItemTrait, Token, TypeParamBound, parse_macro_input, spanned::Spanned,
 };
 
 use crate::proc_macro_impls::AllCombinations;
 
 mod attr;
-mod custom_generics;
 mod field;
 mod maybe_error;
 mod namespaced_id;
@@ -28,6 +25,14 @@ fn snake_to_upper_camel_case(snake: &str) -> String {
         string.extend(chars);
         string
     })
+}
+
+fn extract_item_values(item: &Item) -> syn::Result<(&Ident, &syn::Generics, &[syn::Attribute])> {
+    match item {
+        Item::Struct(item) => Ok((&item.ident, &item.generics, &item.attrs)),
+        Item::Enum(item) => Ok((&item.ident, &item.generics, &item.attrs)),
+        _ => Err(syn::Error::new_spanned(item, "expected a struct or enum")),
+    }
 }
 
 enum Either<L, R> {
@@ -57,7 +62,7 @@ mod proc_macro_impls {
     pub use all_combinations::{AllCombinations, all_combinations};
 
     mod identifiable;
-    pub use identifiable::{identifiable, identifiable_with_generics};
+    pub use identifiable::{ComponentType, component, identifiable};
 
     mod listener;
     pub use listener::listener_attr;
@@ -162,73 +167,27 @@ impl ToTokens for Root {
     }
 }
 
-fn get_crate(name: &str) -> Option<proc_macro2::TokenStream> {
-    let core = proc_macro_crate::crate_name(name).ok()?;
-
-    let stream = match core {
-        proc_macro_crate::FoundCrate::Itself => quote!(crate),
-        proc_macro_crate::FoundCrate::Name(name) => {
-            let name = Ident::new(&name, Span::call_site());
-            quote!( #name )
-        }
-    };
-
-    Some(stream)
-}
-
-// TODO: replace with Root
-struct Auditeur {
-    root: proc_macro2::TokenStream,
-}
-
-impl Auditeur {
-    pub fn new() -> Self {
-        let root = get_crate("auditeur")
-            // fallback to auditeur-plugin, if it exists
-            .or_else(|| get_crate("auditeur-plugin").map(|auditeur_plugin| quote! { #auditeur_plugin::auditeur }))
-            .or_else(|| get_crate("auditeur-plugin-host").map(|auditeur_plugin_host| quote! { #auditeur_plugin_host::auditeur_plugin::auditeur }))
-            .expect("auditeur or auditeur_plugin should be in Cargo.toml");
-
-        Self { root }
-    }
-
-    pub const fn crate_name(&self) -> &proc_macro2::TokenStream {
-        &self.root
-    }
-
-    pub fn input(&self) -> proc_macro2::TokenStream {
-        let root = &self.root;
-        quote! { #root::input }
-    }
-
-    #[cfg(feature = "path-any")]
-    #[allow(dead_code)]
-    pub fn path_any(&self) -> proc_macro2::TokenStream {
-        let root = &self.root;
-        quote! { #root::path_any }
-    }
-}
-
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
     let id = parse_macro_input!(attr as NamespacedId);
 
-    proc_macro_impls::resource(item, &id)
+    proc_macro_impls::resource(&item, &id)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
 
 #[proc_macro_attribute]
 pub fn identifiable(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut item = parse_macro_input!(item as Item);
+    let item = parse_macro_input!(item as Item);
     let id = parse_macro_input!(attr as NamespacedId);
 
-    let identifiable_impl = match proc_macro_impls::identifiable(&id, &mut item) {
-        Ok(identifiable_impl) => identifiable_impl,
+    let (ident, generics, _) = match extract_item_values(&item) {
+        Ok(tuple) => tuple,
         Err(err) => return err.into_compile_error().into(),
     };
 
+    let identifiable_impl = proc_macro_impls::identifiable(&id, ident, generics);
     quote! {
         #identifiable_impl
         #item
@@ -238,15 +197,15 @@ pub fn identifiable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut item = parse_macro_input!(item as Item);
+    let item = parse_macro_input!(item as Item);
     let id = parse_macro_input!(attr as NamespacedId);
 
-    let (ident, generics) = match CustomGenerics::from_item(&mut item) {
+    let (ident, generics, _) = match extract_item_values(&item) {
         Ok(tuple) => tuple,
         Err(err) => return err.into_compile_error().into(),
     };
 
-    let implementation = proc_macro_impls::derive_message(ident, &id, &generics);
+    let implementation = proc_macro_impls::derive_message(ident, &id, generics);
 
     quote! {
         #item
@@ -321,24 +280,12 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
 pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 
-    let (ident, generics, attrs) = match item {
-        Item::Struct(strct) => (strct.ident, strct.generics, strct.attrs),
-        Item::Enum(enm) => (enm.ident, enm.generics, enm.attrs),
-        _ => {
-            return quote_spanned! {
-                item.span() => compile_error!("item must be a struct or enum"),
-            }
-            .into();
-        }
+    let (ident, generics, _) = match extract_item_values(&item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
     };
 
-    let generics = CustomGenerics::from_attr_or_generics(&attrs, &generics);
-    let generics = match generics {
-        Ok(generics) => generics,
-        Err(error) => return error.into_compile_error().into(),
-    };
-
-    proc_macro_impls::maybe_get_ref(&ident, &generics).into()
+    proc_macro_impls::maybe_get_ref(ident, generics).into()
 }
 
 #[proc_macro_derive(CloneAs)]
@@ -356,24 +303,12 @@ pub fn clone_as(item: TokenStream) -> TokenStream {
 pub fn path_any(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 
-    let (ident, generics, attrs) = match item {
-        Item::Struct(strct) => (strct.ident, strct.generics, strct.attrs),
-        Item::Enum(enm) => (enm.ident, enm.generics, enm.attrs),
-        _ => {
-            return quote_spanned! {
-                item.span() => compile_error!("item must be a struct or enum"),
-            }
-            .into();
-        }
+    let (ident, generics, _) = match extract_item_values(&item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
     };
 
-    let generics = CustomGenerics::from_attr_or_generics(&attrs, &generics);
-    let generics = match generics {
-        Ok(generics) => generics,
-        Err(error) => return error.into_compile_error().into(),
-    };
-
-    proc_macro_impls::path_any(&ident, &generics).into()
+    proc_macro_impls::path_any(ident, generics).into()
 }
 
 #[cfg(feature = "path-any")]
@@ -382,7 +317,7 @@ pub fn implement_path_any_external(ident: TokenStream) -> TokenStream {
     let PathAnyExternal { ident, generics } = parse_macro_input!(ident as PathAnyExternal);
 
     // TODO: ensure that there are no name collisions
-    proc_macro_impls::path_any(&ident, &CustomGenerics::from_generics(&generics)).into()
+    proc_macro_impls::path_any(&ident, &generics).into()
 }
 
 #[cfg(feature = "path-any")]
@@ -402,54 +337,6 @@ impl syn::parse::Parse for PathAnyExternal {
             syn::Generics::default()
         };
         Ok(Self { ident, generics })
-    }
-}
-
-#[derive(Default)]
-struct GenericArgList {
-    params: Option<Punctuated<GenericParam, Token![,]>>,
-}
-
-impl GenericArgList {
-    #[cfg(feature = "path-any")]
-    pub fn iter(&self) -> impl Iterator<Item = &GenericParam> {
-        self.params
-            .as_ref()
-            .map(Punctuated::iter)
-            .into_iter()
-            .flatten()
-    }
-}
-
-impl ToTokens for GenericArgList {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        if let Some(params) = &self.params {
-            tokens.extend(std::iter::once(quote!(<)));
-            params.to_tokens(tokens);
-            tokens.extend(std::iter::once(quote!(>)));
-        }
-    }
-}
-
-impl syn::parse::Parse for GenericArgList {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        if input.is_empty() {
-            return Ok(Self { params: None });
-        }
-
-        let _: Token![<] = input.parse()?;
-        let mut params = Punctuated::new();
-        while !input.peek(Token![>]) {
-            params.push(input.parse()?);
-            if input.peek(Token![>]) {
-                break;
-            }
-            params.push_punct(input.parse()?);
-        }
-        let _: Token![>] = input.parse()?;
-        Ok(Self {
-            params: Some(params),
-        })
     }
 }
 
@@ -515,15 +402,10 @@ pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Runnable)]
 pub fn runnable_derive(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
-    let (ident, generics) = match item {
-        Item::Struct(strct) => (strct.ident, strct.generics),
-        Item::Enum(enm) => (enm.ident, enm.generics),
-        _ => {
-            return quote_spanned! {
-                item.span() => compile_error!("item must be a struct or enum"),
-            }
-            .into();
-        }
+
+    let (ident, generics, _) = match extract_item_values(&item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
     };
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();

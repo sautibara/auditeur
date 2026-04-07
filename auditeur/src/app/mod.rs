@@ -106,6 +106,62 @@ pub trait Runner: Identifiable + Send {
     async fn run(self: Box<Self>);
 }
 
+/// A type that has an associated [`NamespacedId`] that uniquely represents it
+pub trait Identifiable {
+    fn dyn_id(&self) -> &'static NamespacedIdRef;
+    fn id() -> &'static NamespacedIdRef
+    where
+        Self: Sized;
+}
+
+pub trait Component: Identifiable {
+    const TYPE: ComponentType;
+}
+
+pub trait IdentifiableComponent: Identifiable {
+    fn dyn_component_id(&self) -> ComponentIdRef<'static>;
+    fn component_id() -> ComponentIdRef<'static>
+    where
+        Self: Sized;
+}
+
+impl<C: Component> IdentifiableComponent for C {
+    fn dyn_component_id(&self) -> ComponentIdRef<'static> {
+        Self::component_id()
+    }
+
+    fn component_id() -> ComponentIdRef<'static> {
+        Self::TYPE.wrap_id_ref(Self::id())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ComponentType {
+    Resource,
+    Bundle,
+    Message,
+}
+
+impl ComponentType {
+    #[must_use]
+    pub const fn wrap_id_ref(self, id: &NamespacedIdRef) -> ComponentIdRef<'_> {
+        match self {
+            Self::Resource => ComponentIdRef::Resource(id),
+            Self::Bundle => ComponentIdRef::Bundle(id),
+            Self::Message => ComponentIdRef::Message(id),
+        }
+    }
+
+    #[must_use]
+    pub const fn wrap_id(self, id: NamespacedId) -> ComponentId {
+        match self {
+            Self::Resource => ComponentId::Resource(id),
+            Self::Bundle => ComponentId::Bundle(id),
+            Self::Message => ComponentId::Message(id),
+        }
+    }
+}
+
 /// An id of a specific part of an [`App`].
 ///
 /// This also shows the different namespaces that exist in `auditeur`. For example, it is okay if a
