@@ -1,12 +1,15 @@
-use auditeur_macros::cfg_supertrait;
+#![allow(dead_code)]
+#![feature(unboxed_closures, async_fn_traits)]
+#![recursion_limit = "512"]
+
 use thiserror::Error;
 
 pub mod app;
-pub mod bundle;
+pub mod children;
+pub mod component;
 pub mod input;
 #[cfg(feature = "path-any")]
 pub mod path_any;
-pub mod resource;
 
 pub use ::namespaced_id;
 
@@ -17,6 +20,11 @@ pub use macros::*;
 pub use path_any::PathAny as Any;
 #[cfg(not(feature = "path-any"))]
 pub use std::any::Any;
+
+#[cfg(feature = "path-any")]
+pub(crate) use path_any::PathAnyConst as AnyConst;
+#[cfg(not(feature = "path-any"))]
+pub(crate) use std::any::Any as AnyConst;
 
 #[cfg(feature = "path-any")]
 pub mod any {
@@ -56,37 +64,32 @@ pub use futures::try_join;
 pub use tokio;
 
 pub mod prelude {
-    pub use crate::app::Identifiable as _;
-    pub use crate::app::IdentifiableComponent as _;
+    pub use crate::component::IdentifiedType as _;
     pub use crate::{
-        app::{
-            App, ComponentId, ComponentIdRef, Registry,
-            channels::{Channels, ChannelsRef, Shouter, Stopper},
-            event::RegistryEvent,
+        app::App,
+        children::Children,
+        component::ComponentId,
+        component::bundle::Bundle,
+        component::resource::{
+            Runnable,
+            // listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
+            // watcher::Watcher,
         },
-        bundle::Bundle,
-        input::{Constraints, get::Get},
+        input::{Create, CreateDerive, Input},
+        // input::get::Get,
         macros::{
-            GetRef, Input, Runnable, create, identifiable, listener, message, resource, respond,
+            GetRef, Input, Runnable, create, identified, listen_message, listener, resource,
+            respond,
         },
         namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},
         // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
-        resource::{
-            Create, CreateDerive, Runnable,
-            listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
-            watcher::Watcher,
-        },
     };
 
-    #[cfg(feature = "path-any")]
-    pub use crate::macros::PathAny;
-    pub(crate) use crate::{
-        Error, ListenMessage, app::Identifiable, app::channels::EventSender, input::Input,
-        resource::Resource,
-    };
+    pub use crate::macros::Any;
 
-    pub(crate) use tracing::Instrument as _;
+    pub(crate) use crate::{Error, component::Identified};
+
     pub use tracing::{
         error, error_span, info, info_span, instrument, trace, trace_span, warn, warn_span,
     };
@@ -99,41 +102,50 @@ pub mod prelude {
     pub use async_trait::async_trait;
 }
 
-#[cfg_supertrait(feature = "path-any", crate::path_any::PathAnyConst)]
-pub trait Message: Identifiable + Send + 'static {}
-
-pub trait ListenMessage: Message + Clone {}
-
-impl<M: Message + Clone> ListenMessage for M {}
-
 use prelude::*;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("loader dependency '{id}' not found, has it been loaded?")]
-    LoaderNotFound { id: NamespacedId },
-    #[error("bundle dependency '{id}' not found, has it been loaded?")]
-    BundleNotFound { id: NamespacedId },
-    #[error("downcast of resource '{id}' failed, has it been loaded?")]
-    DowncastFailed { id: NamespacedId },
-    #[error("resource '{id}' not found, has it been loaded?")]
-    ResourceNotFound { id: NamespacedId },
-    #[error("attempted to Get a resource, but it doesn't implement GetRef")]
-    ResourceNoGetRef,
-    #[error("resource '{id}' had an error: {error:?}")]
-    FromResource {
-        id: NamespacedId,
+    #[error("component '{id}' had an error: {error:?}")]
+    FromComponent {
+        id: ComponentId,
         #[source]
         error: anyhow::Error,
     },
-    #[error("could not find `Listen` message with id '{id}', has it been added to a bundle?")]
-    ListenMessageNotFound { id: NamespacedId },
-    #[error("could not find `Take` message with id '{id}', has it been added to a bundle?")]
-    TakeMessageNotFound { id: NamespacedId },
-    #[error("could not find message with id '{id}', has it been added to a bundle?")]
-    MessageNotFound { id: NamespacedId },
-    #[error("tried to take ownership of `Taker` with id '{id}', but it had already been taken")]
-    TakeTakerTaken { id: NamespacedId },
+    #[error("attempted to add '{id}' to the app, but that component already exists")]
+    NameCollision { id: ComponentId },
+    #[error("attempted to load '{id}' to the app, but one of its dependencies depends on it")]
+    DependencyLoop { id: ComponentId },
+    #[error("attempted to Get resource '{id}', but it doesn't implement GetRef")]
+    ResourceNoGetRef { id: NamespacedId },
+    #[error("attempted to get '{id}' from the app, but the downcast failed")]
+    DowncastFailed { id: ComponentId },
+    #[error("attempted to get '{id}' as a dependent, but it doesn't exist in the app")]
+    AppDependentNotFound { id: ComponentId },
+    #[error("attempted to add '{child}' to the app, but its parent '{parent}' was not found")]
+    ParentNotFound {
+        child: ComponentId,
+        parent: ComponentId,
+    },
+    #[error(
+        "attempted to get '{dependency}' with dependent '{dependent}', but that dependency was not found"
+    )]
+    DependencyNotFound {
+        dependency: ComponentId,
+        dependent: ComponentId,
+    },
+    #[error(
+        "attempted to get '{dependency}' with dependent '{dependent}', but that dependent was not found"
+    )]
+    DependentNotFound {
+        dependency: ComponentId,
+        dependent: ComponentId,
+    },
+    #[error(
+        "attempted to add '{component}' to the app, but its registry '{}' was not found",
+        component.registry
+    )]
+    RegistryNotFound { component: ComponentId },
 }
 
 /// A utility enum for when you have two different values that you may want to return.

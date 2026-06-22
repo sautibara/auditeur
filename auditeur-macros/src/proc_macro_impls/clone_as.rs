@@ -11,14 +11,11 @@ pub fn clone_as_struct<'i>(
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     quote! {
-        impl #impl_generics #auditeur::input::CloneAs for #ident #type_generics #where_clause {
-            fn clone_as(&self, dependent: #auditeur::app::ComponentIdRef<'_>) -> Self
-            where
-                Self: Sized
-            {
+        impl #impl_generics #auditeur::input::CloneIn for #ident #type_generics #where_clause {
+            async fn clone_as(&self, app: &mut #auditeur::app::App) -> Self {
                 use #auditeur::input::clone_as::Specialization as _;
                 Self {
-                    #(#fields: (&mut &self.#fields).specialization(dependent)),*
+                    #(#fields: (&mut &self.#fields).specialization(app).await),*
                 }
             }
         }
@@ -42,7 +39,7 @@ pub fn clone_as_enum(enm: &ItemEnum) -> proc_macro2::TokenStream {
 
                 variants.extend(quote! {
                     Self::#variant_ident { #(#field_ident_1),* } => Self::#variant_ident { #(
-                        #field_ident_2: (&mut #field_ident_2).specialization(dependent)
+                        #field_ident_2: (&mut #field_ident_2).specialization(app).await
                     ),* },
                 });
             }
@@ -56,7 +53,7 @@ pub fn clone_as_enum(enm: &ItemEnum) -> proc_macro2::TokenStream {
 
                 variants.extend(quote! {
                     Self::#variant_ident ( #(#field_ident_1),* ) => Self::#variant_ident { #(
-                        #field_ident_2: (&mut #field_ident_2).specialization(dependent)
+                        #field_ident_2: (&mut #field_ident_2).specialization(app).await
                     ),* },
                 });
             }
@@ -72,10 +69,7 @@ pub fn clone_as_enum(enm: &ItemEnum) -> proc_macro2::TokenStream {
 
     quote! {
         impl #impl_generics #auditeur::input::CloneAs for #ident #type_generics #where_clause {
-            fn clone_as(&self, dependent: #auditeur::app::ComponentIdRef<'_>) -> Self
-            where
-                Self: Sized
-            {
+            async fn clone_as(&self, app: &mut #auditeur::app::App) -> Self {
                 use #auditeur::input::clone_as::Specialization as _;
                 match self {
                     #variants

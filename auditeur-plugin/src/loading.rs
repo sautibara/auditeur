@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, path::PathBuf};
 
-use auditeur::bundle::{self, Bundle};
+use auditeur::bundle_old::{self, Bundle};
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
 
@@ -11,7 +11,7 @@ type PluginFn = fn(PluginContext) -> Bundle;
 /// A plugin and its associated [`Bundle`] that has not been loaded into the app yet.
 pub struct Plugin {
     pub library: LibraryHandle,
-    pub init: bundle::SharedInitFn,
+    pub init: bundle_old::SharedInitFn,
 }
 
 impl Plugin {
@@ -49,7 +49,7 @@ impl Plugin {
                 })?;
 
         let context = PluginContext::new(handle.clone());
-        let init = bundle::SharedInitFn::new(move || main(context.clone()));
+        let init = bundle_old::SharedInitFn::new(move || main(context.clone()));
 
         Ok(Self {
             library: handle,

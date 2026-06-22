@@ -4,7 +4,8 @@ use crate::AUDITEUR;
 
 use quote::quote;
 
-pub fn path_any(ident: &Ident, generics: &syn::Generics) -> proc_macro2::TokenStream {
+#[cfg(feature = "path-any")]
+pub fn any(ident: &Ident, generics: &syn::Generics) -> proc_macro2::TokenStream {
     let path_any_mod = AUDITEUR.path_any();
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
@@ -29,4 +30,9 @@ pub fn path_any(ident: &Ident, generics: &syn::Generics) -> proc_macro2::TokenSt
             const PATH_ID: #path_any_mod::PathId = #path_id;
         }
     }
+}
+
+#[cfg(not(feature = "path-any"))]
+pub fn any(_: &Ident, _: &syn::Generics) -> proc_macro2::TokenStream {
+    quote! {}
 }

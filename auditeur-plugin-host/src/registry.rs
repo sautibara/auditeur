@@ -4,12 +4,12 @@ use std::{
 };
 
 use auditeur_plugin::auditeur::{
-    app::{
+    app_old::{
         Registry,
         event::BundleInit,
         resource_map::{self, ResourceMapConnection},
     },
-    bundle,
+    bundle_old,
     prelude::*,
 };
 use tracing::{debug, error, trace, warn};
@@ -61,7 +61,7 @@ pub struct PluginRegistry {
 #[derive(Default)]
 #[doc(hidden)]
 pub struct PluginRegistryImpl {
-    libraries: HashMap<NamespacedId, bundle::SharedInitFn>,
+    libraries: HashMap<NamespacedId, bundle_old::SharedInitFn>,
     bundles: HashMap<PluginName, NamespacedId>,
     plugins: HashMap<NamespacedId, PluginName>,
     protection: HashMap<NamespacedId, usize>,

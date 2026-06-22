@@ -21,7 +21,7 @@ use std::{
 };
 
 use arena::ArenaImpl;
-use auditeur_plugin::auditeur::app::{App, resource_map::LoadResults};
+use auditeur_plugin::auditeur::app_old::{App, resource_map::LoadResults};
 use futures::Future;
 use ron::{extensions::Extensions, ser::PrettyConfig};
 use serde::{Deserialize, Serialize};

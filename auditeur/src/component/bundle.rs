@@ -1,0 +1,72 @@
+use crate::{
+    app::registry::{MarkerLoader, Registry},
+    children::HasChildren,
+    component::{Component, ComponentIdPath, RegistryOf},
+    prelude::*,
+};
+
+/// Create a new bundle with the given identifier
+///
+/// Note: This macro expands to `Bundle::new(ident!($str))`
+// TODO: example
+#[macro_export]
+// the macro is re-exported in the root of the crate, so it needs a specific name
+#[allow(clippy::module_name_repetitions)]
+macro_rules! new_bundle {
+    ($str:tt) => {
+        $crate::component::bundle::Bundle::new($crate::namespaced_id::ident!($str))
+    };
+}
+
+pub struct Bundle {
+    id: ComponentIdPath,
+    children: Children,
+}
+
+impl Bundle {
+    pub fn new(id: impl Into<ComponentIdPath>) -> Self {
+        Self {
+            id: id.into(),
+            children: Children::new(),
+        }
+    }
+}
+
+impl Identified for Bundle {
+    fn id_dyn(&self) -> &NamespacedIdRef {
+        &self.id
+    }
+}
+
+impl HasChildren for Bundle {
+    fn with_erased(
+        mut self,
+        component: crate::app::registry::ErasedComponent,
+        children: Children,
+    ) -> Self {
+        self.children = self.children.with_erased(component, children);
+        self
+    }
+}
+
+impl RegistryOf for Bundle {
+    type Registry = Bundles;
+}
+
+#[identified("auditeur:bundles")]
+pub struct Bundles;
+
+impl Registry for Bundles {
+    type Loader = MarkerLoader<Self>;
+    type Loaded = ();
+}
+
+impl Component<Bundles> for Bundle {
+    type ComponentInput = Self;
+
+    fn register(
+        Self { id, children }: Self::ComponentInput,
+    ) -> (<Bundles as Registry>::Loader, Children) {
+        (MarkerLoader::new(id), children)
+    }
+}

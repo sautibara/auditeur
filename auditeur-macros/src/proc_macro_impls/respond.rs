@@ -291,7 +291,8 @@ impl Config<'_> {
         let ident = &self.query_ident;
         let doc_vis = &self.doc_vis;
 
-        let message_impl = super::derive_message(ident, &self.query_id, &syn::Generics::default());
+        let message_impl =
+            super::derive_listen_message(ident, &self.query_id, &syn::Generics::default());
 
         tokens.extend(quote! {
             #[non_exhaustive]
@@ -515,7 +516,7 @@ impl Config<'_> {
 
     fn expand_connection_impl_any(&self, tokens: &mut TokenStream) {
         #[cfg(feature = "path-any")]
-        tokens.extend(super::path_any(
+        tokens.extend(super::any(
             &self.connection_ident,
             &syn::Generics::default(),
         ));
@@ -742,7 +743,7 @@ impl<'a> MethodConfig<'a> {
 
         let output = self.output();
         let sig = overlay::Signature::new(&self.method.vis, &self.method.sig)
-            .asyncness(false)
+            .asyncness(true)
             .receiver(quote! { &self })
             .output(quote! { -> #auditeur::resource::listener::RespondFuture<
                 #output,
@@ -763,19 +764,15 @@ impl<'a> MethodConfig<'a> {
             #(#docs1)*
             #sig {
                 let (response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
-                #auditeur::resource::listener::RespondFuture::new(
-                    async move {
-                        let query = #query_ident::#camel_case_ident { response, #(#args),* };
-                        self.giver.give(query).await;
-                    },
-                    async move {
-                        auditeur_receiver.await.expect(concat!(
-                            "respond: ",
-                            stringify!(#self_ty), "::", stringify!(#ident),
-                            " panicked"
-                        ))
-                    },
-                )
+
+                let query = #query_ident::#camel_case_ident { response, #(#args),* };
+                self.giver.give(query);
+
+                auditeur_receiver.await.expect(concat!(
+                    "respond: ",
+                    stringify!(#self_ty), "::", stringify!(#ident),
+                    " panicked"
+                ))
             }
         });
 

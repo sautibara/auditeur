@@ -1,40 +1,22 @@
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-#[cfg(feature = "runtime-loading")]
-use crate::input::CloneAs;
-use crate::{input::dependency, prelude::*};
+use crate::input::CreateDeriveTypes;
+use crate::{app::map::Dependency, component::resource::Resource, prelude::*};
 
 pub struct Get<T: GetRef> {
-    reference: T::Ref,
-    _dependency: dependency::Handle,
+    reference: Dependency<T::Ref>,
 }
 
 impl<T: Resource + GetRef> Get<T> {
-    pub(crate) fn new(
-        reference: T::Ref,
-        dependent: ComponentIdRef<'_>,
-        event_sender: EventSender,
-    ) -> Self {
-        let dependency = dependency::Handle::builder(
-            event_sender,
-            ComponentIdRef::Resource(T::id()),
-            dependent,
-        )
-        .build();
-        Self {
-            reference,
-            _dependency: dependency,
-        }
+    pub(crate) const fn new(reference: Dependency<T::Ref>) -> Self {
+        Self { reference }
     }
 }
 
 impl<T: Resource + GetRef> Input for Get<T> {
-    async fn create(registry: &Registry, dependent: ComponentIdRef<'_>) -> Result<Self, Error> {
-        registry.get_as::<T>(dependent).await
-    }
-
-    fn constraints() -> Constraints {
-        Constraints::empty().after_resource(T::id())
+    async fn create(app: &mut App) -> Result<Self, Error> {
+        app.resources_mut().get::<T>().await
     }
 }
 
@@ -52,90 +34,149 @@ impl<T: GetRef> DerefMut for Get<T> {
 }
 
 /// A type that allows getting a synchronized reference to the original type
-///
-/// Most of the time, this is implemented using the [derive macro](crate::GetRef). The macro falls
-/// back to [`Clone`], which works for special pointers like [`Arc<_>`](std::sync::Arc).
 #[allow(clippy::module_name_repetitions)] // no
-pub trait GetRef {
-    /// A synchronized reference to the original [`Resource`]
-    type Ref: ResourceRef;
-    /// Get a synchronized reference to `Self`
-    fn get_ref(
-        &self,
-        registry: &Registry,
-        dependent: ComponentIdRef<'_>,
-    ) -> impl Future<Output = Result<Self::Ref, crate::Error>> + Send + Sync;
+pub trait GetRef<R: GetRef = Self>: Send + Sync {
+    type Loader: Send + Sync;
+    type Ref: crate::Any + Send + Sync;
+
+    fn create_loader(
+        resource: &R,
+        app: &mut App,
+    ) -> impl Future<Output = Result<Self::Loader, Error>> + Send;
+    fn load_ref(
+        loader: &Self::Loader,
+        app: &mut App,
+    ) -> impl Future<Output = Result<Self::Ref, Error>> + Send;
 }
 
-/// A trait that returns [`Some(R::Ref)`](GetRef::Ref) if the type implements [`GetRef`], or [`None`] otherwise
+pub trait GetRefWith: Send + Sync + Sized {
+    type Method: GetRef<Self>;
+}
+
+impl<R: GetRefWith> GetRef for R {
+    type Loader = <R::Method as GetRef<Self>>::Loader;
+    type Ref = <R::Method as GetRef<Self>>::Ref;
+
+    async fn create_loader(resource: &Self, app: &mut App) -> Result<Self::Loader, Error> {
+        <R::Method as GetRef<Self>>::create_loader(resource, app).await
+    }
+
+    async fn load_ref(loader: &Self::Loader, app: &mut App) -> Result<Self::Ref, Error> {
+        <R::Method as GetRef<Self>>::load_ref(loader, app).await
+    }
+}
+
+pub struct GetClone;
+impl<R: GetRef + Clone + crate::Any> GetRef<R> for GetClone {
+    type Loader = R;
+    type Ref = R;
+
+    async fn create_loader(resource: &R, _: &mut App) -> Result<Self::Loader, Error> {
+        Ok(resource.clone())
+    }
+
+    async fn load_ref(loader: &Self::Loader, _: &mut App) -> Result<Self::Ref, Error> {
+        Ok(loader.clone())
+    }
+}
+
+pub struct GetInput<I: Input>(PhantomData<I>);
+impl<I: Input + crate::Any + Sync, R: GetRef> GetRef<R> for GetInput<I> {
+    type Loader = ();
+    type Ref = I;
+
+    async fn create_loader(_: &R, _: &mut App) -> Result<Self::Loader, Error> {
+        Ok(())
+    }
+
+    async fn load_ref((): &Self::Loader, app: &mut App) -> Result<Self::Ref, Error> {
+        I::create(app).await
+    }
+}
+
+pub struct GetCreate<C>(PhantomData<C>);
+impl<C, R> GetRef<R> for GetCreate<C>
+where
+    C: CreateDerive<External = R, Plain: Sync + Clone> + crate::Any + Sync,
+    R: GetRef,
+{
+    type Loader = C::Plain;
+    type Ref = C;
+
+    async fn create_loader(resource: &R, app: &mut App) -> Result<Self::Loader, Error> {
+        <C as CreateDerive>::create(resource, app).await
+    }
+
+    async fn load_ref(loader: &Self::Loader, app: &mut App) -> Result<Self::Ref, Error> {
+        let plain = loader.clone();
+        <C as CreateDeriveTypes>::finish(plain, app).await
+    }
+}
+
+/// A trait that returns [`Some(R::Ref)`](GetRef::Ref) iff the type implements [`GetRef`]
 ///
 /// This can be automatically implemented for all types using autoderef-based specialization,
 /// allowing types that don't know if they even implement [`GetRef`] to try to create a
-/// synchronized reference. See [`crate::app::event::GetRequest`] for why this is necessary.
+/// synchronized reference.
 ///
 /// To implement the trait, use [`#[resource]`](macro@resource) or
 /// [`#[derive(MaybeGetRef)]`](macro@crate::MaybeGetRef)
-#[cfg(feature = "runtime-loading")]
-#[async_trait]
 pub trait MaybeGetRef {
-    async fn maybe_get_ref(
+    fn maybe_get_ref(
         &self,
-        registry: &Registry,
-        dependent: ComponentIdRef<'_>,
-    ) -> Result<Box<dyn ResourceRef>, crate::Error>;
+        app: &mut App,
+    ) -> impl Future<Output = Result<Option<Box<dyn DynGetRefLoader>>, crate::Error>> + Send;
+}
+
+#[async_trait]
+pub trait DynGetRefLoader: Send + Sync {
+    async fn load_ref(&self, app: &mut App) -> Result<Box<dyn crate::Any>, Error>;
+}
+
+struct DynGetRefLoaderImpl<R: GetRef>(R::Loader);
+
+#[async_trait]
+impl<R: GetRef> DynGetRefLoader for DynGetRefLoaderImpl<R> {
+    async fn load_ref(&self, app: &mut App) -> Result<Box<dyn crate::Any>, Error> {
+        R::load_ref(&self.0, app)
+            .await
+            .map(|value| Box::new(value) as Box<dyn crate::Any>)
+    }
 }
 
 #[doc(hidden)]
-#[cfg(feature = "runtime-loading")]
 pub mod maybe_get_ref {
-    use crate::app::{ComponentIdRef, Registry};
+    use crate::{app::App, input::get::DynGetRefLoaderImpl};
 
-    use super::ResourceRef;
+    use super::DynGetRefLoader;
 
     pub trait Specialization {
         fn specialization(
             &self,
-            registry: &Registry,
-            dependent: ComponentIdRef<'_>,
-        ) -> impl Future<Output = Result<Box<dyn ResourceRef>, crate::Error>> + Send + Sync;
+            app: &mut App,
+        ) -> impl Future<Output = Result<Option<Box<dyn DynGetRefLoader>>, crate::Error>> + Send;
     }
 
     impl<T: Send + Sync> Specialization for &T {
         async fn specialization(
             &self,
-            _: &Registry,
-            _: ComponentIdRef<'_>,
-        ) -> Result<Box<dyn ResourceRef>, crate::Error> {
-            Err(crate::Error::ResourceNoGetRef)
+            _: &mut App,
+        ) -> Result<Option<Box<dyn DynGetRefLoader>>, crate::Error> {
+            Ok(None)
         }
     }
 
-    impl<T: super::GetRef + crate::Any + Send + Sync> Specialization for &mut &T {
+    impl<R: super::GetRef + Send + Sync + 'static> Specialization for &mut &R {
         async fn specialization(
             &self,
-            registry: &Registry,
-            dependent: ComponentIdRef<'_>,
-        ) -> Result<Box<dyn ResourceRef>, crate::Error> {
-            self.get_ref(registry, dependent)
+            app: &mut App,
+        ) -> Result<Option<Box<dyn DynGetRefLoader>>, crate::Error> {
+            R::create_loader(self, app)
                 .await
-                .map(|value| Box::new(value) as Box<dyn ResourceRef>)
+                .map(DynGetRefLoaderImpl::<R>)
+                .map(Box::new)
+                .map(|value| value as Box<dyn DynGetRefLoader>)
+                .map(Some)
         }
-    }
-}
-
-// TODO: move to dependency and generalize (no feature gate, allow any component)
-
-/// A trait that allows for [cloning](Clone) within a trait object and dynamic typing
-///
-/// This trait is used only in [`MaybeGetRef`] and is implemented for all types that implement
-/// [`Clone`] and [`Any`](crate::Any).
-pub trait ResourceRef: CloneAs + crate::Any + Send + Sync {
-    #[must_use]
-    fn clone_as_boxed(&self, dependent: ComponentIdRef<'_>) -> Box<dyn ResourceRef>;
-}
-
-impl<T: CloneAs + crate::Any + Send + Sync> ResourceRef for T {
-    fn clone_as_boxed(&self, dependent: ComponentIdRef<'_>) -> Box<dyn ResourceRef> {
-        Box::new(self.clone_as(dependent))
     }
 }

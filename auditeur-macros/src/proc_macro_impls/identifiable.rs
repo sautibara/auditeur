@@ -1,9 +1,9 @@
-use quote::{ToTokens, quote};
+use quote::quote;
 use syn::Ident;
 
 use crate::namespaced_id::NamespacedId;
 
-pub fn identifiable(
+pub fn identified(
     id: &NamespacedId,
     ident: &Ident,
     generics: &syn::Generics,
@@ -12,57 +12,45 @@ pub fn identifiable(
 
     let auditeur = &*crate::AUDITEUR;
     quote! {
-       impl #impl_generics #auditeur::app::Identifiable for #ident #type_generics
+       impl #impl_generics #auditeur::component::Identified for #ident #type_generics
        #where_clause
        {
-           fn dyn_id(&self) -> &'static #auditeur::namespaced_id::NamespacedIdRef {
-               <Self as #auditeur::app::Identifiable>::id()
+           fn id_dyn(&self) -> &#auditeur::namespaced_id::NamespacedIdRef {
+               <Self as #auditeur::component::IdentifiedType>::id()
            }
+       }
 
+       impl #impl_generics #auditeur::component::IdentifiedType for #ident #type_generics
+       #where_clause
+       {
            fn id() -> &'static #auditeur::namespaced_id::NamespacedIdRef
            where
                Self: Sized
            {
-               #id
+               <Self as #auditeur::component::IdentifiedConst>::ID
            }
        }
-    }
-}
 
-#[derive(Clone, Copy)]
-pub enum ComponentType {
-    Resource,
-    #[allow(dead_code)]
-    Bundle,
-    Message,
-}
-
-impl ToTokens for ComponentType {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let auditeur = &*crate::AUDITEUR;
-        tokens.extend(quote! {
-            #auditeur::app::ComponentType::
-        });
-        tokens.extend(match self {
-            Self::Resource => quote! { Resource },
-            Self::Bundle => quote! { Bundle },
-            Self::Message => quote! { Message },
-        });
+       impl #impl_generics #auditeur::component::IdentifiedConst for #ident #type_generics
+       #where_clause
+       {
+           const ID: &'static #auditeur::namespaced_id::NamespacedIdRef = #id;
+       }
     }
 }
 
 pub fn component(
     ident: &Ident,
     generics: &syn::Generics,
-    component_type: ComponentType,
+    registry: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let auditeur = &*crate::AUDITEUR;
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     quote! {
-        impl #impl_generics #auditeur::app::Component for #ident #type_generics
+        impl #impl_generics #auditeur::component::RegistryOf for #ident #type_generics
         #where_clause
         {
-            const TYPE: #auditeur::app::ComponentType = #component_type;
+            type Registry = #registry;
         }
     }
 }

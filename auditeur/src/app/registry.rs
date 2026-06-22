@@ -1,682 +1,603 @@
-use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
-use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::{assert_matches, fmt::Debug, marker::PhantomData, ops::Deref};
 
-use futures::FutureExt;
-#[cfg(feature = "runtime-loading")]
-use tokio::sync::mpsc;
+use hashbrown::HashMap;
+use tokio::sync::oneshot;
 
-#[cfg(feature = "resource-map")]
-use crate::app::ResourceMap;
-#[cfg(feature = "runtime-loading")]
-use crate::app::channels;
-use crate::app::channels::ChannelsRefMut;
-#[cfg(feature = "resource-map")]
-use crate::app::channels::Giver;
-#[cfg(feature = "resource-map")]
-use crate::app::resource_map;
-#[cfg(feature = "runtime-loading")]
-use crate::app::resource_map::ResourceMapConnection;
-use crate::app::{BuiltBundle, Loader, Runner, event};
-#[cfg(feature = "runtime-loading")]
-use crate::input::CloneAs;
-use crate::input::get::GetRef;
-use crate::{app::LoadedResource, prelude::*};
+use crate::{
+    app::{
+        AppFn, AppMutFnOnce, AppMutFuture, Inner,
+        map::{AddedComponentId, Dependency, DependencyPart, DependencyType},
+    },
+    component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
+    prelude::*,
+};
 
-/// The underlying state of a [`Registry`]. This separates the main underlying functionality of the
-/// registry into two states: building and running. If the `runtime-loading` feature isn't enabled,
-/// only the building state is compiled, as we can never access a registry after it starts running.
-/// If the feature is enabled, both states are compiled, and channels are used to talk between the
-/// running registry and its handles.
+type RegistryId = &'static NamespacedIdRef;
+
+/// Represents a grouping of [`Identified`] types that can be added as [`Component`]s to an [`App`].
 ///
-/// The "main underlying functionality" is in practice [adding resources](Self::add_boxed) and
-/// [getting handles to already-added resources](Self::get_as)
-#[derive(Debug)]
-enum RegistryState {
-    Building(BuildingRegistry),
-    #[cfg(feature = "runtime-loading")]
-    Running(RunningRegistry),
+/// Components are [loaded](Loader::load) on demand when other components
+/// [`get`](crate::app::Registries::get) them. When all dependents release their dependency,
+/// they're also automatically [unloaded](Loaded::unload). The component then stays in the app,
+/// ready to load again if another component needs it.
+///
+/// Components are added to an [`App`] as [`Children`] using the
+/// [`add`](crate::app::Registries::load) method. They are only removed from the app if someone
+/// calls [`remove`](crate::app::Registries::remove), which prevents other components from
+/// ever loading the component again.
+///
+/// Notable registries include:
+/// - [`Registries`],
+/// - [`Resources`],
+/// - [`Bundles`],
+/// - [`TakeMessages`],
+/// - [`ListenMessages`],
+pub trait Registry: IdentifiedType + 'static {
+    type Loader: Loader<Loaded = Self::Loaded>;
+    type Loaded: Loaded;
 }
 
-impl RegistryState {
-    /// Returns `true` if the registry state is [`Running`].
-    ///
-    /// [`Running`]: RegistryState::Running
+/// A value that can load a specific erased [`Component`]s on demand.
+pub trait Loader: IdentifiedComponent + Send + Sync + 'static {
+    type Loaded;
+
+    fn load(&self, app: &mut App) -> impl Future<Output = Result<Self::Loaded, Error>> + Send;
+}
+
+/// An erased [`Component`] that has been loaded into a [`Registry`].
+pub trait Loaded: crate::Any + Sized + Send + Sync + 'static {
+    fn unload(self, app: &mut App) -> impl Future<Output = Result<(), Error>> + Send {
+        let _ = app;
+        async { Ok(()) }
+    }
+}
+
+/// A loader implementation for marker components.
+pub struct MarkerLoader<R: Registry> {
+    id: ComponentIdPath,
+    pd: PhantomData<fn() -> R>,
+}
+
+impl<R: Registry> MarkerLoader<R> {
     #[must_use]
-    #[cfg(feature = "runtime-loading")]
-    const fn is_running(&self) -> bool {
-        matches!(self, Self::Running(..))
-    }
-
-    #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
-    #[inline]
-    async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
-        match self {
-            Self::Building(registry) => registry.add_boxed_resource(resource),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.add_boxed_resource(resource).await,
-        }
-    }
-
-    #[inline]
-    fn add_bundle(&mut self, bundle: NamespacedId) {
-        match self {
-            Self::Building(registry) => registry.add_bundle(bundle),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(_) => (),
-        }
-    }
-
-    #[cfg_attr(not(feature = "runtime-loading"), allow(clippy::unused_async))]
-    #[inline]
-    async fn get_reference_as<R: Resource + GetRef>(
-        &self,
-        dependent: ComponentIdRef<'_>,
-        event_sender: &EventSender,
-        parent: &Registry,
-    ) -> Result<R::Ref, crate::Error> {
-        match self {
-            Self::Building(registry) => registry.get_as::<R>(dependent, parent).await,
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.get_as::<R>(dependent, event_sender).await,
-        }
-    }
-
-    #[inline]
-    async fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        match self {
-            Self::Building(registry) => registry.loaded_resources(),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.loaded_resources().await,
-        }
-    }
-
-    #[inline]
-    async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        match self {
-            Self::Building(registry) => registry.loaded_bundles(),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.loaded_bundles().await,
-        }
-    }
-
-    #[inline]
-    async fn loaded_messages(&self) -> HashSet<NamespacedId> {
-        match self {
-            Self::Building(registry) => registry.loaded_messages(),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(registry) => registry.loaded_messages().await,
-        }
-    }
-
-    const fn channels_ref<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRef<'a> {
-        match self {
-            Self::Building(building) => building.channels_ref(event_sender),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(running) => running.channels_ref(event_sender),
-        }
-    }
-
-    const fn channels_ref_mut<'a>(
-        &'a mut self,
-        event_sender: &'a EventSender,
-    ) -> ChannelsRefMut<'a> {
-        match self {
-            Self::Building(building) => building.channels_ref_mut(event_sender),
-            #[cfg(feature = "runtime-loading")]
-            Self::Running(running) => running.channels_ref_mut(event_sender),
-        }
-    }
-}
-
-struct BuildingRegistry {
-    resources: HashMap<NamespacedId, Box<dyn LoadedResource>>,
-    bundles: HashSet<NamespacedId>,
-    channels: Channels,
-    #[cfg(feature = "resource-map")]
-    resource_map_connection: Giver<resource_map::ResourceMapQuery>,
-    #[cfg(feature = "runtime-loading")]
-    resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
-    #[cfg(feature = "runtime-loading")]
-    resource_receiver: mpsc::Receiver<Box<dyn LoadedResource>>,
-}
-
-impl Debug for BuildingRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug_struct = f.debug_struct("BuildingRegistry");
-        debug_struct.field("resources", &self.resources.keys());
-        debug_struct.field("bundles", &self.bundles);
-        debug_struct.field("channels", &self.channels);
-        #[cfg(feature = "resource-map")]
-        debug_struct.field("resource_map_connection", &self.resource_map_connection);
-        #[cfg(feature = "runtime-loading")]
-        debug_struct.field("resource_sender", &self.resource_sender);
-        #[cfg(feature = "runtime-loading")]
-        debug_struct.field("resource_receiver", &self.resource_receiver);
-        debug_struct.finish()
-    }
-}
-
-impl BuildingRegistry {
-    fn with_channels(mut channels: Channels) -> Self {
-        #[cfg(feature = "runtime-loading")]
-        let (resource_sender, resource_receiver) = mpsc::channel(64);
-
-        #[cfg(feature = "resource-map")]
-        let resource_map_connection = channels.add_take_channel::<resource_map::ResourceMapQuery>();
-
+    pub fn new(id: impl Into<ComponentIdPath>) -> Self {
         Self {
-            resources: HashMap::new(),
-            bundles: HashSet::new(),
-            channels,
-            #[cfg(feature = "resource-map")]
-            resource_map_connection,
-            #[cfg(feature = "runtime-loading")]
-            resource_sender,
-            #[cfg(feature = "runtime-loading")]
-            resource_receiver,
+            id: id.into(),
+            pd: PhantomData,
         }
     }
+}
 
-    fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) {
-        self.resources.insert(resource.dyn_id().into(), resource);
-    }
-
-    fn add_bundle(&mut self, bundle: NamespacedId) {
-        self.bundles.insert(bundle);
-    }
-
-    #[instrument(skip_all, fields(from = %dependent, to = %R::id()))]
-    async fn get_as<R: Resource + GetRef>(
-        &self,
-        dependent: ComponentIdRef<'_>,
-        parent: &Registry,
-    ) -> Result<R::Ref, crate::Error> {
-        let id = R::id();
-        let loaded = self
-            .resources
-            .get(id)
-            .ok_or_else(|| Error::ResourceNotFound { id: id.to_owned() })?;
-        let downcast = (loaded.resource() as &dyn crate::Any)
-            .downcast_ref::<R>()
-            .ok_or_else(|| Error::DowncastFailed { id: id.to_owned() })?;
-        downcast.get_ref(parent, dependent).await
-    }
-
-    fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        self.resources.keys().cloned().collect()
-    }
-
-    fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        self.bundles.clone()
-    }
-
-    fn loaded_messages(&self) -> HashSet<NamespacedId> {
-        self.channels.ids()
-    }
-
-    const fn channels_ref<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRef<'a> {
-        ChannelsRef::new_building(&self.channels, event_sender)
-    }
-
-    const fn channels_ref_mut<'a>(
-        &'a mut self,
-        event_sender: &'a EventSender,
-    ) -> ChannelsRefMut<'a> {
-        ChannelsRefMut::new_building(&mut self.channels, event_sender)
+impl<R: Registry> IdentifiedComponent for MarkerLoader<R> {
+    fn component_id_dyn(&self) -> ComponentId {
+        ComponentId {
+            registry: R::id(),
+            component: self.id.clone(),
+        }
     }
 }
 
-#[cfg(feature = "runtime-loading")]
-struct RunningRegistry {
-    resource_sender: mpsc::Sender<Box<dyn LoadedResource>>,
-    map: ResourceMapConnection,
-}
-
-#[cfg(feature = "runtime-loading")]
-impl RunningRegistry {
-    async fn add_boxed_resource(&self, resource: Box<dyn LoadedResource>) {
-        let _ = self.resource_sender.send(resource).await;
-    }
-
-    #[instrument(skip_all, fields(from = %dependent, to = %R::id()))]
-    async fn get_as<R: Resource + GetRef>(
-        &self,
-        dependent: ComponentIdRef<'_>,
-        event_sender: &EventSender,
-    ) -> Result<R::Ref, crate::Error> {
-        let id = R::id();
-        let (get_request, receiver) = event::GetRequest::new(id.to_owned(), dependent.into_owned());
-        // FIXME: by using an EventSender, the requests actually never get dropped
-        // - it all stays in the main Vec, awaiting new receivers
-        // this should be separated into another channel for only Get requests
-        event_sender.send(RegistryEvent::Get(Arc::new(get_request)));
-        // if the request if fulfilled, this will return Some
-        // if it isn't and all requests get dropped, the channel drops and returns a RecvError
-        let reference = tokio::time::timeout(std::time::Duration::from_millis(100), receiver)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .ok_or_else(|| Error::ResourceNotFound { id: id.to_owned() })?;
-
-        trace!("succeeded getting {id}");
-
-        crate::any::downcast(reference)
-            .map(|boxed| *boxed)
-            .map_err(|_| Error::DowncastFailed { id: id.to_owned() })
-    }
-
-    async fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        self.map.loaded_resources().await
-    }
-
-    async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        self.map.loaded_bundles().await
-    }
-
-    async fn loaded_messages(&self) -> HashSet<NamespacedId> {
-        self.map.loaded_messages().await
-    }
-
-    const fn channels_ref<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRef<'a> {
-        ChannelsRef::new_running(&self.map, event_sender)
-    }
-
-    const fn channels_ref_mut<'a>(&'a self, event_sender: &'a EventSender) -> ChannelsRefMut<'a> {
-        ChannelsRefMut::new_running(&self.map, event_sender)
+impl<R: Registry> Loader for MarkerLoader<R> {
+    type Loaded = ();
+    async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
+        Ok(())
     }
 }
 
-impl Debug for RunningRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RunningRegistry {{ .. }}")
-    }
+impl Loaded for () {}
+
+/// A loader implementation that uses trait objects.
+pub struct ErasedLoader<R: Registry> {
+    loader: Box<dyn DynLoader<R::Loaded>>,
 }
 
-/// A list of registered and loaded [resources](LoadedResource), built from an [`App`], that can be run as a main loop
-///
-/// A registry is built from an [`App`] declaration, which handles loading things in the correct
-/// order. This allows resources to access other resources through [`Self::get_as`], or, much more
-/// commonly, [`Get<_>`](crate::input::get::Get). It is the main thing that [inputs](crate::input)
-/// interact with, allowing resources to automatically get a large amount of information about the
-/// app. As such, most channels shown below are also able to be used as inputs (they implement
-/// [`Input`]).
-///
-/// There are many bundled channels for notification passing:
-/// - To tell only one resource or the entire program to stop, use a [`Stopper`] through [`Self::stopper`]
-/// - To receive notifications about what happens to the registry, use [`Self::event_receiver`]
-/// - To listen to messages, use [`Self::channels`]
-#[derive(Debug)]
-#[cfg_attr(feature = "runtime-loading", derive(PathAny))]
-pub struct Registry {
-    event_sender: EventSender,
-    state: RegistryState,
-
-    #[cfg(feature = "runtime-loading")]
-    bundle_init_sender: channels::Shouter<event::BundleInit>,
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Registry {
-    /// Creates a new, empty registry.
+impl<R: Registry> ErasedLoader<R> {
     #[must_use]
-    pub fn new() -> Self {
-        let mut channels = Channels::new();
-
-        #[cfg(feature = "runtime-loading")]
-        let bundle_init_sender = channels.add_listen_channel::<event::BundleInit>();
-
-        let state = RegistryState::Building(BuildingRegistry::with_channels(channels));
-
+    pub fn new<LR: Loader<Loaded = R::Loaded>>(loader: LR) -> Self {
         Self {
-            #[cfg(feature = "runtime-loading")]
-            bundle_init_sender,
-
-            event_sender: EventSender::new(),
-            state,
+            loader: Box::new(loader),
         }
     }
+}
 
-    /// Asynchronously run each [`Runner`] that has been registered, until they all exit
-    #[cfg(not(feature = "runtime-loading"))]
-    pub async fn run(self) {
-        use tokio::task::JoinSet;
-
-        let mut resource_map_option: Option<Box<dyn LoadedResource>>;
-
-        #[cfg(feature = "resource-map")]
-        {
-            let mut resource_map = ResourceMap::new(self.event_sender.clone());
-            let resource_map =
-                crate::resource::listener::LoadedListener::build(resource_map, &self)
-                    .await
-                    .expect("building ResourceMap shouldn't fail");
-            let resource_map = Box::new(resource_map) as Box<dyn LoadedResource>;
-
-            resource_map_option = Some(resource_map);
-        }
-
-        #[cfg(not(feature = "resource-map"))]
-        {
-            resource_map_option = None;
-        }
-
-        let RegistryState::Building(building_registry) = self.state;
-
-        let mut futures = JoinSet::new();
-        for resource in building_registry
-            .resources
-            .into_values()
-            .chain(resource_map_option)
-        {
-            if let Ok(runner) = resource.runner() {
-                let _ = futures.spawn(Self::run_runner(runner, self.event_sender.clone()));
-            }
-        }
-
-        futures.join_all().await;
+impl<R: Registry> Loader for ErasedLoader<R> {
+    type Loaded = R::Loaded;
+    async fn load(&self, app: &mut App) -> Result<Self::Loaded, Error> {
+        self.loader.load_dyn(app).await
     }
+}
 
-    /// Asynchronously run each [`Runner`] that has been registered, until they all exit
-    ///
-    /// # Panics
-    ///
-    /// - If using the `runtime-loading` feature and this is called on a registry handle
-    #[cfg(feature = "runtime-loading")]
-    pub async fn run(self) {
-        use futures::FutureExt;
-        use tokio::task::JoinSet;
+impl<R: Registry> IdentifiedComponent for ErasedLoader<R> {
+    fn component_id_dyn(&self) -> ComponentId {
+        self.loader.component_id_dyn()
+    }
+}
 
-        let RegistryState::Building(mut building_registry) = self.state else {
-            unreachable!("already checked that it was building above");
+#[async_trait]
+trait DynLoader<L>: IdentifiedComponent + Send + Sync {
+    async fn load_dyn(&self, app: &mut App) -> Result<L, Error>;
+}
+
+#[async_trait]
+impl<L: Loader> DynLoader<L::Loaded> for L {
+    async fn load_dyn(&self, app: &mut App) -> Result<L::Loaded, Error> {
+        <Self as Loader>::load(self, app).await
+    }
+}
+
+/// A [`Registry`] for all registries added to an [`App`].
+#[identified("auditeur:registry")]
+pub struct Registries;
+
+impl Registry for Registries {
+    type Loader = MarkerLoader<Self>;
+    type Loaded = ();
+}
+
+impl RegistryOf for Registries {
+    type Registry = Self;
+}
+
+impl<R: Registry> Component<Registries> for R {
+    type ComponentInput = ();
+
+    fn register((): Self::ComponentInput) -> (<Registries as Registry>::Loader, Children) {
+        (MarkerLoader::new(R::id()), Children::new())
+    }
+}
+
+pub struct ErasedComponent {
+    pub(crate) object: Box<dyn DynComponent>,
+}
+
+impl Debug for ErasedComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ErasedComponent")
+            .field("id", &self.object.component_id_dyn())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ErasedComponent {
+    pub fn new<R: Registry, C: Component<R>>(input: C::ComponentInput) -> (Self, Children) {
+        let (loader, children) = C::register(input);
+        let component = Self {
+            object: Box::new(DynComponentImpl::<R> {
+                loader,
+                loaded: None,
+            }),
         };
-
-        // NOTE: We must add the channels to the ResourceMap before running the other resources.
-        // If another resource asks the map to load something before all the channels are added, it
-        // could fail when it should succeed.
-
-        let resource_map = building_registry
-            .resources
-            .get_mut(ResourceMap::id())
-            .expect("ResourceMap should be loaded");
-        let resource_map: &mut ResourceMap = (resource_map.resource_mut() as &mut dyn crate::Any)
-            .downcast_mut()
-            .expect("ResourceMap downcast shouldn't fail");
-        resource_map.add_channels(building_registry.channels);
-
-        // Now that we initialized the ResourceMap, we could continue to the other resources.
-
-        let mut receiver = building_registry.resource_receiver;
-        let mut futures = JoinSet::new();
-        for resource in building_registry.resources.into_values() {
-            match resource.runner() {
-                Ok(runner) => {
-                    let _ = futures.spawn(Self::run_runner(runner, self.event_sender.clone()));
-                }
-                Err(resource) => self.event_sender.send(RegistryEvent::NonRunnable(
-                    event::ResourceSupplier::new(resource),
-                )),
-            }
-        }
-        // drop the sender now so we don't keep the channel alive
-        // (which would mess with the complete condition)
-        drop(building_registry.resource_sender);
-
-        // the registry listens for any new futures to add to the queue
-        loop {
-            tokio::select! {
-                // this is simply to check if the JoinSet is finished
-                val = futures.join_next() => {
-                    if val.is_none() {
-                        break;
-                    }
-                },
-                resource = receiver.recv().fuse() => {
-                    if let Some(runner) = resource.and_then(|resource| resource.runner().ok()) {
-                        let sender = self.event_sender.clone();
-                        futures.spawn(Self::run_runner(runner, sender));
-                        // futures.push(Self::run_runner(runner, sender));
-                    }
-                },
-                // this automatically gets called if there aren't any more futures or event senders
-                else => break,
-            };
-        }
+        (component, children)
     }
 
-    async fn run_runner(runner: Box<dyn Runner>, sender: EventSender) {
-        let id = runner.dyn_id().to_owned();
-        sender.send(RegistryEvent::Running(id.clone()));
-        // We actually don't know if the runner will be unwind safe
-        // (for example, the runner could use interior mutability
-        // to break an invariant in another runner and then panic).
-        // But we can't add the bound to async_trait,
-        // so instead we just assume that it will be anyways.
-        // It's more likely that the runner will be unwind safe,
-        // and we don't want the entire app to exit because of a panic.
-        let panic_result = AssertUnwindSafe(runner.run())
-            .catch_unwind()
-            .instrument(info_span!("runner", %id))
-            .await;
-        if panic_result.is_err() {
-            error!(%id, "runner stopped due to a panic");
+    #[allow(clippy::similar_names)]
+    pub(super) fn from_loader<R: Registry>(loader: R::Loader) -> Self {
+        Self {
+            object: Box::new(DynComponentImpl::<R> {
+                loader,
+                loaded: None,
+            }),
         }
-        sender.send(RegistryEvent::Stopped(id));
     }
+}
 
-    /// Load a [`Loader`] into the registry, adding the [`LoadedResource`] it contains. The
-    /// resource will be able to be accessed through [`Self::get_as`], and if it provides a
-    /// [`Runner`], the runner will be run in the main loop
-    ///
-    /// Note: As this method sends the correct [`RegistryEvent`]s, it should be prefered to loading
-    /// the loader externally
+#[async_trait::async_trait]
+pub(crate) trait DynComponent: IdentifiedComponent + Send + Sync {
+    /// Gets a reference to the underlying component, loading it if necessary.
     ///
     /// # Errors
     ///
-    /// - If the [`Loader`] returns an error; see [`Loader::load`]
-    pub async fn add_loader(
-        &mut self,
-        loader: Box<dyn Loader>,
-        bundle: NamespacedId,
-    ) -> Result<&mut Self, Error> {
-        self.event_sender.send(RegistryEvent::Loading {
-            id: loader.ident().into(),
-            bundle,
-        });
-        // TODO: handle this error
-        let resource = loader.load(self).await?;
-        Ok(self.add_boxed_resource(resource).await)
-    }
-
-    /// Add an already-loaded resource to the registry. The resource can be accessed through
-    /// [`Self::get_as`], and if it provides a [`Runner`], the runner will be run in the main loop
-    pub async fn add_boxed_resource(&mut self, resource: Box<dyn LoadedResource>) -> &mut Self {
-        self.event_sender
-            .send(RegistryEvent::Loaded(resource.dyn_id().into()));
-        self.state.add_boxed_resource(resource).await;
-        self
-    }
-
-    /// Register a bundle to the registry
+    /// - Propagated from [`Loader::load`].
+    async fn get<'a, 'b>(
+        &'a mut self,
+        app: &'b mut App,
+    ) -> Result<&'a mut (dyn crate::Any + Send + Sync + 'static), Error>;
+    /// Unloads the component from the app.
     ///
-    /// Note: This only adds the "specification" of the bundle to the registry (i.e. its id,
-    /// potential parent, ids of its child resources and bundles, etc) - not its actual resources
-    pub(crate) fn add_bundle(&mut self, id: NamespacedId, bundle: BuiltBundle) -> &mut Self {
-        #[cfg(feature = "runtime-loading")]
-        if let Some(init) = bundle.init {
-            self.bundle_init_sender.send(event::BundleInit {
-                id: id.clone(),
-                init,
+    /// # Errors
+    ///
+    /// - Propagated from [`Loaded::unload`].
+    async fn unload(&mut self, app: &mut App) -> Result<(), Error>;
+    /// Returns `true` iff the component is currently loaded
+    fn is_loaded(&self) -> bool;
+}
+
+struct DynComponentImpl<R: Registry> {
+    loader: R::Loader,
+    loaded: Option<R::Loaded>,
+}
+
+impl<R: Registry> IdentifiedComponent for DynComponentImpl<R> {
+    fn component_id_dyn(&self) -> ComponentId {
+        self.loader.component_id_dyn()
+    }
+}
+
+#[async_trait::async_trait]
+impl<R: Registry> DynComponent for DynComponentImpl<R> {
+    async fn get(&mut self, app: &mut App) -> Result<&mut (dyn crate::Any + Send + Sync), Error> {
+        if self.loaded.is_none() {
+            let loaded = self.loader.load(app).await?;
+            self.loaded = Some(loaded);
+        }
+
+        // me when problem case 3
+        // SAFETY: always some b/c it gets initialized if it's none
+        Ok(unsafe { self.loaded.as_mut().unwrap_unchecked() })
+    }
+
+    async fn unload(&mut self, app: &mut App) -> Result<(), Error> {
+        if let Some(loaded) = self.loaded.take() {
+            loaded.unload(app).await?;
+        }
+        Ok(())
+    }
+
+    fn is_loaded(&self) -> bool {
+        self.loaded.is_some()
+    }
+}
+
+#[derive(Default)]
+pub(in crate::app) struct Registrar {
+    components: HashMap<ComponentId, Register>,
+}
+
+#[derive(Debug)]
+struct Register {
+    component: oneshot::Receiver<ErasedComponent>,
+    registry_dependency: Dependency<()>,
+}
+
+impl Registrar {
+    /// Adds a component into this registrar.
+    ///
+    /// # Panics
+    ///
+    /// - If a component with the same id has already been added.
+    pub(super) fn add(&mut self, component: ErasedComponent, registry_dependency: Dependency<()>) {
+        let id = component.object.component_id_dyn();
+
+        let entry = self.components.entry(id);
+        assert_matches!(
+            entry,
+            hashbrown::hash_map::Entry::Vacant(_),
+            "a name collision should never happen in the registrar, as the map is checked first"
+        );
+
+        let (sender, receiver) = oneshot::channel();
+        let _ = sender.send(component);
+
+        entry.insert(Register {
+            component: receiver,
+            registry_dependency,
+        });
+    }
+
+    /// Removes a component from this registrar.
+    pub(super) fn remove_unchecked(
+        &mut self,
+        id: &ComponentId,
+        callback: impl FnOnce() + Send + 'static,
+    ) {
+        if let Some(register) = self.components.remove(id) {
+            tokio::task::spawn(async {
+                let component = (register.component.await)
+                    .expect("a component borrowed from the registry should never be dropped");
+                assert!(!component.object.is_loaded());
+
+                drop(component);
+                drop(register.registry_dependency);
+
+                callback();
+            });
+        } else {
+            callback();
+        }
+    }
+
+    /// Takes a component out of this registrar in order to modify it.
+    pub(super) fn borrow(&mut self, id: &ComponentId) -> Option<BorrowedComponent> {
+        let register = self.components.get_mut(id)?;
+
+        let (sender, receiver) = oneshot::channel();
+        // TODO: dependency loop check
+        let receiver = std::mem::replace(&mut register.component, receiver);
+        let borrowed = BorrowedComponent { sender, receiver };
+
+        Some(borrowed)
+    }
+}
+
+#[must_use = "borrowed component shouldn't ever be dropped"]
+pub(super) struct BorrowedComponent {
+    sender: oneshot::Sender<ErasedComponent>,
+    receiver: oneshot::Receiver<ErasedComponent>,
+}
+
+impl BorrowedComponent {
+    pub(super) async fn modify<T>(self, func: impl AsyncFnOnce(&mut ErasedComponent) -> T) -> T {
+        let mut component = (self.receiver.await)
+            .expect("a component borrowed from the registry should never be dropped");
+        let value = func(&mut component).await;
+        let _ = self.sender.send(component);
+        value
+    }
+}
+
+pub(super) enum Method {
+    Add(Children),
+    Borrow {
+        dependency: ComponentId,
+        dependent: AddedComponentId,
+        ty: DependencyType,
+        sender: oneshot::Sender<Result<Dependency<BorrowedComponent>, Error>>,
+    },
+    SpawnUnload {
+        id: ComponentId,
+    },
+}
+
+impl Method {
+    pub async fn run(self, app: &mut App) {
+        match self {
+            Self::Add(children) => app.registries_mut().add(children).await,
+            Self::Borrow {
+                dependency,
+                dependent,
+                ty,
+                sender,
+            } => {
+                let res = app
+                    .registries_mut()
+                    .borrow_as(dependency, dependent, ty)
+                    .await;
+                let _ = sender.send(res);
+            }
+            Self::SpawnUnload { id } => {
+                app.registries_mut().spawn_unload(id).await;
+            }
+        }
+    }
+}
+
+/// Return type of [`AppFn::registries_mut()`], see [`AppRegistriesMut`].
+pub struct AppFnRegistriesMut;
+impl AppFnRegistriesMut {
+    /// See [`AppRegistriesMut::add`].
+    #[allow(clippy::should_implement_trait)]
+    pub const fn add(self, mut children: Children) -> impl AppMutFnOnce<Output = ()> {
+        AppFn::using_handle_mut(move |handle| {
+            children.adopt_by(handle.dependent_added_id().deref().clone());
+            AppFn::spawn_mut(
+                children,
+                |children, _| super::Method::Registries(Method::Add(children)),
+                async |children, owned, handle| {
+                    owned.add_children(children, handle);
+                },
+            )
+        })
+    }
+}
+
+/// Return type of [`App::registries_mut()`].
+pub struct AppRegistriesMut<'a> {
+    app: &'a mut App,
+}
+
+impl<'a> AppRegistriesMut<'a> {
+    pub(super) const fn new(app: &'a mut App) -> Self {
+        Self { app }
+    }
+
+    /// Add components to the app as children of the current dependent.
+    ///
+    /// # Errors
+    ///
+    /// - Visible only in [`App::errors`] - not returned.
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, children: Children) -> impl AppMutFuture<'a, Output = ()> {
+        AppFn.registries_mut().add(children).call(self.app)
+    }
+
+    /// Gets a component from one of the [registries](Registry).
+    ///
+    /// This may initialize the component and any components it depends on.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DependencyNotFound`] if the component with the id `id` doesn't exist.
+    /// - [`Error::DowncastFailed`] if a [`crate::Any`] downcast fails.
+    /// - Propagated from [`R::Loader::load`].
+    /// - Propagated from `func`.
+    pub async fn get<R: Registry, T>(
+        self,
+        id: ComponentIdPath,
+        func: impl AsyncFnOnce(&mut R::Loaded, &mut App) -> Result<T, Error>,
+    ) -> Result<Dependency<T>, Error>
+    where
+        T: Send + 'static,
+    {
+        let id = ComponentId {
+            registry: R::id(),
+            component: id,
+        };
+
+        self.get_inner(id.clone(), async move |reference, app| {
+            let reference = reference
+                .downcast_mut()
+                .ok_or_else(|| Error::DowncastFailed { id })?;
+            func(reference, app).await
+        })
+        .await
+    }
+
+    /// Ensures a component is loaded by getting a dependency to it.
+    ///
+    /// This will initialize the component and any components it depends on if they are not already
+    /// initialized.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DependencyNotFound`] if the component with the id `id` doesn't exist.
+    /// - Propagated from [`R::Loader::load`].
+    pub async fn load(self, id: ComponentId) -> Result<Dependency<()>, Error> {
+        self.get_inner(id, async |_, _| Ok(())).await
+    }
+
+    async fn get_inner<T>(
+        self,
+        id: ComponentId,
+        // WARN: The 'b lifetime will always be 'static, but for some reason the compiler gets
+        // angry if we don't include it. I have no idea why.
+        func: impl for<'b> AsyncFnOnce(
+            &mut (dyn crate::Any + Send + Sync + 'b),
+            &mut App,
+        ) -> Result<T, Error>,
+    ) -> Result<Dependency<T>, Error>
+    where
+        T: Send + 'static,
+    {
+        // First take the erased component from the registrar.
+        let dependency = self.app.registries_mut().borrow(id.clone()).await?;
+
+        // Then get the values from the dependency necessary to modify the app's dependent.
+        let dependency_id = Dependency::info_of(&dependency).dependency.clone_inner();
+        let ty = self.app.handle.new_dependency_type;
+
+        let component = dependency.value;
+        let handle = dependency.handle;
+
+        // Then initialize the dependency with with a map that has the dependency as the dependent.
+        //
+        // This means that dependencies of the dependency have the correct dependent.
+        let mut app = (self.app.dependent_mut())
+            .with_ty(ty)
+            .with_added_dependent(dependency_id)
+            .await;
+        let value = component
+            .modify(async |component| {
+                let reference = component.object.get(&mut app).await?;
+                func(reference, &mut app).await
+            })
+            .await?;
+
+        // And wrap the component back up in the dependency.
+        Ok(Dependency { value, handle })
+    }
+
+    /// Take an (erased) component from the registrar in order to call get on it.
+    ///
+    /// This gets the component using `dependent` as the dependent, even if the handle has a
+    /// different dependent.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DependencyNotFound`] if the component has not been added to this registry.
+    /// - [`Error::DependencyLoop`] if the component was already taken previously for a `get` call.
+    fn borrow_as(
+        self,
+        dependency: ComponentId,
+        dependent: AddedComponentId,
+        ty: DependencyType,
+    ) -> impl AppMutFuture<'a, Output = Result<Dependency<BorrowedComponent>, Error>> {
+        AppFn::oneshot_mut(
+            (dependency, dependent, ty),
+            |(dependency, dependent, ty), sender, _| {
+                super::Method::Registries(Method::Borrow {
+                    dependency,
+                    sender,
+                    dependent,
+                    ty,
+                })
+            },
+            async |(dependency, dependent, ty), owned, handle| {
+                let dependency_id = dependency;
+
+                let dependency =
+                    (owned.map)
+                        .validate_id(dependency_id.clone())
+                        .map_err(|dependency| Error::DependencyNotFound {
+                            dependency,
+                            dependent: dependent.deref().clone(),
+                        })?;
+
+                let part = DependencyPart {
+                    dependency,
+                    dependent: dependent.clone_inner(),
+                    ty,
+                };
+
+                let dependency = owned.increment_dependency_for_get(part, &handle.method_sender);
+
+                let component = owned.registrar.borrow(&dependency_id).ok_or_else(|| {
+                    Error::DependencyNotFound {
+                        dependency: dependency_id,
+                        dependent: dependent.deref().clone(),
+                    }
+                })?;
+
+                Ok(Dependency {
+                    value: component,
+                    handle: dependency.handle,
+                })
+            },
+        )
+        .call(self.app)
+    }
+
+    /// Take an (erased) component from the registrar in order to call get on it.
+    ///
+    /// This gets the component using the handle's current dependent as the dependent.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DependencyNotFound`] if the component has not been added to this registry.
+    /// - [`Error::DependencyLoop`] if the component was already taken previously for a `get` call.
+    fn borrow(
+        self,
+        dependency: ComponentId,
+    ) -> impl AppMutFuture<'a, Output = Result<Dependency<BorrowedComponent>, Error>> {
+        let dependent = self.app.dependent().dependent_added_id().clone_inner();
+        let ty = self.app.dependent().dependency_type();
+        self.borrow_as(dependency, dependent, ty)
+    }
+
+    pub(super) async fn spawn_unload(self, id: ComponentId) {
+        // First take the erased component from the registrar.
+        let mut app = self.app.dependent_mut().with_ty(DependencyType::Transient);
+        let Ok(component) = app.registries_mut().borrow(id.clone()).await else {
+            return;
+        };
+
+        // Then, with an app handle, we continue unloading the component.
+        let fut = async move |app: &mut App| {
+            Dependency::consume(component, async move |component| {
+                component
+                    .modify(async |component| {
+                        // Then unload the component in the current app.
+                        //
+                        // The current app is expected to have the app as the dependent, but it's
+                        // not necessary.
+                        let res = component.object.unload(app).await;
+                        app.errors_mut().drain_result(res).await;
+                    })
+                    .await;
+            })
+            .await;
+        };
+
+        drop(app);
+
+        // But we can't load it if we're the owned app - it would deadlock in the method queue.
+        if matches!(self.app.variant, Inner::Handle) {
+            fut(self.app).await;
+        } else {
+            // So if we are the owned app, we spawn another task that runs it with a handle.
+            let mut handle = self.app.handle().await;
+            tokio::task::spawn(async move {
+                fut(&mut handle).await;
             });
         }
-
-        self.state.add_bundle(id.clone());
-        self.event_sender.send(RegistryEvent::BundleLoading {
-            id,
-            parent: bundle.parent,
-            resources: bundle.resources,
-            messages: bundle.messages,
-            bundles: bundle.bundles,
-        });
-        self
-    }
-
-    /// Get a [synchronized reference](GetRef) to a loaded resource, using `reference_holder` as
-    /// the designated holder of the reference for [`RegistryEvent::IncrementDependency`] (see
-    /// [`ResourceMap`] for why this information is necessary).
-    ///
-    /// This uses [`Any`](crate::Any) in order to get the contained object, if it exists.
-    ///
-    /// # Errors
-    ///
-    /// - If [`R::get_ref`](GetRef::get_ref) returns an error.
-    // NOTE: in a previous version, this returned Option<&R>. But that messes with RegistryEvent,
-    // as resources could get a reference and then immediately drop it, confusing the ResourceMap
-    // (the map would think that the resource would still contain the reference).
-    pub async fn get_as<R: Resource + GetRef>(
-        &self,
-        dependent: ComponentIdRef<'_>,
-    ) -> Result<Get<R>, crate::Error> {
-        let reference = self
-            .state
-            .get_reference_as::<R>(dependent, &self.event_sender, self)
-            .await?;
-        Ok(Get::new(reference, dependent, self.event_sender()))
-    }
-}
-
-/// Utilities for managing an already-running [`Registry`]
-///
-/// Notice that these are only accessable through the `runtime-loading` feature
-#[cfg(feature = "runtime-loading")]
-impl Registry {
-    /// Obtain a handle to the [`Registry`], which can be used to manage it externally
-    ///
-    /// The handle acts the same as a normal, still-building registry, but it uses channels to
-    /// communicate and send new loaders to the currently-running registry.
-    ///
-    /// Note: This is only accessable through the `runtime-loading` feature
-    ///
-    /// Note: Under the feature, [`Registry`] also implements [`Input`] by calling this function
-    ///
-    /// # Panics
-    ///
-    /// - If this method is called on an app built from [`Self::new_app`].
-    #[must_use]
-    pub fn handle(&self) -> Self {
-        let ident = ComponentIdRef::Resource(ident!("auditeur:registry"));
-
-        let (resource_sender, connection) = match &self.state {
-            RegistryState::Running(running) => {
-                (running.resource_sender.clone(), running.map.clone_as(ident))
-            }
-            RegistryState::Building(building) => (
-                building.resource_sender.clone(),
-                ResourceMapConnection::new_for_registry(
-                    self.event_sender.clone(),
-                    building.resource_map_connection.clone_erased(),
-                ),
-            ),
-        };
-
-        Self {
-            event_sender: self.event_sender.clone(),
-            state: RegistryState::Running(RunningRegistry {
-                resource_sender,
-                map: connection,
-            }),
-            #[cfg(feature = "runtime-loading")]
-            bundle_init_sender: self.bundle_init_sender.clone_as(ident),
-        }
-    }
-
-    /// Returns `true` if this [`Registry`] instance is a [handle](Self::handle) to an
-    /// already-running registry
-    #[must_use]
-    pub const fn is_handle(&self) -> bool {
-        self.state.is_running()
-    }
-
-    /// Creates a new [`App`] that can eventually be added to this registry
-    pub fn new_app(&self) -> App {
-        App::new()
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl CloneAs for Registry {
-    fn clone_as(&self, _: ComponentIdRef<'_>) -> Self
-    where
-        Self: Sized,
-    {
-        self.handle()
-    }
-}
-
-/// Methods to access the various channels that the registry contains
-impl Registry {
-    #[must_use]
-    pub const fn channels(&self) -> ChannelsRef<'_> {
-        self.state.channels_ref(&self.event_sender)
-    }
-
-    #[must_use]
-    pub(crate) const fn channels_mut(&mut self) -> ChannelsRefMut<'_> {
-        self.state.channels_ref_mut(&self.event_sender)
-    }
-
-    #[must_use]
-    pub fn stopper(&self) -> Stopper {
-        Stopper::new(self.event_sender())
-    }
-
-    #[must_use]
-    pub fn event_sender(&self) -> EventSender {
-        self.event_sender.clone()
-    }
-
-    #[must_use]
-    pub const fn event_sender_ref(&self) -> &EventSender {
-        &self.event_sender
-    }
-
-    #[must_use]
-    pub fn event_receiver(&self) -> channels::EventReceiver {
-        self.event_sender.subscribe()
-    }
-}
-
-/// Methods to access the current state of the registry
-impl Registry {
-    /// Returns a set of the [`NamespacedId`]s of each [`Resource`] that is currently loaded
-    #[must_use]
-    pub async fn loaded_resources(&self) -> HashSet<NamespacedId> {
-        self.state.loaded_resources().await
-    }
-
-    /// Returns a set of the [`NamespacedId`]s of each [`Bundle`] that is currently loaded
-    #[must_use]
-    pub async fn loaded_bundles(&self) -> HashSet<NamespacedId> {
-        self.state.loaded_bundles().await
-    }
-
-    /// Returns a set of the [`NamespacedId`]s of each [`Message`](crate::Message) that is currently loaded
-    #[must_use]
-    pub async fn loaded_messages(&self) -> HashSet<NamespacedId> {
-        self.state.loaded_messages().await
-    }
-}
-
-#[cfg(feature = "runtime-loading")]
-impl Input for Registry {
-    /// Use a registry [handle](Self::handle) as an input to a running resource
-    async fn create(registry: &Self, _: ComponentIdRef<'_>) -> Result<Self, Error> {
-        Ok(registry.handle())
     }
 }

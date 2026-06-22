@@ -1,11 +1,7 @@
 //! A separate module for imported macros just to clean up `lib.rs`
 
 #[allow(unused_imports)] // used for doc links
-use crate::Message;
-#[allow(unused_imports)] // used for doc links
 use crate::prelude::*;
-#[allow(unused_imports, clippy::wildcard_imports)] // used for doc links
-use crate::resource::listener::*;
 
 /// Implements [`Resource`] for any type.
 ///
@@ -50,7 +46,7 @@ pub use auditeur_macros::resource;
 /// assert_is_identifiable(HasIdentifier);
 /// # }
 /// ```
-pub use auditeur_macros::identifiable;
+pub use auditeur_macros::identified;
 
 /// Implements [`Message`](crate::Message) for any type.
 ///
@@ -77,7 +73,7 @@ pub use auditeur_macros::identifiable;
 /// assert_is_message(Message);
 /// # }
 /// ```
-pub use auditeur_macros::message;
+pub use auditeur_macros::listen_message;
 
 /// Implements [`Listener`] for any type.
 ///
@@ -187,13 +183,14 @@ pub use auditeur_macros::GetRef;
 #[cfg(feature = "runtime-loading")]
 pub use auditeur_macros::MaybeGetRef;
 
-/// Automatically provides an implementation of [`CloneAs`](crate::input::CloneAs).
-pub use auditeur_macros::CloneAs;
+/// Automatically provides an implementation of [`CloneIn`](crate::input::CloneIn).
+pub use auditeur_macros::CloneIn;
 
 /// Automatically provides an implementation of [`PathAny`] by implementing
 /// [`PathAnyConst`](crate::path_any::PathAnyConst)
-#[cfg(feature = "path-any")]
-pub use auditeur_macros::PathAny;
+///
+/// If the `path-any` feature is disabled, this is a no-op.
+pub use auditeur_macros::Any;
 
 /// Allows [`Listener`] methods with return values to be called by other resources.
 ///

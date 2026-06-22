@@ -62,7 +62,7 @@ mod proc_macro_impls {
     pub use all_combinations::{AllCombinations, all_combinations};
 
     mod identifiable;
-    pub use identifiable::{ComponentType, component, identifiable};
+    pub use identifiable::{component, identified};
 
     mod listener;
     pub use listener::listener_attr;
@@ -71,21 +71,17 @@ mod proc_macro_impls {
     pub use respond::respond_attr;
 
     mod message;
-    pub use message::derive_message;
+    pub use message::{derive_listen_message, derive_take_message};
 
-    #[cfg(feature = "runtime-loading")]
     mod maybe_get_ref;
-    #[cfg(feature = "runtime-loading")]
     pub use maybe_get_ref::maybe_get_ref;
 
     mod clone_as;
     pub use clone_as::clone_as_enum;
     pub use clone_as::clone_as_struct;
 
-    #[cfg(feature = "path-any")]
     mod path_any;
-    #[cfg(feature = "path-any")]
-    pub use path_any::path_any;
+    pub use path_any::any;
 
     mod create;
     pub use create::create_attr;
@@ -178,7 +174,7 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn identifiable(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn identified(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
     let id = parse_macro_input!(attr as NamespacedId);
 
@@ -187,7 +183,7 @@ pub fn identifiable(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(err) => return err.into_compile_error().into(),
     };
 
-    let identifiable_impl = proc_macro_impls::identifiable(&id, ident, generics);
+    let identifiable_impl = proc_macro_impls::identified(&id, ident, generics);
     quote! {
         #identifiable_impl
         #item
@@ -196,7 +192,7 @@ pub fn identifiable(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn listen_message(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
     let id = parse_macro_input!(attr as NamespacedId);
 
@@ -205,7 +201,26 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(err) => return err.into_compile_error().into(),
     };
 
-    let implementation = proc_macro_impls::derive_message(ident, &id, generics);
+    let implementation = proc_macro_impls::derive_listen_message(ident, &id, generics);
+
+    quote! {
+        #item
+        #implementation
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn take_message(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as Item);
+    let id = parse_macro_input!(attr as NamespacedId);
+
+    let (ident, generics, _) = match extract_item_values(&item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
+    };
+
+    let implementation = proc_macro_impls::derive_take_message(ident, &id, generics);
 
     quote! {
         #item
@@ -288,8 +303,8 @@ pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
     proc_macro_impls::maybe_get_ref(ident, generics).into()
 }
 
-#[proc_macro_derive(CloneAs)]
-pub fn clone_as(item: TokenStream) -> TokenStream {
+#[proc_macro_derive(CloneIn)]
+pub fn clone_in(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemStruct);
 
     let fields = item.fields.iter().filter_map(|field| field.ident.as_ref());
@@ -298,9 +313,8 @@ pub fn clone_as(item: TokenStream) -> TokenStream {
     proc_macro_impls::clone_as_struct(&item.ident, fields, generics).into()
 }
 
-#[cfg(feature = "path-any")]
-#[proc_macro_derive(PathAny, attributes(custom_generics))]
-pub fn path_any(item: TokenStream) -> TokenStream {
+#[proc_macro_derive(Any)]
+pub fn any(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 
     let (ident, generics, _) = match extract_item_values(&item) {
@@ -308,7 +322,7 @@ pub fn path_any(item: TokenStream) -> TokenStream {
         Err(err) => return err.into_compile_error().into(),
     };
 
-    proc_macro_impls::path_any(ident, generics).into()
+    proc_macro_impls::any(ident, generics).into()
 }
 
 #[cfg(feature = "path-any")]
@@ -317,7 +331,7 @@ pub fn implement_path_any_external(ident: TokenStream) -> TokenStream {
     let PathAnyExternal { ident, generics } = parse_macro_input!(ident as PathAnyExternal);
 
     // TODO: ensure that there are no name collisions
-    proc_macro_impls::path_any(&ident, &generics).into()
+    proc_macro_impls::any(&ident, &generics).into()
 }
 
 #[cfg(feature = "path-any")]

@@ -1,91 +1,64 @@
 use proc_macro2::TokenStream;
 use syn::ItemStruct;
 
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, quote};
 
 #[allow(clippy::cognitive_complexity)] // sorry...
 pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
     let (ident, generics) = (&strct.ident, &strct.generics);
 
     let auditeur = &*crate::AUDITEUR;
-    let input_mod = auditeur.input();
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let implementations = match &strct.fields {
         syn::Fields::Named(_) => {
-            let members: Vec<_> = strct.fields.members().collect();
-            let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
+            let members = strct.fields.members();
+            let types = strct.fields.iter().map(|field| &field.ty);
             expand_named_struct(members, types)
         }
         syn::Fields::Unnamed(_) => {
-            let members: Vec<_> = strct
-                .fields
-                .members()
-                .map(|member| format_ident!("member{}", member))
-                .collect();
-            let types: Vec<_> = strct.fields.iter().map(|field| &field.ty).collect();
+            let types = strct.fields.iter().map(|field| &field.ty);
             quote! {
                 async fn create(
-                    registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::ComponentIdRef<'_>,
+                    app: &mut #auditeur::app::App,
                 ) -> Result<Self, #auditeur::Error> {
-                    let ( #(#members,)* ) = #auditeur::try_join!(
-                        #( <#types as #input_mod::Input>::create(registry, dependent) ),*
-                    )?;
-                    Ok(Self( #(#members),* ))
-                }
-
-                fn constraints() -> #auditeur::input::Constraints {
-                    #auditeur::input::Constraints::empty()
-                        #(.extend(<#types as #input_mod::Input>::constraints()))*
+                    Ok(Self(
+                        #( <#types as #auditeur::input::Input>::create(app).await?, )*
+                    ))
                 }
             }
         }
         syn::Fields::Unit => quote! {
             async fn create(
-                _: &#auditeur::app::Registry,
-                _: #auditeur::app::ComponentIdRef<'_>,
+                _: &mut #auditeur::app::App,
             ) -> Result<Self, #auditeur::Error> {
-                Self
-            }
-
-            fn constraints() -> #auditeur::input::Constraints {
-                #auditeur::input::Constraints::empty()
+                Ok(Self)
             }
         },
     };
 
     quote! {
-        impl #impl_generics #input_mod::Input for #ident #type_generics #where_clause {
+        impl #impl_generics #auditeur::input::Input for #ident #type_generics #where_clause {
             #implementations
         }
     }
 }
 
 pub fn expand_named_struct<I: ToTokens, T: ToTokens>(
-    idents: impl IntoIterator<Item = I, IntoIter: Clone>,
-    types: impl IntoIterator<Item = T, IntoIter: Clone>,
+    idents: impl IntoIterator<Item = I>,
+    types: impl IntoIterator<Item = T>,
 ) -> TokenStream {
     let auditeur = &*crate::AUDITEUR;
-    let idents_0 = idents.into_iter();
-    let idents_1 = idents_0.clone();
-    let types_0 = types.into_iter();
-    let types_1 = types_0.clone();
+    let idents = idents.into_iter();
+    let types = types.into_iter();
     quote! {
-        async fn create<'a>(
-            registry: &'a #auditeur::app::Registry,
-            dependent: #auditeur::app::ComponentIdRef<'_>,
+        async fn create(
+            app: &mut #auditeur::app::App,
         ) -> Result<Self, #auditeur::Error> {
-            let ( #(#idents_0,)* ) = #auditeur::try_join!(
-                #( <#types_0 as #auditeur::input::Input>::create(registry, dependent) ),*
-            )?;
-            Ok(Self { #(#idents_1),* })
-        }
-
-        fn constraints() -> #auditeur::input::Constraints {
-            #auditeur::input::Constraints::empty()
-                #(.extend(<#types_1 as #auditeur::input::Input>::constraints()))*
+            Ok(Self { #(
+                #idents: <#types as #auditeur::input::Input>::create(app).await?,
+            )* })
         }
     }
 }

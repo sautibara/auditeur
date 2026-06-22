@@ -4,7 +4,7 @@ use std::{
 };
 
 use auditeur_plugin::auditeur::{
-    app::{App, channels::EventSender},
+    app_old::{App, channels::EventSender},
     path_any::PathAnyConst,
     resource::listener::Component,
 };
