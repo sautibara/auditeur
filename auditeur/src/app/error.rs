@@ -84,6 +84,7 @@ impl Method {
 }
 
 /// Return type of [`AppFn::errors`], see [`AppErrors`].
+#[must_use]
 pub struct AppFnErrors;
 impl AppFnErrors {
     /// See [`AppErrors::get`].
@@ -121,6 +122,7 @@ impl<'a> AppErrors<'a> {
 }
 
 /// Return type of [`AppFn::errors_mut`], see [`AppErrorsMut`].
+#[must_use]
 pub struct AppFnErrorsMut;
 impl AppFnErrorsMut {
     #[expect(clippy::unused_self)]

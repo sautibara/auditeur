@@ -152,9 +152,10 @@ use futures::FutureExt;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
-use crate::app::map::AppFnMap;
-use crate::app::registry::AppFnRegistriesMut;
+use crate::app::map::{AppFnMap, AppFnMapMut};
+use crate::app::registry::{AppFnRegistriesMut, ErasedLoader, Registry};
 use crate::component::IdentifiedComponentType;
+use crate::component::bundle::Bundles;
 use crate::prelude::*;
 use crate::{
     app::{
@@ -163,9 +164,7 @@ use crate::{
         map::{
             AddedComponentId, AppMap, AppMapMut, Dependency, DependencyPart, DependencyType, Map,
         },
-        registry::{
-            AppRegistriesMut, ErasedComponent, MarkerLoader, Registrar, Registries, Registry,
-        },
+        registry::{AppRegistriesMut, ErasedComponent, MarkerLoader, Registrar, Registries},
     },
     children::HasChildren,
     component::{
@@ -218,38 +217,20 @@ struct Owned {
     event_sender_dependency: Option<Dependency<()>>,
 }
 
+struct OwnedHandle<'a> {
+    owned: &'a mut Owned,
+    handle: &'a HandleData,
+}
+
 impl App {
     /// Start building a new app.
-    #[must_use]
     pub fn builder() -> Builder {
         Builder::new()
     }
 
     /// Get a new handle to the app.
-    #[must_use]
-    pub async fn handle(&mut self) -> Self {
-        let dependency_info = self.handle.dependency.info();
-        let dependency_id = dependency_info.dependency.clone_inner();
-        let dependent_id = dependency_info.dependent.clone_inner();
-        let ty = dependency_info.ty;
-
-        let dependency = self
-            .map_mut()
-            .increment_dependency(DependencyPart {
-                dependent: dependent_id,
-                dependency: dependency_id,
-                ty,
-            })
-            .await;
-
-        Self {
-            variant: Inner::Handle,
-            handle: HandleData {
-                method_sender: self.handle.method_sender.clone(),
-                dependency,
-                new_dependency_type: self.handle.new_dependency_type,
-            },
-        }
+    pub fn handle(&mut self) -> impl AppMutFuture<'_, Output = Self> {
+        AppFn.handle().call(self)
     }
 }
 
@@ -385,6 +366,7 @@ impl AppRunner {
     }
 }
 
+#[must_use = "builder does nothing unless it is run"]
 pub struct Builder {
     children: Children,
 }
@@ -397,124 +379,111 @@ impl Builder {
     }
 
     fn run(self) -> App {
-        const NO_NAME_COLLISION: &str =
-            "there shouldn't be a name collision when initializing the app";
+        // Returns a 2-tuple of the owned registry and handle registry.
+        fn initialize(
+            sender: &flume::Sender<Method>,
+            children: Children,
+        ) -> Result<(App, App), Error> {
+            // Initialize the owned app.
+            let mut owned = Owned {
+                registrar: Registrar::default(),
+                errors: Errors::default(),
+                map: Map::default(),
+                event_sender: broadcast::Sender::new(1024),
+                event_sender_dependency: None,
+            };
 
-        // Initialize the owned app.
-        let event_sender = broadcast::Sender::new(1024);
-        let mut owned = Owned {
-            registrar: Registrar::default(),
-            errors: Errors::default(),
-            map: Map::default(),
-            event_sender,
-            event_sender_dependency: None,
-        };
+            // The three common ancestors (registries, app registry, app).
+            let (registries, _) = ErasedComponent::new::<Registries, Registries>(());
+            let registries_id = owned.add_child_validated(registries, None, sender)?;
 
-        let (method_sender, method_receiver) = flume::unbounded();
+            let (app_registry, _) = ErasedComponent::new::<Registries, App>(());
+            let app_registry_id =
+                owned.add_child_validated(app_registry, Some(registries_id), sender)?;
 
-        // Construct the app component first as the parent of all.
-        let (app_component, _) = ErasedComponent::new::<App, App>(());
-        let app_component_add =
-            map::AddChild::begin(&mut owned, app_component).expect(NO_NAME_COLLISION);
+            let (app_component, _) = ErasedComponent::new::<App, App>(());
+            let app_id = owned.add_child_validated(app_component, Some(app_registry_id), sender)?;
 
-        // Construct the handle dependency first to keep the app alive.
-        let handle_dependency = DependencyPart {
-            dependent: app_component_add.id().clone_inner(),
-            dependency: app_component_add.id().clone_inner(),
-            // Transient b/c main thread is expected to drop the handle.
-            ty: DependencyType::Transient,
-        };
-        let handle_dependency = owned.increment_dependency(handle_dependency, &method_sender);
+            // The main registries.
+            let (resources, _) = ErasedComponent::new::<Registries, Resources>(());
+            let (listen_messages, _) = ErasedComponent::new::<Registries, ListenMessages>(());
+            let (take_messages, _) = ErasedComponent::new::<Registries, TakeMessages>(());
+            let (bundles, _) = ErasedComponent::new::<Registries, Bundles>(());
 
-        // Then the owned dependency now that the app is being kept alive.
-        let owned_dependency = DependencyPart {
-            dependent: app_component_add.id().clone_inner(),
-            dependency: app_component_add.id().clone_inner(),
-            // Weak so that the owned handle doesn't keep itself alive.
-            ty: DependencyType::Weak,
-        };
-        let owned_dependency = owned.increment_dependency(owned_dependency, &method_sender);
+            owned.add_child_validated(resources, Some(app_id.clone_inner()), sender)?;
+            owned.add_child_validated(listen_messages, Some(app_id.clone_inner()), sender)?;
+            owned.add_child_validated(take_messages, Some(app_id.clone_inner()), sender)?;
+            owned.add_child_validated(bundles, Some(app_id.clone_inner()), sender)?;
 
-        // And construct the rest of our running handle.
-        let owned_handle = HandleData {
-            method_sender: method_sender.clone(),
-            dependency: owned_dependency,
-            new_dependency_type: DependencyType::Unremovable,
-        };
-
-        // Now add a bunch of the registries.
-        // WARN: The Registries registry *has* to be added first to be put in itself.
-        let app_as_parent = || Some(app_component_add.id().clone_inner());
-        owned
-            .add_registry::<Registries>(app_as_parent(), &owned_handle)
-            .expect(NO_NAME_COLLISION);
-        let app_registry = owned
-            .add_registry::<App>(app_as_parent(), &owned_handle)
-            .expect(NO_NAME_COLLISION);
-        let listen_registry = owned
-            .add_registry::<ListenMessages>(app_as_parent(), &owned_handle)
-            .expect(NO_NAME_COLLISION);
-
-        // Now we could finish adding the app component, now that its registry is added.
-        let app_id =
-            app_component_add.finish_validated(&mut owned, None, app_registry, &owned_handle);
-
-        // Add the app event channel, so that we could get a dependency to it.
-        let event_component =
-            ErasedComponent::from_loader::<ListenMessages>(registry::ErasedLoader::new(
+            // The event sender dependency.
+            let event_channel = ErasedComponent::from_loader::<ListenMessages>(ErasedLoader::new(
                 listen::PersistentChannelLoader::new(owned.event_sender.clone()),
             ));
-        let event_component_id = map::AddChild::begin(&mut owned, event_component)
-            .expect(NO_NAME_COLLISION)
-            .finish_validated(
-                &mut owned,
-                Some(app_id.clone_inner()),
-                listen_registry,
-                &owned_handle,
+            let event_id =
+                owned.add_child_validated(event_channel, Some(app_id.clone_inner()), sender)?;
+            let event_dependency = owned.increment_dependency(
+                DependencyPart {
+                    dependent: app_id.clone_inner(),
+                    dependency: event_id,
+                    ty: DependencyType::Unremovable,
+                },
+                sender,
             );
-        let event_dependency = owned.increment_dependency(
-            DependencyPart {
+            owned.event_sender_dependency = Some(event_dependency);
+
+            // Then add the rest of the children.
+            let children = children.adopted_by(app_id.deref().clone());
+            owned.add_children(children, sender);
+
+            // Construct the handle dependency first to keep the app alive.
+            let handle_dependency = DependencyPart {
                 dependent: app_id.clone_inner(),
-                dependency: event_component_id,
-                ty: DependencyType::Unremovable,
-            },
-            &method_sender,
-        );
-        owned.event_sender_dependency = Some(event_dependency);
+                dependency: app_id.clone_inner(),
+                // Transient b/c main thread is expected to drop the handle.
+                ty: DependencyType::Transient,
+            };
 
-        // Then add the rest of the children.
-        let children = self
-            .children
-            .with::<Resources>(())
-            // ListenMessages was already added above
-            .with::<TakeMessages>(())
-            .adopted_by(app_id.deref().clone());
+            let handle_app = App {
+                handle: HandleData {
+                    method_sender: sender.clone(),
+                    dependency: owned.increment_dependency(handle_dependency, sender),
+                    new_dependency_type: DependencyType::Unremovable,
+                },
+                variant: Inner::Handle,
+            };
 
-        owned.add_children(children, &owned_handle);
+            // Then the owned dependency now that the app is being kept alive.
+            let owned_dependency = DependencyPart {
+                dependent: app_id.clone_inner(),
+                dependency: app_id.clone_inner(),
+                // Weak so that the owned handle doesn't keep itself alive.
+                ty: DependencyType::Weak,
+            };
 
-        // Get our handles.
-        let handle = App {
-            variant: Inner::Handle,
-            handle: HandleData {
-                method_sender: method_sender.clone(),
-                dependency: handle_dependency,
-                new_dependency_type: DependencyType::Unremovable,
-            },
-        };
+            let owned_app = App {
+                handle: HandleData {
+                    method_sender: sender.clone(),
+                    dependency: owned.increment_dependency(owned_dependency, sender),
+                    new_dependency_type: DependencyType::Unremovable,
+                },
+                variant: Inner::Owned(Box::new(owned)),
+            };
 
-        let owned = App {
-            variant: Inner::Owned(Box::new(owned)),
-            handle: owned_handle,
-        };
+            Ok((owned_app, handle_app))
+        }
+
+        let (method_sender, method_receiver) = flume::unbounded();
+        let (owned_app, handle_app) =
+            initialize(&method_sender, self.children).expect("app shouldn't fail to initialize");
 
         // And start the owned app running in the background.
         let runner = AppRunner {
-            app: owned,
+            app: owned_app,
             method_receiver,
         };
         tokio::task::spawn(runner.run());
 
-        handle
+        handle_app
     }
 }
 
@@ -589,7 +558,7 @@ impl<'a> DependentMut<'a> {
     ///
     /// - [`Error::DependentNotFound`] if the component with id `dependent` does not exist.
     pub async fn with_dependent(self, dependent: ComponentId) -> Result<Self, Error> {
-        let dependency = self.app.handle.app_id().clone_inner();
+        let dependency = self.app.handle.app_id().deref().clone();
         let dependency = (self.app.map_mut())
             // All handles have an unremovable dependency on the app.
             .try_increment_dependency(dependency, dependent, DependencyType::Unremovable)
@@ -670,26 +639,67 @@ impl RegistryOf for App {
 
 pub struct AppFn;
 impl AppFn {
-    #[expect(clippy::unused_self)]
-    const fn registries_mut(self) -> AppFnRegistriesMut {
+    pub const fn registries_mut(self) -> AppFnRegistriesMut {
         AppFnRegistriesMut
     }
 
-    #[expect(clippy::unused_self)]
-    const fn map(self) -> AppFnMap {
+    pub const fn map(self) -> AppFnMap {
         AppFnMap
     }
 
     #[expect(clippy::unused_self)]
-    const fn errors(self) -> AppFnErrors {
+    const fn map_mut(self) -> AppFnMapMut {
+        AppFnMapMut
+    }
+
+    pub const fn errors(self) -> AppFnErrors {
         AppFnErrors
     }
 
-    #[expect(clippy::unused_self)]
-    const fn errors_mut(self) -> AppFnErrorsMut {
+    pub const fn errors_mut(self) -> AppFnErrorsMut {
         AppFnErrorsMut
     }
+}
 
+impl AppFn {
+    pub const fn handle(self) -> impl AppMutFnOnce<Output = App> {
+        Self::using_handle_mut(|handle| {
+            let method_sender = handle.method_sender.clone();
+            let new_dependency_type = handle.new_dependency_type;
+            let part = handle.dependency.info().clone_inner();
+
+            Self.map_mut()
+                .increment_dependency(part)
+                .map(move |dependency| {
+                    HandleData {
+                        method_sender,
+                        dependency,
+                        new_dependency_type,
+                    }
+                    .into_handle()
+                })
+        })
+    }
+}
+
+impl HandleData {
+    const fn into_handle(self) -> App {
+        App {
+            variant: Inner::Handle,
+            handle: self,
+        }
+    }
+
+    fn clone_in_owned(&self, owned: &mut Owned) -> Self {
+        Self {
+            method_sender: self.method_sender.clone(),
+            dependency: Dependency::clone_in_owned(&self.dependency, owned, &self.method_sender),
+            new_dependency_type: self.new_dependency_type,
+        }
+    }
+}
+
+impl AppFn {
     /// See [`App::get_event_listener`].
     pub const fn get_event_listener(
         self,
@@ -1014,6 +1024,16 @@ pub trait AppFnOnce: Send + Sync + Sized + 'static {
             after: other,
         }
     }
+
+    fn map<U: Send + Sync + 'static>(
+        self,
+        mapping: impl FnOnce(Self::Output) -> U + Send + Sync + 'static,
+    ) -> impl AppFnOnce<Output = U> {
+        AppFnMapping {
+            inner: self,
+            mapping,
+        }
+    }
 }
 
 #[must_use]
@@ -1037,6 +1057,16 @@ pub trait AppMutFnOnce: Send + Sync + Sized + 'static {
         Then {
             before: self,
             after: other,
+        }
+    }
+
+    fn map<U: Send + Sync + 'static>(
+        self,
+        mapping: impl FnOnce(Self::Output) -> U + Send + Sync + 'static,
+    ) -> impl AppMutFnOnce<Output = U> {
+        AppFnMapping {
+            inner: self,
+            mapping,
         }
     }
 }
@@ -1091,6 +1121,43 @@ app_future_def! {
                         this.after.into_inner().into();
                     let after = (after_inner.owned_fn)(after_inner.source, owned, handle).await;
                     (before, after)
+                },
+            }
+        }
+    }
+}
+
+struct AppFnMapping<A, M> {
+    inner: A,
+    mapping: M,
+}
+
+app_future_def! {
+    impl<
+        A: @AppFnOnce<Output = O>,
+        O: Send + Sync + 'static,
+        U: Send + Sync + 'static,
+        M: FnOnce(O) -> U + Send + Sync + 'static,
+    > @AppFnOnce for AppFnMapping<A, M>
+    {
+        type Output = U;
+        fn into_inner<'a>(self) -> impl @AppFnOnceInner<'a, Output = Self::Output> {
+            @AppFnOnceImpl {
+                pd: PhantomData,
+                source: self,
+                handle_fn: move |this, handle| {
+                    let inner: @AppFnOnceImpl<_, _, _, _, _, _> = this.inner.into_inner().into();
+                    let (method, fut) = (inner.handle_fn)(inner.source, handle);
+                    let fut = async {
+                        let value = fut.await;
+                        (this.mapping)(value)
+                    };
+                    (method, fut)
+                },
+                owned_fn: |this, owned, handle| async move {
+                    let inner: @AppFnOnceImpl<_, _, _, _, _, _> = this.inner.into_inner().into();
+                    let value = (inner.owned_fn)(inner.source, owned, handle).await;
+                    (this.mapping)(value)
                 },
             }
         }

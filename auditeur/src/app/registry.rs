@@ -4,10 +4,7 @@ use hashbrown::HashMap;
 use tokio::sync::oneshot;
 
 use crate::{
-    app::{
-        AppFn, AppMutFnOnce, AppMutFuture, Inner,
-        map::{AddedComponentId, Dependency, DependencyPart, DependencyType},
-    },
+    app::{AppFn, AppMutFnOnce, AppMutFuture, Inner, map::Dependency},
     component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
     prelude::*,
 };
@@ -246,7 +243,6 @@ pub(in crate::app) struct Registrar {
 #[derive(Debug)]
 struct Register {
     component: oneshot::Receiver<ErasedComponent>,
-    registry_dependency: Dependency<()>,
 }
 
 impl Registrar {
@@ -255,7 +251,7 @@ impl Registrar {
     /// # Panics
     ///
     /// - If a component with the same id has already been added.
-    pub(super) fn add(&mut self, component: ErasedComponent, registry_dependency: Dependency<()>) {
+    pub(super) fn add(&mut self, component: ErasedComponent) {
         let id = component.object.component_id_dyn();
 
         let entry = self.components.entry(id);
@@ -270,7 +266,6 @@ impl Registrar {
 
         entry.insert(Register {
             component: receiver,
-            registry_dependency,
         });
     }
 
@@ -287,7 +282,6 @@ impl Registrar {
                 assert!(!component.object.is_loaded());
 
                 drop(component);
-                drop(register.registry_dependency);
 
                 callback();
             });
@@ -328,13 +322,14 @@ impl BorrowedComponent {
 pub(super) enum Method {
     Add(Children),
     Borrow {
-        dependency: ComponentId,
-        dependent: AddedComponentId,
-        ty: DependencyType,
-        sender: oneshot::Sender<Result<Dependency<BorrowedComponent>, Error>>,
+        dependency: Dependency<()>,
+        sender: oneshot::Sender<Dependency<BorrowedComponent>>,
+    },
+    SpawnLoad {
+        dependency: Dependency<()>,
     },
     SpawnUnload {
-        id: ComponentId,
+        dependency: Dependency<()>,
     },
 }
 
@@ -342,26 +337,22 @@ impl Method {
     pub async fn run(self, app: &mut App) {
         match self {
             Self::Add(children) => app.registries_mut().add(children).await,
-            Self::Borrow {
-                dependency,
-                dependent,
-                ty,
-                sender,
-            } => {
-                let res = app
-                    .registries_mut()
-                    .borrow_as(dependency, dependent, ty)
-                    .await;
-                let _ = sender.send(res);
+            Self::Borrow { dependency, sender } => {
+                let component = app.registries_mut().borrow(dependency).await;
+                let _ = sender.send(component);
             }
-            Self::SpawnUnload { id } => {
-                app.registries_mut().spawn_unload(id).await;
+            Self::SpawnLoad { dependency } => {
+                app.registries_mut().spawn_load(dependency).await;
+            }
+            Self::SpawnUnload { dependency } => {
+                app.registries_mut().spawn_unload(dependency).await;
             }
         }
     }
 }
 
 /// Return type of [`AppFn::registries_mut()`], see [`AppRegistriesMut`].
+#[must_use]
 pub struct AppFnRegistriesMut;
 impl AppFnRegistriesMut {
     /// See [`AppRegistriesMut::add`].
@@ -373,7 +364,7 @@ impl AppFnRegistriesMut {
                 children,
                 |children, _| super::Method::Registries(Method::Add(children)),
                 async |children, owned, handle| {
-                    owned.add_children(children, handle);
+                    owned.add_children(children, &handle.method_sender);
                 },
             )
         })
@@ -458,12 +449,18 @@ impl<'a> AppRegistriesMut<'a> {
     where
         T: Send + 'static,
     {
+        let dependent = self.app.dependent().dependent().clone();
+        let ty = self.app.dependent().dependency_type();
+        let dependency = (self.app.map_mut())
+            .try_increment_dependency(id, dependent, ty)
+            .await?;
+
         // First take the erased component from the registrar.
-        let dependency = self.app.registries_mut().borrow(id.clone()).await?;
+        let dependency = self.app.registries_mut().borrow(dependency).await;
 
         // Then get the values from the dependency necessary to modify the app's dependent.
         let dependency_id = Dependency::info_of(&dependency).dependency.clone_inner();
-        let ty = self.app.handle.new_dependency_type;
+        let ty = Dependency::info_of(&dependency).ty;
 
         let component = dependency.value;
         let handle = dependency.handle;
@@ -488,87 +485,69 @@ impl<'a> AppRegistriesMut<'a> {
 
     /// Take an (erased) component from the registrar in order to call get on it.
     ///
-    /// This gets the component using `dependent` as the dependent, even if the handle has a
-    /// different dependent.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::DependencyNotFound`] if the component has not been added to this registry.
-    /// - [`Error::DependencyLoop`] if the component was already taken previously for a `get` call.
-    fn borrow_as(
-        self,
-        dependency: ComponentId,
-        dependent: AddedComponentId,
-        ty: DependencyType,
-    ) -> impl AppMutFuture<'a, Output = Result<Dependency<BorrowedComponent>, Error>> {
-        AppFn::oneshot_mut(
-            (dependency, dependent, ty),
-            |(dependency, dependent, ty), sender, _| {
-                super::Method::Registries(Method::Borrow {
-                    dependency,
-                    sender,
-                    dependent,
-                    ty,
-                })
-            },
-            async |(dependency, dependent, ty), owned, handle| {
-                let dependency_id = dependency;
-
-                let dependency =
-                    (owned.map)
-                        .validate_id(dependency_id.clone())
-                        .map_err(|dependency| Error::DependencyNotFound {
-                            dependency,
-                            dependent: dependent.deref().clone(),
-                        })?;
-
-                let part = DependencyPart {
-                    dependency,
-                    dependent: dependent.clone_inner(),
-                    ty,
-                };
-
-                let dependency = owned.increment_dependency_for_get(part, &handle.method_sender);
-
-                let component = owned.registrar.borrow(&dependency_id).ok_or_else(|| {
-                    Error::DependencyNotFound {
-                        dependency: dependency_id,
-                        dependent: dependent.deref().clone(),
-                    }
-                })?;
-
-                Ok(Dependency {
-                    value: component,
-                    handle: dependency.handle,
-                })
-            },
-        )
-        .call(self.app)
-    }
-
-    /// Take an (erased) component from the registrar in order to call get on it.
-    ///
-    /// This gets the component using the handle's current dependent as the dependent.
-    ///
     /// # Errors
     ///
     /// - [`Error::DependencyNotFound`] if the component has not been added to this registry.
     /// - [`Error::DependencyLoop`] if the component was already taken previously for a `get` call.
     fn borrow(
         self,
-        dependency: ComponentId,
-    ) -> impl AppMutFuture<'a, Output = Result<Dependency<BorrowedComponent>, Error>> {
-        let dependent = self.app.dependent().dependent_added_id().clone_inner();
-        let ty = self.app.dependent().dependency_type();
-        self.borrow_as(dependency, dependent, ty)
+        dependency: Dependency<()>,
+    ) -> impl AppMutFuture<'a, Output = Dependency<BorrowedComponent>> {
+        AppFn::oneshot_mut(
+            dependency,
+            |dependency, sender, _| {
+                super::Method::Registries(Method::Borrow { dependency, sender })
+            },
+            async |dependency, owned, _| {
+                let component = owned
+                    .registrar
+                    .borrow(&dependency.info().dependency)
+                    .expect("component should be added to its registry, since we have a dependency to it");
+
+                dependency.insert(component)
+            },
+        )
+        .call(self.app)
     }
 
-    pub(super) async fn spawn_unload(self, id: ComponentId) {
+    pub(super) async fn spawn_load(self, dependency: Dependency<()>) {
         // First take the erased component from the registrar.
-        let mut app = self.app.dependent_mut().with_ty(DependencyType::Transient);
-        let Ok(component) = app.registries_mut().borrow(id.clone()).await else {
-            return;
+        let component = self.app.registries_mut().borrow(dependency).await;
+
+        // Then, with an app handle, we continue loading the component.
+        let fut = async move |app: &mut App| {
+            let mut app = (app.dependent_mut())
+                .with_ty(Dependency::info_of(&component).ty)
+                .with_added_dependent(Dependency::info_of(&component).dependent.clone_inner())
+                .await;
+
+            Dependency::consume(component, async move |component| {
+                component
+                    .modify(async |component| {
+                        // Then load the component in the current app.
+                        let res = component.object.get(&mut app).await;
+                        let _ = app.errors_mut().drain_result(res).await;
+                    })
+                    .await;
+            })
+            .await;
         };
+
+        // But we can't load it if we're the owned app - it would deadlock in the method queue.
+        if matches!(self.app.variant, Inner::Handle) {
+            fut(self.app).await;
+        } else {
+            // So if we are the owned app, we spawn another task that runs it with a handle.
+            let mut handle = self.app.handle().await;
+            tokio::task::spawn(async move {
+                fut(&mut handle).await;
+            });
+        }
+    }
+
+    pub(super) async fn spawn_unload(self, dependency: Dependency<()>) {
+        // First take the erased component from the registrar.
+        let component = self.app.registries_mut().borrow(dependency).await;
 
         // Then, with an app handle, we continue unloading the component.
         let fut = async move |app: &mut App| {
@@ -586,8 +565,6 @@ impl<'a> AppRegistriesMut<'a> {
             })
             .await;
         };
-
-        drop(app);
 
         // But we can't load it if we're the owned app - it would deadlock in the method queue.
         if matches!(self.app.variant, Inner::Handle) {
