@@ -22,6 +22,8 @@ pub enum Event {
     /// The app is requesting for a [removable](super::map::DependencyType::Removable) dependency
     /// to be removed.
     RequestDependencyRemoval { id: DependencyId },
+    /// The app has exited.
+    Exit,
 }
 
 /// The state of a component in the [`App`].

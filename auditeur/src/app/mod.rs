@@ -152,10 +152,10 @@ use futures::FutureExt;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
-use crate::app::map::{AppFnMap, AppFnMapMut};
-use crate::app::registry::{AppFnRegistriesMut, ErasedLoader, Registry};
-use crate::component::IdentifiedComponentType;
+use crate::app::map::{AppFnMap, AppFnMapMut, RequestSet, Waiter};
+use crate::app::registry::{AppFnRegistriesMut, ErasedLoader, Loaded, Loader, Registry};
 use crate::component::bundle::Bundles;
+use crate::component::{IdentifiedComponent, IdentifiedComponentType};
 use crate::prelude::*;
 use crate::{
     app::{
@@ -164,7 +164,7 @@ use crate::{
         map::{
             AddedComponentId, AppMap, AppMapMut, Dependency, DependencyPart, DependencyType, Map,
         },
-        registry::{AppRegistriesMut, ErasedComponent, MarkerLoader, Registrar, Registries},
+        registry::{AppRegistriesMut, ErasedComponent, Registrar, Registries},
     },
     children::HasChildren,
     component::{
@@ -232,6 +232,30 @@ impl App {
     pub fn handle(&mut self) -> impl AppMutFuture<'_, Output = Self> {
         AppFn.handle().call(self)
     }
+
+    /// Tell the app to exit.
+    ///
+    /// This unloads and removes all components in the app, leading it to exit. Once that succeeds,
+    /// the [`Waiter`] returned will be released.
+    ///
+    /// WARNING: The app will only exit once all components are unloaded. App handles keep the app
+    /// loaded, so awaiting the returned waiter while holding on to an app handle will deadlock.
+    pub fn exit(&mut self) -> impl AppMutFuture<'_, Output = Waiter> {
+        AppFn.exit().call(self)
+    }
+
+    /// Consumes this handle and waits for the app to exit.
+    ///
+    /// Note that this doesn't request for the app to exit, it just waits for it. As such, this is
+    /// most useful to be called right after [`Builder::spawn`].
+    pub async fn wait_for_exit(mut self) {
+        let waiter = (self.map_mut())
+            .wait_for(RequestSet::remove(Self::component_id()))
+            .await;
+        drop(self);
+
+        waiter.wait().await;
+    }
 }
 
 /// Methods relating to builtin components: [`Resource`]s, [`ListenMessage`]s, and [`TakeMessage`]s.
@@ -294,6 +318,15 @@ impl App {
         AppMapMut::new(self)
     }
 
+    /// Gets an event listener from the app.
+    ///
+    /// This is identical to [`AppListenMut::listener`], except that this returns an
+    /// [`AppMutFuture`], allowing it to be composed with other methods.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DependencyNotFound`] if the event message channel has been unloaded.
+    ///     - This is only possible if the app has unloaded and is thus in the process of exiting.
     pub fn get_event_listener(
         &mut self,
     ) -> impl AppMutFuture<'_, Output = Result<Listener<Event>, Error>> {
@@ -307,6 +340,10 @@ impl App {
     ) -> impl AppMutFuture<'_, Output = Result<Listener<Event>, Error>> {
         AppFn.get_event_listener_as(dependent, ty).call(self)
     }
+
+    fn release_event_listener(&mut self) -> impl AppMutFuture<'_, Output = ()> {
+        AppFn.release_event_listener().call(self)
+    }
 }
 
 /// A message from a handle to run a method in the app.
@@ -314,6 +351,10 @@ enum Method {
     Registries(registry::Method),
     Errors(error::Method),
     Map(map::Method),
+
+    Exit,
+    ReleaseEventListener,
+
     GetEventListener {
         dependent: AddedComponentId,
         ty: DependencyType,
@@ -333,6 +374,9 @@ impl Method {
                 Self::Registries(method) => method.run(app).await,
                 Self::Errors(method) => method.run(app).await,
                 Self::Map(method) => method.run(app).await,
+                // caller is expected to check for it
+                Self::Exit => (),
+                Self::ReleaseEventListener => app.release_event_listener().await,
                 Self::Then {
                     before: first,
                     after,
@@ -351,6 +395,14 @@ impl Method {
             }
         }
     }
+
+    /// Returns `true` if the method is [`Exit`].
+    ///
+    /// [`Exit`]: Method::Exit
+    #[must_use]
+    const fn is_exit(&self) -> bool {
+        matches!(self, Self::Exit)
+    }
 }
 
 struct AppRunner {
@@ -360,7 +412,9 @@ struct AppRunner {
 
 impl AppRunner {
     async fn run(mut self) {
-        while let Ok(method) = self.method_receiver.recv_async().await {
+        while let Ok(method) = self.method_receiver.recv_async().await
+            && !method.is_exit()
+        {
             method.run(&mut self.app).await;
         }
     }
@@ -378,7 +432,9 @@ impl Builder {
         }
     }
 
-    fn run(self) -> App {
+    #[expect(clippy::missing_panics_doc)]
+    #[allow(clippy::must_use_candidate)] // no?
+    pub fn spawn(self) -> App {
         // Returns a 2-tuple of the owned registry and handle registry.
         fn initialize(
             sender: &flume::Sender<Method>,
@@ -484,6 +540,10 @@ impl Builder {
         tokio::task::spawn(runner.run());
 
         handle_app
+    }
+
+    pub async fn run(self) {
+        self.spawn().wait_for_exit().await;
     }
 }
 
@@ -622,14 +682,38 @@ impl DerefMut for DependentMut<'_> {
 }
 
 impl Registry for App {
-    type Loader = MarkerLoader<Self>;
-    type Loaded = ();
+    type Loader = AppLoader;
+    type Loaded = AppLoaded;
 }
 
 impl Component<Self> for App {
     type ComponentInput = ();
     fn register((): Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
-        (MarkerLoader::new(Self::id()), Children::new())
+        (AppLoader(()), Children::new())
+    }
+}
+
+pub struct AppLoader(());
+impl Loader for AppLoader {
+    type Loaded = AppLoaded;
+    async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
+        Ok(AppLoaded(()))
+    }
+}
+
+impl IdentifiedComponent for AppLoader {
+    fn component_id_dyn(&self) -> ComponentId {
+        App::component_id()
+    }
+}
+
+#[derive(Any)]
+pub struct AppLoaded(());
+impl Loaded for AppLoaded {
+    async fn unload(self, app: &mut App) -> Result<(), Error> {
+        app.release_event_listener().await;
+        let _ = app.exit().await;
+        Ok(())
     }
 }
 
@@ -677,6 +761,13 @@ impl AppFn {
                     }
                     .into_handle()
                 })
+        })
+    }
+
+    pub const fn exit(self) -> impl AppMutFnOnce<Output = Waiter> {
+        Self::using_handle_mut(|_| {
+            Self.map_mut()
+                .request(RequestSet::remove(App::component_id()))
         })
     }
 }
@@ -752,6 +843,19 @@ impl AppFn {
                         handle,
                     },
                 })
+            },
+        )
+    }
+
+    #[expect(clippy::unused_self)]
+    const fn release_event_listener(self) -> impl AppMutFnOnce<Output = ()> {
+        Self::spawn_mut(
+            (),
+            |(), _| Method::ReleaseEventListener,
+            async |(), owned, handle| {
+                if let Some(dependency) = owned.event_sender_dependency.take() {
+                    Dependency::drop_in_owned(dependency, owned, handle);
+                }
             },
         )
     }

@@ -373,6 +373,11 @@ impl Map {
         Ok(())
     }
 
+    fn on_app_removal(channels: Channels<'_>) {
+        let _ = channels.event_sender.send(Event::Exit);
+        let _ = channels.method_sender.send(super::Method::Exit);
+    }
+
     const fn prevent_removal(listener: &ListenerId) -> bool {
         matches!(
             listener,
@@ -449,6 +454,11 @@ impl Map {
                     *load_index = LoadIndex(load_index.0 + 1);
                 } else if matches!(change, ComponentStateChange::Remove) {
                     self.components.remove(id);
+
+                    // Check if we're removing the app, and if so, exit.
+                    if *id == App::component_id() {
+                        Self::on_app_removal(channels);
+                    }
                 }
             }
             ListenerId::Dependency { id, change } => {
@@ -642,19 +652,34 @@ impl RequestSet {
     }
 
     #[must_use]
-    pub fn remove(mut self, component: ComponentId) -> Self {
+    pub fn remove(component: ComponentId) -> Self {
+        Self::new().and_remove(component)
+    }
+
+    #[must_use]
+    pub fn and_remove(mut self, component: ComponentId) -> Self {
         self.set.insert(Request::RemoveComponent(component));
         self
     }
 
     #[must_use]
-    pub fn unload(mut self, component: ComponentId) -> Self {
+    pub fn unload(component: ComponentId) -> Self {
+        Self::new().and_unload(component)
+    }
+
+    #[must_use]
+    pub fn and_unload(mut self, component: ComponentId) -> Self {
         self.set.insert(Request::UnloadComponent(component));
         self
     }
 
     #[must_use]
-    pub fn remove_dependency(mut self, dependency: DependencyId) -> Self {
+    pub fn remove_dependency(dependency: DependencyId) -> Self {
+        Self::new().and_remove_dependency(dependency)
+    }
+
+    #[must_use]
+    pub fn and_remove_dependency(mut self, dependency: DependencyId) -> Self {
         self.set.insert(Request::RemoveDependency(dependency));
         self
     }
@@ -781,11 +806,11 @@ impl Owned {
         );
     }
 
-    pub(super) fn request(
+    pub(super) fn wait_for(
         &mut self,
         request: RequestSet,
         sender: &flume::Sender<super::Method>,
-    ) -> Waiter {
+    ) -> (ListenerId, Waiter) {
         let (releaser, waiter) = waiter_channel();
         let release_id = ListenerId::Release(releaser);
         let added = self.map.add_listener(
@@ -839,7 +864,23 @@ impl Owned {
             },
         );
 
-        waiter
+        (release_id, waiter)
+    }
+
+    pub(super) fn request(
+        &mut self,
+        request: RequestSet,
+        sender: &flume::Sender<super::Method>,
+    ) -> (ListenerId, Waiter) {
+        let (release_id, waiter) = self.wait_for(request, sender);
+        self.map.request(
+            &release_id,
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+        (release_id, waiter)
     }
 }
 
@@ -1148,6 +1189,10 @@ pub(super) enum Method {
         set: RequestSet,
         sender: oneshot::Sender<Waiter>,
     },
+    WaitFor {
+        set: RequestSet,
+        sender: oneshot::Sender<Waiter>,
+    },
     // Dependency
     TryIncrementDependency {
         dependency: ComponentId,
@@ -1173,6 +1218,10 @@ impl Method {
             }
             Self::Request { set, sender } => {
                 let waiter = app.map_mut().request(set).await;
+                let _ = sender.send(waiter);
+            }
+            Self::WaitFor { set, sender } => {
+                let waiter = app.map_mut().wait_for(set).await;
                 let _ = sender.send(waiter);
             }
             Self::IncrementDependency { id, sender } => {
@@ -1234,7 +1283,26 @@ impl AppFnMapMut {
                     sender,
                 })
             },
-            async |request, owned, handle| owned.request(request, &handle.method_sender),
+            async |request, owned, handle| {
+                let (_, waiter) = owned.request(request, &handle.method_sender);
+                waiter
+            },
+        )
+    }
+
+    pub const fn wait_for(self, request: RequestSet) -> impl AppMutFnOnce<Output = Waiter> {
+        AppFn::oneshot_mut(
+            request,
+            |request, sender, _| {
+                super::Method::Map(Method::Request {
+                    set: request,
+                    sender,
+                })
+            },
+            async |request, owned, handle| {
+                let (_, waiter) = owned.wait_for(request, &handle.method_sender);
+                waiter
+            },
         )
     }
 }
@@ -1326,6 +1394,10 @@ impl<'a> AppMapMut<'a> {
 
     pub fn request(self, request: RequestSet) -> impl AppMutFuture<'a, Output = Waiter> {
         AppFn.map_mut().request(request).call(self.app)
+    }
+
+    pub fn wait_for(self, request: RequestSet) -> impl AppMutFuture<'a, Output = Waiter> {
+        AppFn.map_mut().wait_for(request).call(self.app)
     }
 }
 
