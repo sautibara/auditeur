@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    fmt::Display,
     hash::Hash,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
     sync::Arc,
@@ -163,7 +164,7 @@ pub struct Listener {
     pub blocked_on: im::HashSet<ListenerId>,
 
     prevent_removal: bool,
-    requested: bool,
+    pub requested: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -611,14 +612,52 @@ impl Map {
     }
 }
 
-struct DependencyInfo {
-    dependency: Dependency<()>,
-    new_dependency: bool,
-    new_loaded: bool,
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Request {
+    RemoveComponent(ComponentId),
+    UnloadComponent(ComponentId),
+    RemoveDependency(DependencyId),
 }
 
-struct DecrementInfo {
-    dependency_removed: bool,
+impl Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemoveComponent(id) => write!(f, "remove component '{id}'"),
+            Self::UnloadComponent(id) => write!(f, "unload component '{id}'"),
+            Self::RemoveDependency(id) => write!(f, "remove dependency '{id}'"),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct RequestSet {
+    pub set: hashbrown::HashSet<Request>,
+}
+
+impl RequestSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn remove(mut self, component: ComponentId) -> Self {
+        self.set.insert(Request::RemoveComponent(component));
+        self
+    }
+
+    #[must_use]
+    pub fn unload(mut self, component: ComponentId) -> Self {
+        self.set.insert(Request::UnloadComponent(component));
+        self
+    }
+
+    #[must_use]
+    pub fn remove_dependency(mut self, dependency: DependencyId) -> Self {
+        self.set.insert(Request::RemoveDependency(dependency));
+        self
+    }
 }
 
 impl Owned {
@@ -741,6 +780,67 @@ impl Owned {
             },
         );
     }
+
+    pub(super) fn request(
+        &mut self,
+        request: RequestSet,
+        sender: &flume::Sender<super::Method>,
+    ) -> Waiter {
+        let (releaser, waiter) = waiter_channel();
+        let release_id = ListenerId::Release(releaser);
+        let added = self.map.add_listener(
+            &release_id,
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+        assert!(
+            added,
+            "added releaser shouldn't be a duplicate, since we just created it"
+        );
+
+        for request in request.set {
+            let child_id = match &request {
+                Request::RemoveComponent(id) => ListenerId::remove_component(id.clone()),
+                Request::UnloadComponent(id) => {
+                    let Some(component) = self.map.components.get(id) else {
+                        self.add_error(Error::InvalidRequest { request });
+                        continue;
+                    };
+
+                    ListenerId::unload_component(id.clone(), component.load_index)
+                }
+                Request::RemoveDependency(id) => ListenerId::remove_dependency(id.clone()),
+            };
+
+            if !self.map.listeners.contains_key(&child_id) {
+                self.add_error(Error::InvalidRequest { request });
+                continue;
+            }
+
+            self.map.add_listener_block(
+                release_id.clone(),
+                child_id,
+                Channels {
+                    event_sender: &self.event_sender,
+                    method_sender: sender,
+                },
+            );
+        }
+
+        // Now that we've gone through the entire request set, we should check if the listener
+        // can already be removed in the case that the request set was empty.
+        self.map.check_removal(
+            &release_id,
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+
+        waiter
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -793,10 +893,16 @@ impl SubAssign<DependencyType> for DependencyTypeCounts {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct DependencyId {
     pub dependent: ComponentId,
     pub dependency: ComponentId,
+}
+
+impl Display for DependencyId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "'{}' -> '{}'", self.dependent, self.dependency)
+    }
 }
 
 #[derive(Debug)]
@@ -1038,6 +1144,10 @@ pub(super) enum Method {
     Get {
         sender: oneshot::Sender<Map>,
     },
+    Request {
+        set: RequestSet,
+        sender: oneshot::Sender<Waiter>,
+    },
     // Dependency
     TryIncrementDependency {
         dependency: ComponentId,
@@ -1060,6 +1170,10 @@ impl Method {
             Self::Get { sender } => {
                 let map = app.map().get().await;
                 let _ = sender.send(map);
+            }
+            Self::Request { set, sender } => {
+                let waiter = app.map_mut().request(set).await;
+                let _ = sender.send(waiter);
             }
             Self::IncrementDependency { id, sender } => {
                 let dependency = app.map_mut().increment_dependency(id).await;
@@ -1097,7 +1211,7 @@ impl AppFnMap {
 }
 
 #[must_use]
-pub(super) struct AppFnMapMut;
+pub struct AppFnMapMut;
 impl AppFnMapMut {
     #[expect(clippy::unused_self)]
     pub(super) const fn increment_dependency(
@@ -1108,6 +1222,19 @@ impl AppFnMapMut {
             id,
             |id, sender, _| super::Method::Map(Method::IncrementDependency { id, sender }),
             async |id, owned, handle| owned.increment_dependency(id, &handle.method_sender),
+        )
+    }
+
+    pub const fn request(self, request: RequestSet) -> impl AppMutFnOnce<Output = Waiter> {
+        AppFn::oneshot_mut(
+            request,
+            |request, sender, _| {
+                super::Method::Map(Method::Request {
+                    set: request,
+                    sender,
+                })
+            },
+            async |request, owned, handle| owned.request(request, &handle.method_sender),
         )
     }
 }
@@ -1195,6 +1322,10 @@ impl<'a> AppMapMut<'a> {
             },
         )
         .call(self.app)
+    }
+
+    pub fn request(self, request: RequestSet) -> impl AppMutFuture<'a, Output = Waiter> {
+        AppFn.map_mut().request(request).call(self.app)
     }
 }
 

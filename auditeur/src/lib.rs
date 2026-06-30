@@ -104,6 +104,8 @@ pub mod prelude {
 
 use prelude::*;
 
+use crate::app::map::Request;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("component '{id}' had an error: {error:?}")]
@@ -146,6 +148,8 @@ pub enum Error {
         component.registry
     )]
     RegistryNotFound { component: ComponentId },
+    #[error("attemped to request the app to {request}, but the request was invalid")]
+    InvalidRequest { request: Request },
 }
 
 /// A utility enum for when you have two different values that you may want to return.

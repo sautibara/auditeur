@@ -290,7 +290,7 @@ impl App {
     }
 
     #[must_use]
-    const fn map_mut(&mut self) -> AppMapMut<'_> {
+    pub const fn map_mut(&mut self) -> AppMapMut<'_> {
         AppMapMut::new(self)
     }
 
@@ -647,8 +647,7 @@ impl AppFn {
         AppFnMap
     }
 
-    #[expect(clippy::unused_self)]
-    const fn map_mut(self) -> AppFnMapMut {
+    pub const fn map_mut(self) -> AppFnMapMut {
         AppFnMapMut
     }
 
