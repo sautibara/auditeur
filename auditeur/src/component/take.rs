@@ -65,7 +65,7 @@ impl<M: TakeMessage> Input for Taker<M> {
 pub struct TakeMessages;
 
 impl Registry for TakeMessages {
-    type Loader = ErasedLoader<Self>;
+    type Loader = ErasedLoader<TakeLoaded>;
     type Loaded = TakeLoaded;
 }
 
@@ -75,7 +75,7 @@ impl RegistryOf for TakeMessages {
 
 impl<M: TakeMessage> Component<TakeMessages> for M {
     type ComponentInput = ();
-    fn register((): Self::ComponentInput) -> (ErasedLoader<TakeMessages>, Children) {
+    fn register((): Self::ComponentInput) -> (ErasedLoader<TakeLoaded>, Children) {
         (ErasedLoader::new(TakeLoader::<M>::new()), Children::new())
     }
 }
@@ -90,7 +90,7 @@ impl<M: TakeMessage> TakeLoader<M> {
     }
 }
 
-impl<M: TakeMessage> Loader for TakeLoader<M> {
+impl<M: TakeMessage> Loader<ErasedLoader<TakeLoaded>> for TakeLoader<M> {
     type Loaded = TakeLoaded;
     async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
         Ok(TakeLoaded::new::<M>())

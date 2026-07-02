@@ -37,6 +37,9 @@ pub struct Map {
 pub struct MapComponent {
     pub parent: Option<ComponentId>,
     pub load_index: LoadIndex,
+
+    initialized: bool,
+    requested: bool,
 }
 
 impl Default for MapComponent {
@@ -44,6 +47,8 @@ impl Default for MapComponent {
         Self {
             parent: None,
             load_index: LoadIndex(0),
+            initialized: false,
+            requested: false,
         }
     }
 }
@@ -163,8 +168,9 @@ pub struct Listener {
     pub blocking: im::HashSet<ListenerId>,
     pub blocked_on: im::HashSet<ListenerId>,
 
-    prevent_removal: bool,
     pub requested: bool,
+
+    prevent_removal: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -251,6 +257,18 @@ impl Map {
                 &ListenerId::remove_component(child.0),
                 channels,
             );
+        }
+    }
+
+    pub(super) fn mark_initialized(&mut self, id: ComponentId, channels: Channels<'_>) {
+        let Some(component) = self.components.get_mut(&id) else {
+            return;
+        };
+
+        component.initialized = true;
+        if component.initialized && component.requested {
+            let listener = ListenerId::remove_component(id);
+            self.release_prevented_removal(&listener, channels);
         }
     }
 
@@ -407,7 +425,7 @@ impl Map {
 
                     // Actually initiate the load.
                     let _ = channels.method_sender.send(super::Method::Registries(
-                        super::registry::Method::SpawnLoad { dependency },
+                        super::registry::Method::SpawnOnLoad { dependency },
                     ));
                 }
             }
@@ -485,9 +503,16 @@ impl Map {
             // remove propagates and also allows it to be removed
             ListenerId::Component {
                 change: ComponentStateChange::Remove,
-                ..
+                id,
             } => {
-                self.release_prevented_removal(listener, channels);
+                if let Some(component) = self.components.get_mut(id) {
+                    component.requested = true;
+
+                    if component.initialized && component.requested {
+                        self.release_prevented_removal(listener, channels);
+                    }
+                }
+
                 true
             }
             // unload doesn't propagate to its blockers, only its deactivation
@@ -777,7 +802,7 @@ impl Owned {
             self.map.adopt(id.clone_inner(), parent, channels);
         }
 
-        self.registrar.add(component);
+        self.registrar.add(component, sender);
 
         Ok(id)
     }
@@ -1080,7 +1105,7 @@ impl<T: Send + Sync> Dependency<T> {
     /// # Panics
     ///
     /// - If `app` is not the app that this dependency was obtained in.
-    fn drop_in(this: Self, app: &mut App) -> impl AppMutFuture<'_, Output = ()> {
+    pub fn drop_in(this: Self, app: &mut App) -> impl AppMutFuture<'_, Output = ()> {
         drop(this.value);
         this.handle.drop_in(app)
     }
@@ -1207,6 +1232,10 @@ pub(super) enum Method {
     DecrementDependency {
         id: DependencyPart,
     },
+    // Internals
+    MarkInitialized {
+        component: ComponentId,
+    },
 }
 
 impl Method {
@@ -1241,6 +1270,7 @@ impl Method {
                 let _ = sender.send(dependency);
             }
             Self::DecrementDependency { id } => app.map_mut().decrement_dependency(id).await,
+            Self::MarkInitialized { component } => app.map_mut().mark_initialized(component).await,
         }
     }
 }
@@ -1399,6 +1429,24 @@ impl<'a> AppMapMut<'a> {
     pub fn wait_for(self, request: RequestSet) -> impl AppMutFuture<'a, Output = Waiter> {
         AppFn.map_mut().wait_for(request).call(self.app)
     }
+
+    pub(super) async fn mark_initialized(self, component: ComponentId) {
+        AppFn::spawn_mut(
+            component,
+            |component, _| super::Method::Map(Method::MarkInitialized { component }),
+            async |component, owned, handle| {
+                owned.map.mark_initialized(
+                    component,
+                    Channels {
+                        event_sender: &owned.event_sender,
+                        method_sender: &handle.method_sender,
+                    },
+                );
+            },
+        )
+        .call(self.app)
+        .await;
+    }
 }
 
 /// A component id that is (loosely) guaranteed to be currently alive in the map.
@@ -1417,6 +1465,10 @@ impl AddedComponentId {
 
     pub fn app() -> Self {
         Self(ComponentId::within::<App, App>())
+    }
+
+    pub const fn new_inner(id: ComponentId) -> Self {
+        Self(id)
     }
 }
 

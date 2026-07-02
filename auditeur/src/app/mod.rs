@@ -590,6 +590,10 @@ impl<'a> Dependent<'a> {
         self.app.handle.dependent_added_id()
     }
 
+    const fn app_added_id(self) -> &'a AddedComponentId {
+        self.app.handle.app_id()
+    }
+
     /// Returns the [`DependencyType`] that [dependencies](Dependency) obtained from this app will
     /// use.
     #[must_use]

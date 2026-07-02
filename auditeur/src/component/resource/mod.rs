@@ -1,10 +1,15 @@
 //! Items that can be added to an [`App`] and potentially run
 
+use std::pin::Pin;
+
 use crate::{
     app::{
         event::Event,
-        map::DependencyType,
-        registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
+        map::{Dependency, DependencyType},
+        registry::{
+            EitherCallback, ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks,
+            Registries, Registry,
+        },
     },
     component::{
         Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
@@ -15,7 +20,6 @@ use crate::{
 };
 
 use anyhow::Result;
-use futures::Future;
 
 pub mod listener;
 pub mod pure;
@@ -147,7 +151,7 @@ impl Options {
 #[identified("auditeur:resources")]
 pub struct Resources;
 impl Registry for Resources {
-    type Loader = ErasedLoader<Self>;
+    type Loader = ErasedLoader<ResourcesLoaded>;
     type Loaded = ResourcesLoaded;
 }
 
@@ -171,8 +175,9 @@ struct ResourceLoader<R: Resource> {
     external_input: R::ExternalInput,
 }
 
-impl<R: Resource> Loader for ResourceLoader<R> {
+impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
     type Loaded = ResourcesLoaded;
+
     async fn load(&self, app: &mut App) -> Result<ResourcesLoaded, Error> {
         let resource = R::create(&self.external_input, app).await?;
         let get_ref_loader = resource.maybe_get_ref(app).await?;
@@ -185,11 +190,39 @@ impl<R: Resource> Loader for ResourceLoader<R> {
             .handle()
             .await;
         let runner = async move { runner.run(&mut handle).await };
-        let runner = Box::new(runner) as Box<dyn Future<Output = ()> + Send + Sync>;
+        let runner = Box::pin(runner);
 
         Ok(ResourcesLoaded {
             runner: Some(runner),
             get_ref_loader,
+        })
+    }
+
+    fn on_add(&self) -> impl LoaderCallback<ErasedLoader<ResourcesLoaded>, Output = ()> {
+        if R::OPTIONS.is_weak() {
+            EitherCallback::Left(LoaderCallbacks::none())
+        } else {
+            EitherCallback::Right(LoaderCallbacks::load_lazy(DependencyType::Transient).discard())
+        }
+    }
+
+    fn on_load(&self) -> impl LoaderCallback<ErasedLoader<ResourcesLoaded>, Output = ()> {
+        let ty = if R::OPTIONS.is_weak() {
+            DependencyType::Weak
+        } else {
+            DependencyType::Removable
+        };
+
+        LoaderCallbacks::get(ty, async |loaded: &mut ResourcesLoaded, _| {
+            Ok(loaded.take_runner())
+        })
+        .and_then(async |runner| {
+            tokio::task::spawn(Dependency::consume(runner, async |runner| {
+                if let Some(runner) = runner {
+                    runner.await;
+                }
+            }));
+            Ok(())
         })
     }
 }
@@ -203,7 +236,7 @@ impl<R: Resource> IdentifiedComponent for ResourceLoader<R> {
 #[doc(hidden)]
 #[derive(Any)]
 pub struct ResourcesLoaded {
-    runner: Option<Box<dyn Future<Output = ()> + Send + Sync>>,
+    runner: Option<Pin<Box<dyn Future<Output = ()> + Send + Sync>>>,
     get_ref_loader: Option<Box<dyn DynGetRefLoader>>,
 }
 
@@ -217,7 +250,9 @@ impl ResourcesLoaded {
         Ok(Some(reference))
     }
 
-    pub(crate) fn take_runner(&mut self) -> Option<Box<dyn Future<Output = ()> + Send + Sync>> {
+    pub(crate) fn take_runner(
+        &mut self,
+    ) -> Option<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> {
         self.runner.take()
     }
 }

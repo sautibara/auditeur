@@ -79,7 +79,7 @@ impl<M: ListenMessage> Input for Listener<M> {
 pub struct ListenMessages;
 
 impl Registry for ListenMessages {
-    type Loader = ErasedLoader<Self>;
+    type Loader = ErasedLoader<ListenLoaded>;
     type Loaded = ListenLoaded;
 }
 
@@ -89,7 +89,7 @@ impl RegistryOf for ListenMessages {
 
 impl<M: ListenMessage> Component<ListenMessages> for M {
     type ComponentInput = ();
-    fn register((): Self::ComponentInput) -> (ErasedLoader<ListenMessages>, Children) {
+    fn register((): Self::ComponentInput) -> (ErasedLoader<ListenLoaded>, Children) {
         (ErasedLoader::new(ListenLoader::<M>::new()), Children::new())
     }
 }
@@ -104,7 +104,7 @@ impl<M: ListenMessage> ListenLoader<M> {
     }
 }
 
-impl<M: ListenMessage> Loader for ListenLoader<M> {
+impl<M: ListenMessage> Loader<ErasedLoader<ListenLoaded>> for ListenLoader<M> {
     type Loaded = ListenLoaded;
     async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
         Ok(ListenLoaded::new::<M>())
@@ -127,7 +127,7 @@ impl<M: ListenMessage> PersistentChannelLoader<M> {
     }
 }
 
-impl<M: ListenMessage> Loader for PersistentChannelLoader<M> {
+impl<M: ListenMessage> Loader<ErasedLoader<ListenLoaded>> for PersistentChannelLoader<M> {
     type Loaded = ListenLoaded;
     async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
         Ok(ListenLoaded::bootstrap(self.sender.clone()))

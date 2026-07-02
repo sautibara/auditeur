@@ -4,7 +4,10 @@ use hashbrown::HashMap;
 use tokio::sync::oneshot;
 
 use crate::{
-    app::{AppFn, AppMutFnOnce, AppMutFuture, Inner, map::Dependency},
+    app::{
+        AddedComponentId, AppFn, AppMutFnOnce, AppMutFuture,
+        map::{Dependency, DependencyPart, DependencyType},
+    },
     component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
     prelude::*,
 };
@@ -34,18 +37,309 @@ pub trait Registry: IdentifiedType + 'static {
     type Loaded: Loaded;
 }
 
-/// A value that can load a specific erased [`Component`]s on demand.
-pub trait Loader: IdentifiedComponent + Send + Sync + 'static {
-    type Loaded;
+/// A value that can load a specific erased [`Component`] on demand.
+pub trait Loader<L: Loader<Loaded = Self::Loaded> = Self>:
+    IdentifiedComponent + Sized + Send + Sync + 'static
+{
+    type Loaded: Loaded;
 
+    /// Loads the underlying component using an app handle.
+    ///
+    /// The app handle is guaranteed to have the component as the dependent.
     fn load(&self, app: &mut App) -> impl Future<Output = Result<Self::Loaded, Error>> + Send;
+
+    /// A callback for when the component is added to the app.
+    ///
+    /// The app handle is guaranteed to have the app as the dependent.
+    fn on_add(&self) -> impl LoaderCallback<L, Output = ()> {
+        LoaderCallbacks::none()
+    }
+
+    /// A callback for when a component is initially loaded.
+    ///
+    /// This will only ever be run once per load of the component. That is, it will only run
+    /// multiple times if the component unloads and then reloads. It also will be called even if
+    /// the component only lazy loads.
+    ///
+    /// The default implementation is to load the component again to ensure that lazy loads fully
+    /// load components. If changing the default implementation, make sure to load the component
+    /// in some way, unless the loading and unloading of the component are unimportant.
+    fn on_load(&self) -> impl LoaderCallback<L, Output = ()> {
+        LoaderCallbacks::load(DependencyType::Transient).discard()
+    }
 }
 
 /// An erased [`Component`] that has been loaded into a [`Registry`].
 pub trait Loaded: crate::Any + Sized + Send + Sync + 'static {
+    /// Unloads the underlying component using an app handle.
+    ///
+    /// The app handle is guaranteed to have the app as a dependent.
     fn unload(self, app: &mut App) -> impl Future<Output = Result<(), Error>> + Send {
         let _ = app;
         async { Ok(()) }
+    }
+}
+
+pub trait LoaderCallback<L: Loader>: Sized + Send + Sync + 'static {
+    type Output: Send + Sync;
+
+    #[doc(hidden)]
+    fn call(
+        self,
+        component: &mut DynComponentImpl<L>,
+        app: &mut App,
+    ) -> impl Future<Output = Result<Self::Output, Error>> + Send;
+
+    fn and_then<T: Send + Sync>(
+        self,
+        func: impl AsyncFnOnce<(Self::Output,), Output = Result<T, Error>, CallOnceFuture: Send>
+        + Send
+        + Sync
+        + 'static,
+    ) -> impl LoaderCallback<L, Output = T> {
+        struct AndThen<C, M> {
+            callback: C,
+            map: M,
+        }
+
+        impl<L, C, M, O> LoaderCallback<L> for AndThen<C, M>
+        where
+            L: Loader,
+            C: LoaderCallback<L>,
+            M: AsyncFnOnce<(C::Output,), Output = Result<O, Error>, CallOnceFuture: Send>
+                + Send
+                + Sync
+                + 'static,
+            O: Send + Sync,
+        {
+            type Output = O;
+            async fn call(
+                self,
+                component: &mut DynComponentImpl<L>,
+                app: &mut App,
+            ) -> Result<Self::Output, Error> {
+                let output = self.callback.call(component, app).await?;
+                (self.map)(output).await
+            }
+        }
+
+        AndThen {
+            callback: self,
+            map: func,
+        }
+    }
+
+    fn discard(self) -> impl LoaderCallback<L, Output = ()> {
+        struct Discard<C>(C);
+        impl<L: Loader, C: LoaderCallback<L>> LoaderCallback<L> for Discard<C> {
+            type Output = ();
+            async fn call(
+                self,
+                component: &mut DynComponentImpl<L>,
+                app: &mut App,
+            ) -> Result<Self::Output, Error> {
+                self.0.call(component, app).await?;
+                Ok(())
+            }
+        }
+        Discard(self)
+    }
+
+    fn boxed(self) -> BoxedCallback<L, Self::Output> {
+        BoxedCallback::new(self)
+    }
+}
+
+pub struct LoaderCallbacks;
+impl LoaderCallbacks {
+    #[must_use]
+    pub fn none<L: Loader>() -> impl LoaderCallback<L, Output = ()> {
+        struct Empty;
+        impl<L: Loader> LoaderCallback<L> for Empty {
+            type Output = ();
+            async fn call(
+                self,
+                _: &mut DynComponentImpl<L>,
+                _: &mut App,
+            ) -> Result<Self::Output, Error> {
+                Ok(())
+            }
+        }
+        Empty
+    }
+
+    #[must_use]
+    pub fn load<L: Loader>(ty: DependencyType) -> impl LoaderCallback<L, Output = Dependency<()>> {
+        struct Load(DependencyType);
+        impl<L: Loader> LoaderCallback<L> for Load {
+            type Output = Dependency<()>;
+            async fn call(
+                self,
+                component: &mut DynComponentImpl<L>,
+                app: &mut App,
+            ) -> Result<Self::Output, Error> {
+                let dependency = LoaderCallbacks::load_lazy(self.0)
+                    .call(component, app)
+                    .await?;
+
+                let _ = component.get_loaded(app).await?;
+
+                Ok(dependency)
+            }
+        }
+        Load(ty)
+    }
+
+    #[must_use]
+    pub fn load_lazy<L: Loader>(
+        ty: DependencyType,
+    ) -> impl LoaderCallback<L, Output = Dependency<()>> {
+        struct Load(DependencyType);
+        impl<L: Loader> LoaderCallback<L> for Load {
+            type Output = Dependency<()>;
+            async fn call(
+                self,
+                component: &mut DynComponentImpl<L>,
+                app: &mut App,
+            ) -> Result<Self::Output, Error> {
+                // NOTE: we know that the component is added b/c we have its ErasedComponent
+                let component_id = AddedComponentId::new_inner(component.component_id_dyn());
+                let app_id = app.dependent().app_added_id().clone_inner();
+                let dependency = app
+                    .map_mut()
+                    .increment_dependency(DependencyPart {
+                        dependency: component_id,
+                        dependent: app_id,
+                        ty: self.0,
+                    })
+                    .await;
+
+                Ok(dependency)
+            }
+        }
+        Load(ty)
+    }
+
+    pub fn get<L: Loader, T: Send + Sync>(
+        ty: DependencyType,
+        func: impl for<'a, 'b> AsyncFnOnce<
+            (&'a mut L::Loaded, &'b mut App),
+            Output = Result<T, Error>,
+            CallOnceFuture: Send,
+        > + Send
+        + Sync
+        + 'static,
+    ) -> impl LoaderCallback<L, Output = Dependency<T>> {
+        struct Get<F> {
+            ty: DependencyType,
+            func: F,
+        }
+
+        impl<L, T, F> LoaderCallback<L> for Get<F>
+        where
+            L: Loader,
+            T: Send + Sync,
+            F: for<'a, 'b> AsyncFnOnce<
+                    (&'a mut L::Loaded, &'b mut App),
+                    Output = Result<T, Error>,
+                    CallOnceFuture: Send,
+                > + Send
+                + Sync
+                + 'static,
+        {
+            type Output = Dependency<T>;
+
+            async fn call(
+                self,
+                component: &mut DynComponentImpl<L>,
+                app: &mut App,
+            ) -> Result<Self::Output, Error> {
+                let dependency = LoaderCallbacks::load_lazy(self.ty)
+                    .call(component, app)
+                    .await?;
+
+                let loaded = component.get_loaded(app).await?;
+                let val = (self.func)(loaded, app).await?;
+                Ok(dependency.insert(val))
+            }
+        }
+
+        Get { ty, func }
+    }
+}
+
+pub enum EitherCallback<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<O, Lo, L, R> LoaderCallback<Lo> for EitherCallback<L, R>
+where
+    O: Send + Sync,
+    Lo: Loader,
+    L: LoaderCallback<Lo, Output = O>,
+    R: LoaderCallback<Lo, Output = O>,
+{
+    type Output = O;
+    async fn call(
+        self,
+        component: &mut DynComponentImpl<Lo>,
+        app: &mut App,
+    ) -> Result<Self::Output, Error> {
+        match self {
+            Self::Left(left) => left.call(component, app).await,
+            Self::Right(right) => right.call(component, app).await,
+        }
+    }
+}
+
+#[async_trait]
+trait DynLoaderCallback<L: Loader>: Send + Sync {
+    type Output: Send + Sync;
+    async fn call_dyn(
+        self: Box<Self>,
+        component: &mut DynComponentImpl<L>,
+        app: &mut App,
+    ) -> Result<Self::Output, Error>;
+}
+
+#[async_trait]
+impl<L: Loader, C: LoaderCallback<L>> DynLoaderCallback<L> for C {
+    type Output = C::Output;
+    async fn call_dyn(
+        self: Box<Self>,
+        component: &mut DynComponentImpl<L>,
+        app: &mut App,
+    ) -> Result<Self::Output, Error> {
+        self.call(component, app).await
+    }
+}
+
+pub struct BoxedCallback<L: Loader, O: Send + Sync> {
+    callback: Box<dyn DynLoaderCallback<L, Output = O>>,
+}
+
+impl<L: Loader, O: Send + Sync> BoxedCallback<L, O> {
+    fn new<C: LoaderCallback<L, Output = O>>(callback: C) -> Self {
+        Self {
+            callback: Box::new(callback),
+        }
+    }
+}
+
+impl<L: Loader, O: Send + Sync + 'static> LoaderCallback<L> for BoxedCallback<L, O> {
+    type Output = O;
+
+    async fn call(
+        self,
+        component: &mut DynComponentImpl<L>,
+        app: &mut App,
+    ) -> Result<Self::Output, Error> {
+        self.callback.call_dyn(component, app).await
+    }
+
+    fn boxed(self) -> BoxedCallback<L, Self::Output> {
+        self
     }
 }
 
@@ -84,41 +378,60 @@ impl<R: Registry> Loader for MarkerLoader<R> {
 impl Loaded for () {}
 
 /// A loader implementation that uses trait objects.
-pub struct ErasedLoader<R: Registry> {
-    loader: Box<dyn DynLoader<R::Loaded>>,
+pub struct ErasedLoader<D: Loaded> {
+    loader: Box<dyn DynLoader<D>>,
 }
 
-impl<R: Registry> ErasedLoader<R> {
+impl<D: Loaded> ErasedLoader<D> {
     #[must_use]
-    pub fn new<LR: Loader<Loaded = R::Loaded>>(loader: LR) -> Self {
+    pub fn new<L: Loader<Self, Loaded = D>>(loader: L) -> Self {
         Self {
             loader: Box::new(loader),
         }
     }
 }
 
-impl<R: Registry> Loader for ErasedLoader<R> {
-    type Loaded = R::Loaded;
+impl<D: Loaded> Loader for ErasedLoader<D> {
+    type Loaded = D;
+
     async fn load(&self, app: &mut App) -> Result<Self::Loaded, Error> {
         self.loader.load_dyn(app).await
     }
+
+    fn on_add(&self) -> impl LoaderCallback<Self, Output = ()> {
+        self.loader.on_add_dyn()
+    }
+
+    fn on_load(&self) -> impl LoaderCallback<Self, Output = ()> {
+        self.loader.on_load_dyn()
+    }
 }
 
-impl<R: Registry> IdentifiedComponent for ErasedLoader<R> {
+impl<D: Loaded> IdentifiedComponent for ErasedLoader<D> {
     fn component_id_dyn(&self) -> ComponentId {
         self.loader.component_id_dyn()
     }
 }
 
 #[async_trait]
-trait DynLoader<L>: IdentifiedComponent + Send + Sync {
-    async fn load_dyn(&self, app: &mut App) -> Result<L, Error>;
+trait DynLoader<D: Loaded>: IdentifiedComponent + Send + Sync {
+    async fn load_dyn(&self, app: &mut App) -> Result<D, Error>;
+    fn on_add_dyn(&self) -> BoxedCallback<ErasedLoader<D>, ()>;
+    fn on_load_dyn(&self) -> BoxedCallback<ErasedLoader<D>, ()>;
 }
 
 #[async_trait]
-impl<L: Loader> DynLoader<L::Loaded> for L {
-    async fn load_dyn(&self, app: &mut App) -> Result<L::Loaded, Error> {
-        <Self as Loader>::load(self, app).await
+impl<D: Loaded, L: Loader<ErasedLoader<D>, Loaded = D>> DynLoader<D> for L {
+    async fn load_dyn(&self, app: &mut App) -> Result<D, Error> {
+        <Self as Loader<ErasedLoader<D>>>::load(self, app).await
+    }
+
+    fn on_add_dyn(&self) -> BoxedCallback<ErasedLoader<D>, ()> {
+        <Self as Loader<ErasedLoader<D>>>::on_add(self).boxed()
+    }
+
+    fn on_load_dyn(&self) -> BoxedCallback<ErasedLoader<D>, ()> {
+        <Self as Loader<ErasedLoader<D>>>::on_load(self).boxed()
     }
 }
 
@@ -159,7 +472,7 @@ impl ErasedComponent {
     pub fn new<R: Registry, C: Component<R>>(input: C::ComponentInput) -> (Self, Children) {
         let (loader, children) = C::register(input);
         let component = Self {
-            object: Box::new(DynComponentImpl::<R> {
+            object: Box::new(DynComponentImpl::<R::Loader> {
                 loader,
                 loaded: None,
             }),
@@ -170,7 +483,7 @@ impl ErasedComponent {
     #[allow(clippy::similar_names)]
     pub(super) fn from_loader<R: Registry>(loader: R::Loader) -> Self {
         Self {
-            object: Box::new(DynComponentImpl::<R> {
+            object: Box::new(DynComponentImpl::<R::Loader> {
                 loader,
                 loaded: None,
             }),
@@ -195,24 +508,21 @@ pub(crate) trait DynComponent: IdentifiedComponent + Send + Sync {
     ///
     /// - Propagated from [`Loaded::unload`].
     async fn unload(&mut self, app: &mut App) -> Result<(), Error>;
+    /// Runs code intended for when the component is added to the app.
+    async fn on_add(&mut self, app: &mut App) -> Result<(), Error>;
+    /// Runs code intended for when the component is loaded in the app.
+    async fn on_load(&mut self, app: &mut App) -> Result<(), Error>;
     /// Returns `true` iff the component is currently loaded
     fn is_loaded(&self) -> bool;
 }
 
-struct DynComponentImpl<R: Registry> {
-    loader: R::Loader,
-    loaded: Option<R::Loaded>,
+struct DynComponentImpl<L: Loader> {
+    loader: L,
+    loaded: Option<L::Loaded>,
 }
 
-impl<R: Registry> IdentifiedComponent for DynComponentImpl<R> {
-    fn component_id_dyn(&self) -> ComponentId {
-        self.loader.component_id_dyn()
-    }
-}
-
-#[async_trait::async_trait]
-impl<R: Registry> DynComponent for DynComponentImpl<R> {
-    async fn get(&mut self, app: &mut App) -> Result<&mut (dyn crate::Any + Send + Sync), Error> {
+impl<L: Loader> DynComponentImpl<L> {
+    async fn get_loaded(&mut self, app: &mut App) -> Result<&mut L::Loaded, Error> {
         if self.loaded.is_none() {
             let loaded = self.loader.load(app).await?;
             self.loaded = Some(loaded);
@@ -222,12 +532,37 @@ impl<R: Registry> DynComponent for DynComponentImpl<R> {
         // SAFETY: always some b/c it gets initialized if it's none
         Ok(unsafe { self.loaded.as_mut().unwrap_unchecked() })
     }
+}
+
+impl<L: Loader> IdentifiedComponent for DynComponentImpl<L> {
+    fn component_id_dyn(&self) -> ComponentId {
+        self.loader.component_id_dyn()
+    }
+}
+
+#[async_trait::async_trait]
+impl<L: Loader> DynComponent for DynComponentImpl<L> {
+    async fn get(&mut self, app: &mut App) -> Result<&mut (dyn crate::Any + Send + Sync), Error> {
+        self.get_loaded(app)
+            .await
+            .map(|reference| reference as &mut (dyn crate::Any + Send + Sync))
+    }
 
     async fn unload(&mut self, app: &mut App) -> Result<(), Error> {
         if let Some(loaded) = self.loaded.take() {
             loaded.unload(app).await?;
         }
         Ok(())
+    }
+
+    async fn on_add(&mut self, app: &mut App) -> Result<(), Error> {
+        let callback = self.loader.on_add();
+        callback.call(self, app).await
+    }
+
+    async fn on_load(&mut self, app: &mut App) -> Result<(), Error> {
+        let callback = self.loader.on_load();
+        callback.call(self, app).await
     }
 
     fn is_loaded(&self) -> bool {
@@ -251,7 +586,11 @@ impl Registrar {
     /// # Panics
     ///
     /// - If a component with the same id has already been added.
-    pub(super) fn add(&mut self, component: ErasedComponent) {
+    pub(super) fn add(
+        &mut self,
+        component: ErasedComponent,
+        sender: &flume::Sender<super::Method>,
+    ) {
         let id = component.object.component_id_dyn();
 
         let entry = self.components.entry(id);
@@ -261,12 +600,16 @@ impl Registrar {
             "a name collision should never happen in the registrar, as the map is checked first"
         );
 
-        let (sender, receiver) = oneshot::channel();
-        let _ = sender.send(component);
+        let (oneshot_sender, receiver) = oneshot::channel();
+        let _ = oneshot_sender.send(component);
 
-        entry.insert(Register {
+        let entry = entry.insert(Register {
             component: receiver,
         });
+
+        let _ = sender.send(super::Method::Registries(Method::SpawnOnAdd {
+            component: entry.key().clone(),
+        }));
     }
 
     /// Removes a component from this registrar.
@@ -325,11 +668,14 @@ pub(super) enum Method {
         dependency: Dependency<()>,
         sender: oneshot::Sender<Dependency<BorrowedComponent>>,
     },
-    SpawnLoad {
+    SpawnOnLoad {
         dependency: Dependency<()>,
     },
     SpawnUnload {
         dependency: Dependency<()>,
+    },
+    SpawnOnAdd {
+        component: ComponentId,
     },
 }
 
@@ -341,12 +687,13 @@ impl Method {
                 let component = app.registries_mut().borrow(dependency).await;
                 let _ = sender.send(component);
             }
-            Self::SpawnLoad { dependency } => {
-                app.registries_mut().spawn_load(dependency).await;
+            Self::SpawnOnLoad { dependency } => {
+                app.registries_mut().spawn_on_load(dependency).await;
             }
             Self::SpawnUnload { dependency } => {
                 app.registries_mut().spawn_unload(dependency).await;
             }
+            Self::SpawnOnAdd { component } => app.registries_mut().spawn_on_add(component).await,
         }
     }
 }
@@ -510,71 +857,81 @@ impl<'a> AppRegistriesMut<'a> {
         .call(self.app)
     }
 
-    pub(super) async fn spawn_load(self, dependency: Dependency<()>) {
-        // First take the erased component from the registrar.
-        let component = self.app.registries_mut().borrow(dependency).await;
+    pub(super) async fn spawn_unload(self, dependency: Dependency<()>) {
+        AppFn::spawn_mut(
+            dependency,
+            |dependency, _| super::Method::Registries(Method::SpawnUnload { dependency }),
+            async |dependency, owned, handle| {
+                let component_id = &dependency.info().dependency;
+                let Some(borrowed) = owned.registrar.borrow(component_id) else {
+                    return;
+                };
 
-        // Then, with an app handle, we continue loading the component.
-        let fut = async move |app: &mut App| {
-            let mut app = (app.dependent_mut())
-                .with_ty(Dependency::info_of(&component).ty)
-                .with_added_dependent(Dependency::info_of(&component).dependent.clone_inner())
-                .await;
+                let mut app = handle.clone_in_owned(owned).into_handle();
 
-            Dependency::consume(component, async move |component| {
-                component
-                    .modify(async |component| {
-                        // Then load the component in the current app.
-                        let res = component.object.get(&mut app).await;
-                        let _ = app.errors_mut().drain_result(res).await;
-                    })
-                    .await;
-            })
-            .await;
-        };
-
-        // But we can't load it if we're the owned app - it would deadlock in the method queue.
-        if matches!(self.app.variant, Inner::Handle) {
-            fut(self.app).await;
-        } else {
-            // So if we are the owned app, we spawn another task that runs it with a handle.
-            let mut handle = self.app.handle().await;
-            tokio::task::spawn(async move {
-                fut(&mut handle).await;
-            });
-        }
+                tokio::task::spawn(async move {
+                    let res = borrowed
+                        .modify(async |borrowed| borrowed.object.unload(&mut app).await)
+                        .await;
+                    app.errors_mut().drain_result(res).await;
+                    drop(dependency);
+                });
+            },
+        )
+        .call(self.app)
+        .await;
     }
 
-    pub(super) async fn spawn_unload(self, dependency: Dependency<()>) {
-        // First take the erased component from the registrar.
-        let component = self.app.registries_mut().borrow(dependency).await;
+    async fn spawn_on_load(self, dependency: Dependency<()>) {
+        AppFn::spawn_mut(
+            dependency,
+            |dependency, _| super::Method::Registries(Method::SpawnOnLoad { dependency }),
+            async |dependency, owned, handle| {
+                let component_id = &dependency.info().dependency;
+                let Some(borrowed) = owned.registrar.borrow(component_id) else {
+                    return;
+                };
 
-        // Then, with an app handle, we continue unloading the component.
-        let fut = async move |app: &mut App| {
-            Dependency::consume(component, async move |component| {
-                component
-                    .modify(async |component| {
-                        // Then unload the component in the current app.
-                        //
-                        // The current app is expected to have the app as the dependent, but it's
-                        // not necessary.
-                        let res = component.object.unload(app).await;
-                        app.errors_mut().drain_result(res).await;
-                    })
-                    .await;
-            })
-            .await;
-        };
+                let mut app = handle.clone_in_owned(owned).into_handle();
 
-        // But we can't load it if we're the owned app - it would deadlock in the method queue.
-        if matches!(self.app.variant, Inner::Handle) {
-            fut(self.app).await;
-        } else {
-            // So if we are the owned app, we spawn another task that runs it with a handle.
-            let mut handle = self.app.handle().await;
-            tokio::task::spawn(async move {
-                fut(&mut handle).await;
-            });
-        }
+                tokio::task::spawn(async move {
+                    let mut app = app
+                        .dependent_mut()
+                        .with_added_dependent(dependency.info().dependency.clone_inner())
+                        .await;
+                    let res = borrowed
+                        .modify(async |borrowed| borrowed.object.on_load(&mut app).await)
+                        .await;
+                    app.errors_mut().drain_result(res).await;
+                    drop(dependency);
+                });
+            },
+        )
+        .call(self.app)
+        .await;
+    }
+
+    async fn spawn_on_add(self, component: ComponentId) {
+        AppFn::spawn_mut(
+            component,
+            |component, _| super::Method::Registries(Method::SpawnOnAdd { component }),
+            async |component, owned, handle| {
+                let Some(borrowed) = owned.registrar.borrow(&component) else {
+                    return;
+                };
+
+                let mut app = handle.clone_in_owned(owned).into_handle();
+
+                tokio::task::spawn(async move {
+                    let res = borrowed
+                        .modify(async |borrowed| borrowed.object.on_add(&mut app).await)
+                        .await;
+                    app.errors_mut().drain_result(res).await;
+                    app.map_mut().mark_initialized(component).await;
+                });
+            },
+        )
+        .call(self.app)
+        .await;
     }
 }
