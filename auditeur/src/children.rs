@@ -5,12 +5,13 @@ use crate::{
 };
 
 /// A collection of [`Component`]s.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Children {
     current_parent: Option<ComponentId>,
     children: Vec<Child>,
 }
 
+#[derive(Debug)]
 pub(crate) struct Child {
     pub(crate) parent: Option<ComponentId>,
     pub(crate) component: ErasedComponent,

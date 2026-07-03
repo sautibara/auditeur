@@ -5,8 +5,8 @@ use tokio::sync::oneshot;
 
 use crate::{
     app::{
-        AddedComponentId, AppFn, AppMutFnOnce, AppMutFuture,
-        map::{Dependency, DependencyPart, DependencyType},
+        AddedComponentId, AppFn, AppMutFnOnce, AppMutFuture, OneshotSender,
+        map::{Dependency, DependencyPart, DependencyType, LoadIndex},
     },
     component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
     prelude::*,
@@ -608,7 +608,7 @@ impl Registrar {
         });
 
         let _ = sender.send(super::Method::Registries(Method::SpawnOnAdd {
-            component: entry.key().clone(),
+            component: AddedComponentId::new_inner(entry.key().clone()),
         }));
     }
 
@@ -662,20 +662,23 @@ impl BorrowedComponent {
     }
 }
 
+#[derive(Debug)]
 pub(super) enum Method {
     Add(Children),
     Borrow {
         dependency: Dependency<()>,
-        sender: oneshot::Sender<Dependency<BorrowedComponent>>,
+        sender: OneshotSender<Dependency<BorrowedComponent>>,
     },
     SpawnOnLoad {
-        dependency: Dependency<()>,
+        component: AddedComponentId,
+        load_index: LoadIndex,
     },
     SpawnUnload {
-        dependency: Dependency<()>,
+        component: AddedComponentId,
+        load_index: LoadIndex,
     },
     SpawnOnAdd {
-        component: ComponentId,
+        component: AddedComponentId,
     },
 }
 
@@ -687,11 +690,21 @@ impl Method {
                 let component = app.registries_mut().borrow(dependency).await;
                 let _ = sender.send(component);
             }
-            Self::SpawnOnLoad { dependency } => {
-                app.registries_mut().spawn_on_load(dependency).await;
+            Self::SpawnOnLoad {
+                component,
+                load_index,
+            } => {
+                app.registries_mut()
+                    .spawn_on_load(component, load_index)
+                    .await;
             }
-            Self::SpawnUnload { dependency } => {
-                app.registries_mut().spawn_unload(dependency).await;
+            Self::SpawnUnload {
+                component,
+                load_index,
+            } => {
+                app.registries_mut()
+                    .spawn_unload(component, load_index)
+                    .await;
             }
             Self::SpawnOnAdd { component } => app.registries_mut().spawn_on_add(component).await,
         }
@@ -857,13 +870,17 @@ impl<'a> AppRegistriesMut<'a> {
         .call(self.app)
     }
 
-    pub(super) async fn spawn_unload(self, dependency: Dependency<()>) {
+    pub(super) async fn spawn_unload(self, component: AddedComponentId, load_index: LoadIndex) {
         AppFn::spawn_mut(
-            dependency,
-            |dependency, _| super::Method::Registries(Method::SpawnUnload { dependency }),
-            async |dependency, owned, handle| {
-                let component_id = &dependency.info().dependency;
-                let Some(borrowed) = owned.registrar.borrow(component_id) else {
+            (component, load_index),
+            |(component, load_index), _| {
+                super::Method::Registries(Method::SpawnUnload {
+                    component,
+                    load_index,
+                })
+            },
+            async |(component, load_index), owned, handle| {
+                let Some(borrowed) = owned.registrar.borrow(&component) else {
                     return;
                 };
 
@@ -874,7 +891,7 @@ impl<'a> AppRegistriesMut<'a> {
                         .modify(async |borrowed| borrowed.object.unload(&mut app).await)
                         .await;
                     app.errors_mut().drain_result(res).await;
-                    drop(dependency);
+                    app.map_mut().unload_finished(component, load_index).await;
                 });
             },
         )
@@ -882,28 +899,28 @@ impl<'a> AppRegistriesMut<'a> {
         .await;
     }
 
-    async fn spawn_on_load(self, dependency: Dependency<()>) {
+    async fn spawn_on_load(self, component: AddedComponentId, load_index: LoadIndex) {
         AppFn::spawn_mut(
-            dependency,
-            |dependency, _| super::Method::Registries(Method::SpawnOnLoad { dependency }),
-            async |dependency, owned, handle| {
-                let component_id = &dependency.info().dependency;
-                let Some(borrowed) = owned.registrar.borrow(component_id) else {
+            (component, load_index),
+            |(component, load_index), _| {
+                super::Method::Registries(Method::SpawnOnLoad {
+                    component,
+                    load_index,
+                })
+            },
+            async |(component, load_index), owned, handle| {
+                let Some(borrowed) = owned.registrar.borrow(&component) else {
                     return;
                 };
 
                 let mut app = handle.clone_in_owned(owned).into_handle();
 
                 tokio::task::spawn(async move {
-                    let mut app = app
-                        .dependent_mut()
-                        .with_added_dependent(dependency.info().dependency.clone_inner())
-                        .await;
                     let res = borrowed
                         .modify(async |borrowed| borrowed.object.on_load(&mut app).await)
                         .await;
                     app.errors_mut().drain_result(res).await;
-                    drop(dependency);
+                    app.map_mut().on_load_finished(component, load_index).await;
                 });
             },
         )
@@ -911,7 +928,7 @@ impl<'a> AppRegistriesMut<'a> {
         .await;
     }
 
-    async fn spawn_on_add(self, component: ComponentId) {
+    async fn spawn_on_add(self, component: AddedComponentId) {
         AppFn::spawn_mut(
             component,
             |component, _| super::Method::Registries(Method::SpawnOnAdd { component }),
@@ -927,7 +944,7 @@ impl<'a> AppRegistriesMut<'a> {
                         .modify(async |borrowed| borrowed.object.on_add(&mut app).await)
                         .await;
                     app.errors_mut().drain_result(res).await;
-                    app.map_mut().mark_initialized(component).await;
+                    app.map_mut().on_add_finished(component).await;
                 });
             },
         )

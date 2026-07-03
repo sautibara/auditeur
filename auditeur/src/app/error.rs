@@ -4,7 +4,8 @@ use tokio::sync::oneshot;
 
 use crate::{
     app::{
-        AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, Owned, event::Event,
+        AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, OneshotSender, Owned,
+        event::Event,
     },
     prelude::*,
 };
@@ -66,9 +67,10 @@ impl HandleData {
 }
 
 /// A message from a handle to run a method on the global [`App`].
+#[derive(Debug)]
 pub(super) enum Method {
     AddShared(Arc<Error>),
-    Get(oneshot::Sender<Errors>),
+    Get(OneshotSender<Errors>),
 }
 
 impl Method {

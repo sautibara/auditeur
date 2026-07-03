@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fmt::Display,
+    fmt::{Debug, Display},
     hash::Hash,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
     sync::Arc,
@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     app::{
-        AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, Owned,
+        AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, OneshotSender, Owned,
         event::{DependencyLifecycle, Event},
         registry::{ErasedComponent, Registries},
     },
@@ -25,7 +25,7 @@ use super::event::ComponentLifecycle;
 
 type RegistryId = &'static NamespacedIdRef;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Map {
     pub components: im::HashMap<ComponentId, MapComponent>,
     pub dependencies: im::HashMap<DependencyId, DependencyTypeCounts>,
@@ -33,12 +33,12 @@ pub struct Map {
     pub listeners: im::HashMap<ListenerId, Listener>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MapComponent {
     pub parent: Option<ComponentId>,
     pub load_index: LoadIndex,
 
-    initialized: bool,
+    finished_on_add: bool,
     requested: bool,
 }
 
@@ -47,13 +47,13 @@ impl Default for MapComponent {
         Self {
             parent: None,
             load_index: LoadIndex(0),
-            initialized: false,
+            finished_on_add: false,
             requested: false,
         }
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub enum ListenerId {
     Component {
         id: ComponentId,
@@ -111,14 +111,14 @@ impl ListenerId {
     }
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum ComponentStateChange {
     Deactivate(LoadIndex),
     Unload(LoadIndex),
     Remove,
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct LoadIndex(usize);
 
 impl ComponentStateChange {
@@ -139,7 +139,7 @@ impl ComponentStateChange {
     }
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum DependencyStateChange {
     Remove,
 }
@@ -158,12 +158,12 @@ impl DependencyStateChange {
     }
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum RegistryStateChange {
     Remove,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct Listener {
     pub blocking: im::HashSet<ListenerId>,
     pub blocked_on: im::HashSet<ListenerId>,
@@ -260,16 +260,36 @@ impl Map {
         }
     }
 
-    pub(super) fn mark_initialized(&mut self, id: ComponentId, channels: Channels<'_>) {
+    fn on_add_finished(&mut self, id: AddedComponentId, channels: Channels<'_>) {
         let Some(component) = self.components.get_mut(&id) else {
             return;
         };
 
-        component.initialized = true;
-        if component.initialized && component.requested {
-            let listener = ListenerId::remove_component(id);
+        component.finished_on_add = true;
+        if component.finished_on_add && component.requested {
+            let listener = ListenerId::remove_component(id.into_inner());
             self.release_prevented_removal(&listener, channels);
         }
+    }
+
+    fn on_load_finished(
+        &mut self,
+        id: AddedComponentId,
+        load_index: LoadIndex,
+        channels: Channels<'_>,
+    ) {
+        let listener = ListenerId::deactivate_component(id.into_inner(), load_index);
+        self.release_prevented_removal(&listener, channels);
+    }
+
+    fn unload_finished(
+        &mut self,
+        id: AddedComponentId,
+        load_index: LoadIndex,
+        channels: Channels<'_>,
+    ) {
+        let listener = ListenerId::unload_component(id.into_inner(), load_index);
+        self.release_prevented_removal(&listener, channels);
     }
 
     fn increment_dependency(
@@ -283,7 +303,7 @@ impl Map {
         };
         let dependency_listener = ListenerId::remove_dependency(id.clone());
 
-        let dependency_info = &mut self.dependencies[&id];
+        let dependency_info = self.dependencies.entry(id.clone()).or_default();
         let prev_info = *dependency_info;
         *dependency_info += part.ty;
 
@@ -315,7 +335,7 @@ impl Map {
             // activate (since it uses the current load index), so we can be sure this is okay
             let load_index = self.load_component(&part.dependent, channels);
             self.add_listener_block(
-                ListenerId::deactivate_component(id.dependency.clone(), load_index),
+                ListenerId::deactivate_component(id.dependency, load_index),
                 dependency_listener,
                 channels,
             );
@@ -337,15 +357,31 @@ impl Map {
         };
 
         let dependency_info = &mut self.dependencies[&id];
+        let was_weak = dependency_info.effective_type().is_weak();
         *dependency_info -= part.ty;
-        let removed = dependency_info.is_zero();
 
-        if !removed {
-            return;
-        }
+        let removed = dependency_info.is_zero();
+        let newly_weak = !was_weak && dependency_info.effective_type().is_weak();
 
         let listener_id = ListenerId::remove_dependency(id);
-        self.release_prevented_removal(&listener_id, channels);
+        if removed {
+            self.release_prevented_removal(&listener_id, channels);
+        } else if newly_weak {
+            let deactivate_id = (self.listeners[&listener_id].blocking.iter())
+                .find(|listener| {
+                    matches!(
+                        listener,
+                        ListenerId::Component {
+                            change: ComponentStateChange::Deactivate(_),
+                            ..
+                        }
+                    )
+                })
+                // TODO: split dependency listener into weak & non-weak versions
+                .expect("a non-weak dependency should have a deactivate block")
+                .clone();
+            self.remove_listener_block(&deactivate_id, &listener_id, channels);
+        }
     }
 
     fn load_component(&mut self, id: &AddedComponentId, channels: Channels<'_>) -> LoadIndex {
@@ -399,13 +435,11 @@ impl Map {
     const fn prevent_removal(listener: &ListenerId) -> bool {
         matches!(
             listener,
-            ListenerId::Component {
-                change: ComponentStateChange::Remove,
-                ..
-            } | ListenerId::Dependency { .. }
+            ListenerId::Component { .. } | ListenerId::Dependency { .. }
         )
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut, clippy::unused_self)] // wiwiwi
     fn on_add(&mut self, listener: &ListenerId, channels: Channels<'_>) {
         match listener {
             ListenerId::Component { id, change } => {
@@ -414,18 +448,13 @@ impl Map {
                     lifecycle: change.lifecycle_on_add(),
                 });
 
-                if matches!(change, ComponentStateChange::Deactivate(_)) {
-                    // Keep the component active until we finish loading it.
-                    let part = DependencyPart {
-                        dependent: AddedComponentId::app(),
-                        dependency: AddedComponentId(id.clone()),
-                        ty: DependencyType::Transient,
-                    };
-                    let dependency = self.increment_dependency(part, channels);
-
+                if let ComponentStateChange::Deactivate(load_index) = change {
                     // Actually initiate the load.
                     let _ = channels.method_sender.send(super::Method::Registries(
-                        super::registry::Method::SpawnOnLoad { dependency },
+                        super::registry::Method::SpawnOnLoad {
+                            component: AddedComponentId(id.clone()),
+                            load_index: *load_index,
+                        },
                     ));
                 }
             }
@@ -451,23 +480,40 @@ impl Map {
                     lifecycle: change.lifecycle_on_remove(),
                 });
 
-                if matches!(change, ComponentStateChange::Deactivate(_)) {
-                    // Keep the component loaded until we finish unloading it.
-                    let part = DependencyPart {
-                        dependent: AddedComponentId::app(),
-                        dependency: AddedComponentId(id.clone()),
-                        ty: DependencyType::Weak,
-                    };
-                    let dependency = self.increment_dependency(part, channels);
+                if let ComponentStateChange::Deactivate(load_index) = change {
+                    // We can't call SpawnUnload for the app, since SpawnUnload uses an app handle
+                    // (and thus would load the app again).
+                    if *id == App::component_id() {
+                        // Request a remove of the app.
+                        let remove_id = ListenerId::remove_component(App::component_id());
+                        self.request(&remove_id, channels);
+
+                        // Release the app's event listener.
+                        let _ = channels
+                            .method_sender
+                            .send(super::Method::ReleaseEventListener);
+
+                        // We didn't use SpawnUnload, so we need to record that we manually
+                        // unloaded.
+                        self.unload_finished(
+                            AddedComponentId(App::component_id()),
+                            *load_index,
+                            channels,
+                        );
+
+                        // Don't try to SpawnUnload.
+                        return;
+                    }
 
                     // Actually initiate the unload.
                     let _ = channels.method_sender.send(super::Method::Registries(
-                        super::registry::Method::SpawnUnload { dependency },
+                        super::registry::Method::SpawnUnload {
+                            component: AddedComponentId(id.clone()),
+                            load_index: *load_index,
+                        },
                     ));
 
                     // Increment the load index, since we've started unloading this one.
-                    // WARN: it's important that this index increment happens after the dependency
-                    // increment, since the dependency increment depends on the current load index
                     let load_index = &mut self.components[id].load_index;
                     *load_index = LoadIndex(load_index.0 + 1);
                 } else if matches!(change, ComponentStateChange::Remove) {
@@ -508,7 +554,7 @@ impl Map {
                 if let Some(component) = self.components.get_mut(id) {
                     component.requested = true;
 
-                    if component.initialized && component.requested {
+                    if component.finished_on_add && component.requested {
                         self.release_prevented_removal(listener, channels);
                     }
                 }
@@ -665,7 +711,7 @@ impl Display for Request {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct RequestSet {
     pub set: hashbrown::HashSet<Request>,
 }
@@ -829,6 +875,7 @@ impl Owned {
                 method_sender: &handle.method_sender,
             },
         );
+        println!("{:#?}", self.map);
     }
 
     pub(super) fn wait_for(
@@ -1152,6 +1199,19 @@ pub(super) struct DependencyHandle {
 }
 
 impl DependencyHandle {
+    /// Returns a dependency handle *that doesn't keep any dependency alive*.
+    pub(super) fn empty_unsafe() -> Self {
+        Self {
+            id: DependencyPart {
+                // NOTE: the dependent and dependency don't matter, since nothing will be sent
+                dependent: AddedComponentId(App::component_id()),
+                dependency: AddedComponentId(App::component_id()),
+                ty: DependencyType::Weak,
+            },
+            sender: None,
+        }
+    }
+
     /// Drops this dependency using a specific app handle.
     ///
     /// This can be more efficient than the default drop implementation, but only if the app handle
@@ -1206,35 +1266,44 @@ impl Drop for DependencyHandle {
     }
 }
 
+#[derive(Debug)]
 pub(super) enum Method {
     Get {
-        sender: oneshot::Sender<Map>,
+        sender: OneshotSender<Map>,
     },
     Request {
         set: RequestSet,
-        sender: oneshot::Sender<Waiter>,
+        sender: OneshotSender<Waiter>,
     },
     WaitFor {
         set: RequestSet,
-        sender: oneshot::Sender<Waiter>,
+        sender: OneshotSender<Waiter>,
     },
     // Dependency
     TryIncrementDependency {
         dependency: ComponentId,
         dependent: ComponentId,
         ty: DependencyType,
-        sender: oneshot::Sender<Result<Dependency<()>, Error>>,
+        sender: OneshotSender<Result<Dependency<()>, Error>>,
     },
     IncrementDependency {
         id: DependencyPart,
-        sender: oneshot::Sender<Dependency<()>>,
+        sender: OneshotSender<Dependency<()>>,
     },
     DecrementDependency {
         id: DependencyPart,
     },
     // Internals
-    MarkInitialized {
-        component: ComponentId,
+    OnAddFinished {
+        component: AddedComponentId,
+    },
+    OnLoadFinished {
+        component: AddedComponentId,
+        load_index: LoadIndex,
+    },
+    UnloadFinished {
+        component: AddedComponentId,
+        load_index: LoadIndex,
     },
 }
 
@@ -1243,19 +1312,19 @@ impl Method {
         match self {
             Self::Get { sender } => {
                 let map = app.map().get().await;
-                let _ = sender.send(map);
+                sender.send(map);
             }
             Self::Request { set, sender } => {
                 let waiter = app.map_mut().request(set).await;
-                let _ = sender.send(waiter);
+                sender.send(waiter);
             }
             Self::WaitFor { set, sender } => {
                 let waiter = app.map_mut().wait_for(set).await;
-                let _ = sender.send(waiter);
+                sender.send(waiter);
             }
             Self::IncrementDependency { id, sender } => {
                 let dependency = app.map_mut().increment_dependency(id).await;
-                let _ = sender.send(dependency);
+                sender.send(dependency);
             }
             Self::TryIncrementDependency {
                 dependency,
@@ -1267,10 +1336,18 @@ impl Method {
                     .map_mut()
                     .try_increment_dependency(dependency, dependent, ty)
                     .await;
-                let _ = sender.send(dependency);
+                sender.send(dependency);
             }
             Self::DecrementDependency { id } => app.map_mut().decrement_dependency(id).await,
-            Self::MarkInitialized { component } => app.map_mut().mark_initialized(component).await,
+            Self::OnAddFinished { component } => app.map_mut().on_add_finished(component).await,
+            Self::OnLoadFinished {
+                component,
+                load_index,
+            } => app.map_mut().on_load_finished(component, load_index).await,
+            Self::UnloadFinished {
+                component,
+                load_index,
+            } => app.map_mut().unload_finished(component, load_index).await,
         }
     }
 }
@@ -1324,7 +1401,7 @@ impl AppFnMapMut {
         AppFn::oneshot_mut(
             request,
             |request, sender, _| {
-                super::Method::Map(Method::Request {
+                super::Method::Map(Method::WaitFor {
                     set: request,
                     sender,
                 })
@@ -1430,13 +1507,61 @@ impl<'a> AppMapMut<'a> {
         AppFn.map_mut().wait_for(request).call(self.app)
     }
 
-    pub(super) async fn mark_initialized(self, component: ComponentId) {
+    pub(super) async fn on_add_finished(self, component: AddedComponentId) {
         AppFn::spawn_mut(
             component,
-            |component, _| super::Method::Map(Method::MarkInitialized { component }),
+            |component, _| super::Method::Map(Method::OnAddFinished { component }),
             async |component, owned, handle| {
-                owned.map.mark_initialized(
+                owned.map.on_add_finished(
                     component,
+                    Channels {
+                        event_sender: &owned.event_sender,
+                        method_sender: &handle.method_sender,
+                    },
+                );
+            },
+        )
+        .call(self.app)
+        .await;
+    }
+
+    pub(super) async fn on_load_finished(self, component: AddedComponentId, load_index: LoadIndex) {
+        AppFn::spawn_mut(
+            (component, load_index),
+            |(component, load_index), _| {
+                super::Method::Map(Method::OnLoadFinished {
+                    component,
+                    load_index,
+                })
+            },
+            async |(component, load_index), owned, handle| {
+                owned.map.on_load_finished(
+                    component,
+                    load_index,
+                    Channels {
+                        event_sender: &owned.event_sender,
+                        method_sender: &handle.method_sender,
+                    },
+                );
+            },
+        )
+        .call(self.app)
+        .await;
+    }
+
+    pub(super) async fn unload_finished(self, component: AddedComponentId, load_index: LoadIndex) {
+        AppFn::spawn_mut(
+            (component, load_index),
+            |(component, load_index), _| {
+                super::Method::Map(Method::UnloadFinished {
+                    component,
+                    load_index,
+                })
+            },
+            async |(component, load_index), owned, handle| {
+                owned.map.unload_finished(
+                    component,
+                    load_index,
                     Channels {
                         event_sender: &owned.event_sender,
                         method_sender: &handle.method_sender,
@@ -1533,3 +1658,14 @@ impl PartialEq for Releaser {
 }
 
 impl Eq for Releaser {}
+
+impl Debug for Releaser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let is_some = self.sender.lock().is_ok_and(|opt| opt.is_some());
+        if is_some {
+            write!(f, "Some(...)")
+        } else {
+            write!(f, "None")
+        }
+    }
+}

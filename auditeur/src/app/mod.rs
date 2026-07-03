@@ -145,6 +145,7 @@ macro_rules! app_future_def {
     };
 }
 
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
@@ -152,8 +153,10 @@ use futures::FutureExt;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
-use crate::app::map::{AppFnMap, AppFnMapMut, RequestSet, Waiter};
-use crate::app::registry::{AppFnRegistriesMut, ErasedLoader, Loaded, Loader, Registry};
+use crate::app::map::{AppFnMap, AppFnMapMut, DependencyHandle, RequestSet, Waiter};
+use crate::app::registry::{
+    AppFnRegistriesMut, ErasedLoader, Loaded, Loader, LoaderCallbacks, Registry,
+};
 use crate::component::bundle::Bundles;
 use crate::component::{IdentifiedComponent, IdentifiedComponentType};
 use crate::prelude::*;
@@ -309,7 +312,7 @@ impl App {
     }
 
     #[must_use]
-    pub const fn map(&mut self) -> AppMap<'_> {
+    pub const fn map(&self) -> AppMap<'_> {
         AppMap::new(self)
     }
 
@@ -346,7 +349,22 @@ impl App {
     }
 }
 
+struct OneshotSender<T>(oneshot::Sender<T>);
+
+impl<T> OneshotSender<T> {
+    pub fn send(self, value: T) {
+        let _ = self.0.send(value);
+    }
+}
+
+impl<T> Debug for OneshotSender<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "oneshot::Sender(...)")
+    }
+}
+
 /// A message from a handle to run a method in the app.
+#[derive(Debug)]
 enum Method {
     Registries(registry::Method),
     Errors(error::Method),
@@ -358,7 +376,7 @@ enum Method {
     GetEventListener {
         dependent: AddedComponentId,
         ty: DependencyType,
-        sender: oneshot::Sender<Result<Listener<Event>, Error>>,
+        sender: OneshotSender<Result<Listener<Event>, Error>>,
     },
     Then {
         before: Box<Self>,
@@ -369,6 +387,7 @@ enum Method {
 impl Method {
     #[expect(clippy::manual_async_fn)] // doesn't work with boxed() for some reason
     fn run(self, app: &mut App) -> impl Future<Output = ()> + Send {
+        println!("{self:#?}");
         async {
             match self {
                 Self::Registries(method) => method.run(app).await,
@@ -390,7 +409,7 @@ impl Method {
                     sender,
                 } => {
                     let listener = app.get_event_listener_as(dependent, ty).await;
-                    let _ = sender.send(listener);
+                    sender.send(listener);
                 }
             }
         }
@@ -509,17 +528,15 @@ impl Builder {
             };
 
             // Then the owned dependency now that the app is being kept alive.
-            let owned_dependency = DependencyPart {
-                dependent: app_id.clone_inner(),
-                dependency: app_id.clone_inner(),
-                // Weak so that the owned handle doesn't keep itself alive.
-                ty: DependencyType::Weak,
+            let owned_dependency = Dependency {
+                value: (),
+                handle: DependencyHandle::empty_unsafe(),
             };
 
             let owned_app = App {
                 handle: HandleData {
                     method_sender: sender.clone(),
-                    dependency: owned.increment_dependency(owned_dependency, sender),
+                    dependency: owned_dependency,
                     new_dependency_type: DependencyType::Unremovable,
                 },
                 variant: Inner::Owned(Box::new(owned)),
@@ -703,6 +720,11 @@ impl Loader for AppLoader {
     async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
         Ok(AppLoaded(()))
     }
+
+    fn on_load(&self) -> impl registry::LoaderCallback<Self, Output = ()> {
+        // app has custom load / unload logic in the map
+        LoaderCallbacks::none()
+    }
 }
 
 impl IdentifiedComponent for AppLoader {
@@ -713,13 +735,7 @@ impl IdentifiedComponent for AppLoader {
 
 #[derive(Any)]
 pub struct AppLoaded(());
-impl Loaded for AppLoaded {
-    async fn unload(self, app: &mut App) -> Result<(), Error> {
-        app.release_event_listener().await;
-        let _ = app.exit().await;
-        Ok(())
-    }
-}
+impl Loaded for AppLoaded {}
 
 impl RegistryOf for App {
     type Registry = Self;
@@ -918,7 +934,7 @@ impl AppFn {
     app_future_def! {
         const fn @(oneshot, oneshot_mut)<I: Send + Sync + 'static, O: Send + Sync + 'static>(
             input: I,
-            method: impl FnOnce(I, oneshot::Sender<O>, &HandleData)
+            method: impl FnOnce(I, OneshotSender<O>, &HandleData)
                 -> Method + Send + Sync + 'static,
             owned: impl for<'a> AsyncFnOnce<
                 (I, &'a @mut Owned, &'a HandleData),
@@ -937,7 +953,7 @@ impl AppFn {
             impl<
                 I: Send + Sync + 'static,
                 Out: Send + Sync + 'static,
-                M: FnOnce(I, oneshot::Sender<Out>, &HandleData) -> Method + Send + Sync + 'static,
+                M: FnOnce(I, OneshotSender<Out>, &HandleData) -> Method + Send + Sync + 'static,
                 O: for<'a> AsyncFnOnce<
                         (I, &'a @mut Owned, &'a HandleData),
                         CallOnceFuture: Send + Sync,
@@ -954,6 +970,7 @@ impl AppFn {
                         source: self,
                         handle_fn: |this, handle| {
                             let (sender, receiver) = oneshot::channel();
+                            let sender = OneshotSender(sender);
                             ((this.method)(this.input, sender, handle), async {
                                 receiver.await.expect("app shouldn't drop our message")
                             })

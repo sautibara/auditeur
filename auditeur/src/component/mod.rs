@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::ops::Deref;
 
@@ -37,7 +37,7 @@ pub trait RegistryOf: Component<Self::Registry> {
     type Registry: Registry;
 }
 
-#[derive(Debug, Hash, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Hash, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ComponentId {
     pub registry: &'static NamespacedIdRef,
     pub component: ComponentIdPath,
@@ -68,6 +68,12 @@ impl ComponentId {
 impl Display for ComponentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.registry, &*self.component)
+    }
+}
+
+impl Debug for ComponentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ComponentId(\"{self}\")")
     }
 }
 
