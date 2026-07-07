@@ -17,9 +17,17 @@ use futures::Future;
 use tokio::select;
 
 #[doc = include_str!("listener_docs.md")]
-pub trait Listener: Resource + Runnable {
+pub trait Listener: Resource {
     /// The list of [`Component`]s, starting with either [`Unbiased`] or [`Biased`].
     type Components: ComponentList<Self>;
+
+    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+        async { Ok(()) }
+    }
+
+    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+        async { Ok(()) }
+    }
 }
 
 pub trait Component<L: Listener>: Input {
@@ -148,21 +156,25 @@ pub trait Respond: Listener {
 }
 
 // Credit: `https://stackoverflow.com/a/79744535`
-pub trait SendAsyncFnOnce<A, O>: FnOnce(A) -> Self::Fut + Send + 'static {
-    type Fut: Future<Output = O> + Send;
+pub trait SendAsyncFnOnce<A, O>: FnOnce(A) -> Self::Fut + Send + Sync + 'static {
+    type Fut: Future<Output = O> + Send + Sync;
 }
 
 impl<A, O, Out, F> SendAsyncFnOnce<A, O> for F
 where
-    Out: Future<Output = O> + Send,
-    F: FnOnce(A) -> Out + Send + 'static,
+    Out: Future<Output = O> + Send + Sync,
+    F: FnOnce(A) -> Out + Send + Sync + 'static,
 {
     type Fut = Out;
 }
 
 #[allow(clippy::type_complexity)] // wi wi wi
 pub struct BoxedTransactionFnOnce<R: Respond>(
-    Box<dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send>,
+    Box<
+        dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + Sync + 'a>>
+            + Send
+            + Sync,
+    >,
 );
 
 impl<R: Respond> BoxedTransactionFnOnce<R> {
@@ -263,6 +275,10 @@ impl<L: Listener> ResourceParts<L> for ListenerMethod {
             listener,
             components: L::Components::create(app).await?,
         })
+    }
+
+    fn children() -> Children {
+        L::Components::children(Children::new())
     }
 }
 

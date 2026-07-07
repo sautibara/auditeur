@@ -387,7 +387,6 @@ enum Method {
 impl Method {
     #[expect(clippy::manual_async_fn)] // doesn't work with boxed() for some reason
     fn run(self, app: &mut App) -> impl Future<Output = ()> + Send {
-        println!("{self:#?}");
         async {
             match self {
                 Self::Registries(method) => method.run(app).await,
@@ -1272,16 +1271,15 @@ app_future_def! {
                 handle_fn: move |this, handle| {
                     let inner: @AppFnOnceImpl<_, _, _, _, _, _> = this.inner.into_inner().into();
                     let (method, fut) = (inner.handle_fn)(inner.source, handle);
-                    let fut = async {
-                        let value = fut.await;
-                        (this.mapping)(value)
-                    };
+                    // WARN: doing this map manually (through an await or something)
+                    // causes to an ICE for some reason...
+                    let fut = futures::future::FutureExt::map(fut, this.mapping);
                     (method, fut)
                 },
-                owned_fn: |this, owned, handle| async move {
+                owned_fn: |this, owned, handle| {
                     let inner: @AppFnOnceImpl<_, _, _, _, _, _> = this.inner.into_inner().into();
-                    let value = (inner.owned_fn)(inner.source, owned, handle).await;
-                    (this.mapping)(value)
+                    let fut = (inner.owned_fn)(inner.source, owned, handle);
+                    futures::future::FutureExt::map(fut, this.mapping)
                 },
             }
         }
@@ -1289,7 +1287,8 @@ app_future_def! {
 }
 
 app_future_def! {
-    trait @AppFnOnceInner<'a>: Into<@AppFnOnceImpl<'a, @generics_from_types>> + Send + Sync {
+    #[doc(hidden)]
+    pub trait @AppFnOnceInner<'a>: Into<@AppFnOnceImpl<'a, @generics_from_types>> + Send + Sync {
         @type_defs;
     }
 

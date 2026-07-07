@@ -688,7 +688,7 @@ impl Method {
             Self::Add(children) => app.registries_mut().add(children).await,
             Self::Borrow { dependency, sender } => {
                 let component = app.registries_mut().borrow(dependency).await;
-                let _ = sender.send(component);
+                let () = sender.send(component);
             }
             Self::SpawnOnLoad {
                 component,

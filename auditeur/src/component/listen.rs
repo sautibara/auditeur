@@ -56,6 +56,11 @@ impl<M: ListenMessage> Listener<M> {
     pub async fn listen(&mut self) -> Option<M> {
         self.receiver.recv().await.ok()
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
+    }
 }
 
 impl<M: ListenMessage> CloneIn for Listener<M> {

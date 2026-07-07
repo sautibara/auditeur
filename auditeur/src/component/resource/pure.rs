@@ -9,6 +9,8 @@ impl<R: Resource> ResourceParts<R> for PureMethod {
     async fn runner(_: R, _: &mut App) -> Result<Self::Runner, Error> {
         Ok(PureRunner {})
     }
+
+    const OPTIONS: super::Options = super::Options::new().weak(true);
 }
 
 pub struct PureRunner {}

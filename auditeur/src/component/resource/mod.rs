@@ -95,16 +95,6 @@ pub trait Runner: Send + Sync {
     fn run(self, app: &mut App) -> impl Future<Output = ()> + Send + Sync;
 }
 
-pub trait Runnable {
-    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
-        async { Ok(()) }
-    }
-
-    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
-        async { Ok(()) }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct Options {
     weak: Option<bool>,

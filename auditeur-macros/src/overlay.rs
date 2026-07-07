@@ -35,12 +35,12 @@ impl<'a> Signature<'a> {
         }
     }
 
-    pub fn output(self, output: TokenStream) -> Self {
-        Self {
-            output: Some(output),
-            ..self
-        }
-    }
+    // pub fn output(self, output: TokenStream) -> Self {
+    //     Self {
+    //         output: Some(output),
+    //         ..self
+    //     }
+    // }
 }
 
 impl ToTokens for Signature<'_> {

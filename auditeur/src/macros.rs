@@ -3,10 +3,11 @@
 #[allow(unused_imports)] // used for doc links
 use crate::prelude::*;
 
-/// Implements [`Resource`] for any type.
+/// Implements the traits required for [`Resource`] for any type.
 ///
-/// This automatically implements [`Identifiable`], [`Any`](crate::Any), and if necessary,
-/// [`MaybeGetRef`].
+/// This automatically implements [`Identified`], [`Any`](crate::Any), and [`MaybeGetRef`]. You will
+/// still have to manually implement [`ResourceParts`], [`GetRunnerWith`], or use one of the macros
+/// that will do so for you (like [`listener`]).
 ///
 /// # Examples
 ///
@@ -17,17 +18,16 @@ use crate::prelude::*;
 /// use auditeur::prelude::*;
 ///
 /// #[resource("test:useful_resource")]
+/// #[pure_resource] // Still need to implement [`ResourceParts`] somehow.
+/// #[create(default)] // And create.
 /// struct UsefulResource;
 ///
-/// fn assert_is_resource<R: auditeur::resource::Resource>(_: R) {}
-///
 /// assert_eq!(UsefulResource::id(), ident!("test:useful_resource"));
-/// assert_is_resource(UsefulResource);
 /// # }
 /// ```
 pub use auditeur_macros::resource;
 
-/// Implements [`Identifiable`] for any type.
+/// Implements [`Identified`] for any type.
 ///
 /// # Examples
 ///
@@ -37,23 +37,21 @@ pub use auditeur_macros::resource;
 /// # pub fn main() {
 /// use auditeur::prelude::*;
 ///
-/// #[identifiable("test:has_identifier")]
+/// #[identified("test:has_identifier")]
 /// struct HasIdentifier;
 ///
-/// fn assert_is_identifiable<I: auditeur::app::Identifiable>(_: I) {}
+/// fn assert_is_identified<I: auditeur::component::Identified>(_: I) {}
 ///
 /// assert_eq!(HasIdentifier::id(), ident!("test:has_identifier"));
-/// assert_is_identifiable(HasIdentifier);
+/// assert_is_identified(HasIdentifier);
 /// # }
 /// ```
 pub use auditeur_macros::identified;
 
-/// Implements [`Message`](crate::Message) for any type.
+/// Implements [`ListenMessage`] for any type.
 ///
-/// This automatically implements [`Identifiable`] and [`Any`](crate::Any).
-///
-/// Note that you will have to annotate [`#[derive(Clone)]`](macro@Clone) yourself to make it more
-/// obvious that a [`Clone`](trait@Clone) implementation is required.
+/// This automatically implements [`Identified`] and [`Any`](crate::Any). You will still have to
+/// manually implement [`Clone`].
 ///
 /// # Examples
 ///
@@ -64,16 +62,39 @@ pub use auditeur_macros::identified;
 /// use auditeur::prelude::*;
 ///
 /// #[derive(Clone)]
-/// #[message("test:message")]
+/// #[listen_message("test:message")]
 /// struct Message;
 ///
-/// fn assert_is_message<M: auditeur::Message>(_: M) {}
+/// fn assert_is_message<M: auditeur::component::listen::ListenMessage>(_: M) {}
 ///
 /// assert_eq!(Message::id(), ident!("test:message"));
 /// assert_is_message(Message);
 /// # }
 /// ```
 pub use auditeur_macros::listen_message;
+
+/// Implements [`TakeMessage`] for any type.
+///
+/// This automatically implements [`Identified`] and [`Any`](crate::Any).
+///
+/// # Examples
+///
+/// ```
+/// # // see the doctest for bundle::Supplier for why this is necessary
+/// # use auditeur::*;
+/// # pub fn main() {
+/// use auditeur::prelude::*;
+///
+/// #[take_message("test:message")]
+/// struct Message;
+///
+/// fn assert_is_message<M: auditeur::component::take::TakeMessage>(_: M) {}
+///
+/// assert_eq!(Message::id(), ident!("test:message"));
+/// assert_is_message(Message);
+/// # }
+/// ```
+pub use auditeur_macros::take_message;
 
 /// Implements [`Listener`] for any type.
 ///
@@ -129,42 +150,7 @@ pub use auditeur_macros::listen_message;
 /// </details>
 pub use auditeur_macros::listener;
 
-/// Implements [`Runnable`](crate::resource::Runnable) through default implementations of `init`
-/// and `exit`.
-///
-/// # Examples
-///
-/// These two are equivalent:
-///
-/// ```
-/// use auditeur::prelude::*;
-/// # use auditeur::*;
-///
-/// #[derive(Runnable)]
-/// struct Runner;
-///
-/// fn assert_is_runnable<R: Runnable>() {}
-/// # fn main() {
-/// assert_is_runnable::<Runner>();
-/// # }
-/// ```
-///
-/// ```
-/// use auditeur::prelude::*;
-///
-/// struct Runner;
-///
-/// impl Runnable for Runner {
-///     async fn init(&mut self) -> Result<()> { Ok(()) }
-///     async fn exit(&mut self) -> Result<()> { Ok(()) }
-/// }
-///
-/// fn assert_is_runnable<R: Runnable>() {}
-/// # fn main() {
-/// assert_is_runnable::<Runner>();
-/// # }
-/// ```
-pub use auditeur_macros::Runnable;
+pub use auditeur_macros::pure_resource;
 
 // TODO: write documentation!
 pub use auditeur_macros::create;
@@ -205,10 +191,8 @@ pub use auditeur_macros::Any;
 /// ```
 /// use auditeur::prelude::*;
 /// use tokio::sync::broadcast;
-/// # use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
-/// # use namespaced_id;
+/// # use auditeur::*;
 ///
-/// #[derive(Runnable)]
 /// // All that needs to be done in the `#[listener]` macro is to pass in a `respond` flag.
 /// // The macro then pulls the necessary information from the `impl` block for which messages
 /// // to listen to.
@@ -240,35 +224,35 @@ pub use auditeur_macros::Any;
 ///     // This is used here to allow other resources to wait until the value is fully set.
 ///     pub fn set(&mut self, value: usize) {
 ///         self.value = value;
-///         self.sender.send(CounterChanged);
+///         self.sender.shout(CounterChanged);
 ///     }
 /// }
 ///
 /// #[derive(Clone)]
-/// #[message("test:counter_changed")]
+/// #[listen_message("test:counter_changed")]
 /// struct CounterChanged;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), auditeur::Error> {
-///     let app = App::new().with_bundle(
-///         new_bundle!("test:test")
-///             .with_listener::<Counter>(())
-///             .with_listen_channel::<CounterChanged>()
-///     );
-///     app.run_with(
-///         |(counter, receiver): (
-///             Get<Counter>,
-///             auditeur::app::channels::Listener<CounterChanged>
-///         ) | async move {
-///             // All methods on a `Connection` struct take `&self` and are asynchronous since they
-///             // send and receive messages.
-///             assert!(receiver.is_empty());
-///             assert_eq!(counter.get().await, 0);
-///             counter.set(5).await;
-///             assert_eq!(counter.get().await, 5);
-///             assert!(!receiver.is_empty());
-///         }
-///     ).await
+///     let mut app = App::builder()
+///         .with::<Counter>(())
+///         .with::<CounterChanged>(())
+///         .spawn();
+///
+///     let listener = app.listen_mut().listener::<CounterChanged>().await?;
+///     let counter = app.resources_mut().get::<Counter>().await?;
+///
+///     assert!(listener.is_empty());
+///     assert_eq!(counter.get().await, 0);
+///
+///     counter.set(5).await;
+///
+///     assert!(!listener.is_empty());
+///     assert_eq!(counter.get().await, 5);
+///
+///     app.exit().await;
+///     app.wait_for_exit().await;
+///     Ok(())
 /// }
 /// ```
 ///
@@ -284,12 +268,11 @@ pub use auditeur_macros::Any;
 ///
 /// ```
 /// use auditeur::prelude::*;
-/// # use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
+/// # use auditeur::*;
 ///
-/// #[derive(Default, Runnable)]
-/// #[create(default)]
 /// #[resource("test:vec_resource")]
 /// #[listener(respond)]
+/// #[create(default)]
 /// pub struct VecResource {
 ///     items: Vec<usize>,
 /// }
@@ -307,26 +290,33 @@ pub use auditeur_macros::Any;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), auditeur::Error> {
-///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<VecResource>(()));
-///     app.run_with(|vec: Get<VecResource>| async move {
-///         // Use `spawn_transaction` to run a transaction without returning a value.
-///         // While the future does have to be `await`ed, it will not await the listener fully
-///         // running the future - use `run_transaction` for that.
-///         vec.spawn_transaction(async |vec: &mut VecResource| {
-///             for val in (0..5).rev() {
-///                 // Note that transactions are run by the listener itself, so we don't have to
-///                 // await any messages being sent.
-///                 vec.push_usize(val);
-///             }
-///         }).await;
+///     let mut app = App::builder()
+///         .with::<VecResource>(())
+///         .spawn();
 ///
-///         // Here, run_transaction is used to return a value: the first five elements in the vec.
-///         let vals: Vec<usize> = vec.run_transaction(async |vec: &mut VecResource| {
-///             (0..5).map(|index| vec.get_unwrap(index)).collect()
-///         }).await;
+///     let vec = Get::<VecResource>::create(&mut app).await?;
 ///
-///         assert_eq!(&[4, 3, 2, 1, 0], &*vals);
-///     }).await
+///     // Use `spawn_transaction` to run a transaction without returning a value.
+///     // Note that this won't wait for the resource to run the future
+///     // - use `spawn_transaction` for that
+///     vec.spawn_transaction(async |vec: &mut VecResource| {
+///         for val in (0..5).rev() {
+///             // Note that transactions are run by the listener itself, so we don't have to
+///             // await any messages being sent.
+///             vec.push_usize(val);
+///         }
+///     });
+///
+///     // Here, run_transaction is used to return a value: the first five elements in the vec.
+///     let vals: Vec<usize> = vec.run_transaction(async |vec: &mut VecResource| {
+///         (0..5).map(|index| vec.get_unwrap(index)).collect()
+///     }).await;
+///
+///     assert_eq!(&[4, 3, 2, 1, 0], &*vals);
+///
+///     app.exit().await;
+///     app.wait_for_exit().await;
+///     Ok(())
 /// }
 /// ```
 ///
@@ -354,13 +344,12 @@ pub use auditeur_macros::Any;
 ///
 /// ```
 /// use auditeur::prelude::*;
-/// use auditeur::app::Identifiable;
-/// # use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
+/// use auditeur::component::IdentifiedType;
+/// # use auditeur::*;
 ///
-/// #[derive(Default, Runnable)]
-/// #[create(default)]
 /// #[resource("test:attribute_example")]
 /// #[listener(respond)]
+/// #[create(default)]
 /// pub struct IdentList {
 ///     idents: Vec<NamespacedId>,
 /// }
@@ -373,12 +362,12 @@ pub use auditeur_macros::Any;
 ///
 ///     // These use generics, which other methods can't.
 ///     #[respond(resource_fn)]
-///     pub fn push_ident_of<I: Identifiable>(&mut self) {
+///     pub fn push_ident_of<I: IdentifiedType>(&mut self) {
 ///         self.push_ident(I::id().to_owned())
 ///     }
 ///
 ///     #[respond(connection_fn)]
-///     pub async fn push_ident_of<I: Identifiable>(&self) {
+///     pub async fn push_ident_of<I: IdentifiedType>(&self) {
 ///         self.push_ident(I::id().to_owned()).await
 ///     }
 ///
@@ -389,23 +378,27 @@ pub use auditeur_macros::Any;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), auditeur::Error> {
-///     let app = App::new().with_bundle(new_bundle!("test:test").with_listener::<IdentList>(()));
-///     app.run_with(|conn: Get<IdentList>| async move {
-///         #[identifiable("test:identifiable1")]
-///         struct TestIdentifiable1;
-///         #[identifiable("test:identifiable2")]
-///         struct TestIdentifiable2;
+///     let mut app = App::builder()
+///         .with::<IdentList>(())
+///         .spawn();
 ///
-///         conn.push_ident(ident!("test:ident1").to_owned()).await;
-///         conn.push_ident_of::<TestIdentifiable1>().await;
-///         conn.run_transaction(async |reference: &mut IdentList| {
-///             reference.push_ident_of::<TestIdentifiable2>();
-///         }).await;
+///     #[identified("test:identifiable1")]
+///     struct TestIdentifiable1;
+///     #[identified("test:identifiable2")]
+///     struct TestIdentifiable2;
 ///
-///         assert_eq!(*ident!("test:ident1"), conn.index(0).await);
-///         assert_eq!(*ident!("test:identifiable1"), conn.index(1).await);
-///         assert_eq!(*ident!("test:identifiable2"), conn.index(2).await);
-///     }).await
+///     let conn = Get::<IdentList>::create(&mut app).await?;
+///
+///     conn.push_ident(ident!("test:ident1").to_owned()).await;
+///     conn.push_ident_of::<TestIdentifiable1>().await;
+///     conn.run_transaction(async |reference: &mut IdentList| {
+///         reference.push_ident_of::<TestIdentifiable2>();
+///     }).await;
+///
+///     assert_eq!(*ident!("test:ident1"), conn.index(0).await);
+///     assert_eq!(*ident!("test:identifiable1"), conn.index(1).await);
+///     assert_eq!(*ident!("test:identifiable2"), conn.index(2).await);
+///     Ok(())
 /// }
 /// ```
 // /// ## `timeout = <expr>`

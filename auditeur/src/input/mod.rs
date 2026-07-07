@@ -31,6 +31,12 @@ impl<T: Send + Sync + 'static> Input for PhantomData<T> {
     }
 }
 
+impl Input for App {
+    async fn create(app: &mut App) -> Result<Self, Error> {
+        Ok(app.handle().await)
+    }
+}
+
 macro_rules! impl_input {
     ($($T:ident),*) => {
         impl<$($T: Input),*> Input for ($($T,)*) {
@@ -71,7 +77,7 @@ pub trait CreateDeriveTypes: Sized + Send {
     fn finish(
         plain: Self::Plain,
         app: &mut App,
-    ) -> impl Future<Output = Result<Self, Error>> + Send + Sync;
+    ) -> impl Future<Output = Result<Self, Error>> + Send;
 }
 
 pub trait CreateDerive: CreateDeriveTypes {
@@ -92,7 +98,7 @@ impl CloneIn for () {
 }
 
 #[doc(hidden)]
-pub mod clone_as {
+pub mod clone_in {
     use crate::app::App;
 
     pub trait Specialization<T> {

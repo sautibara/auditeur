@@ -12,8 +12,8 @@ pub fn clone_as_struct<'i>(
 
     quote! {
         impl #impl_generics #auditeur::input::CloneIn for #ident #type_generics #where_clause {
-            async fn clone_as(&self, app: &mut #auditeur::app::App) -> Self {
-                use #auditeur::input::clone_as::Specialization as _;
+            async fn clone_in(&self, app: &mut #auditeur::app::App) -> Self {
+                use #auditeur::input::clone_in::Specialization as _;
                 Self {
                     #(#fields: (&mut &self.#fields).specialization(app).await),*
                 }
@@ -68,9 +68,9 @@ pub fn clone_as_enum(enm: &ItemEnum) -> proc_macro2::TokenStream {
     let ident = &enm.ident;
 
     quote! {
-        impl #impl_generics #auditeur::input::CloneAs for #ident #type_generics #where_clause {
-            async fn clone_as(&self, app: &mut #auditeur::app::App) -> Self {
-                use #auditeur::input::clone_as::Specialization as _;
+        impl #impl_generics #auditeur::input::CloneIn for #ident #type_generics #where_clause {
+            async fn clone_in(&self, app: &mut #auditeur::app::App) -> Self {
+                use #auditeur::input::clone_in::Specialization as _;
                 match self {
                     #variants
                 }

@@ -38,3 +38,20 @@ pub fn resource_impls_with_generics(
         #maybe_get_ref_impl
     )
 }
+
+pub fn get_runner_with(
+    ident: &Ident,
+    generics: &syn::Generics,
+    method: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let auditeur = &*crate::AUDITEUR;
+    quote! {
+        impl #impl_generics #auditeur::component::resource::GetRunnerWith for #ident #ty_generics
+        #where_clause
+        {
+            type Method = #method;
+        }
+    }
+}

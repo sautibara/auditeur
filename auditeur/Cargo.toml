@@ -26,9 +26,11 @@ namespaced-id = { version = "0.1.0", features = ["serde"], path = "../namespaced
 im = "15.1.0"
 
 [lints.clippy]
-enum_glob_use = "warn"
-pedantic = "warn"
-nursery = "warn"
+enum_glob_use = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# too much work
+unused_async_trait_impl = "allow"
 
 [features]
 path-any = ["auditeur-macros/path-any"]

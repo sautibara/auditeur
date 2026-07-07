@@ -1,6 +1,5 @@
 use std::{ops::Deref, sync::Arc};
 
-use tokio::sync::oneshot;
 
 use crate::{
     app::{
@@ -79,7 +78,7 @@ impl Method {
             Self::AddShared(error) => app.errors_mut().add_shared(error).await,
             Self::Get(sender) => {
                 let errors = app.errors().get().await;
-                let _ = sender.send(errors);
+                let () = sender.send(errors);
             }
         }
     }

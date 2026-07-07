@@ -65,35 +65,29 @@ impl<'a> ConfigStruct<'a> {
     }
 
     fn field_types(&self, is_input: bool) -> impl Iterator<Item = FieldType<'_>> + Clone {
-        self.fields_of_type(is_input)
-            .map(move |field| field.ty(is_input))
+        self.fields_of_type(is_input).map(move |field| field.ty())
     }
 
     fn expand(&self) -> TokenStream {
         let ident = self.ident;
         let plain_ident = format_ident!("{ident}Plain");
-        let input_ident = format_ident!("{ident}Input");
 
-        let plain_struct_def = self.expand_struct(false, &plain_ident);
-        let input_struct_def = self.expand_struct(true, &input_ident);
+        let plain_struct_def = self.expand_plain_struct(&plain_ident);
 
-        let input_impl = self.expand_input_impl(&input_ident);
-        let trait_impl = self.expand_trait_impl(&plain_ident, &input_ident);
+        let trait_impl = self.expand_trait_impl(&plain_ident);
         let default_impl = match self.shared.auto_impl {
             AutoImpl::None => TokenStream::new(),
-            AutoImpl::Default => self.expand_default(&plain_ident, &input_ident),
+            AutoImpl::Default => self.expand_default(&plain_ident),
         };
 
         quote! {
             #plain_struct_def
-            #input_struct_def
-            #input_impl
             #trait_impl
             #default_impl
         }
     }
 
-    fn expand_trait_impl(&self, plain_ident: &Ident, input_ident: &Ident) -> TokenStream {
+    fn expand_trait_impl(&self, plain_ident: &Ident) -> TokenStream {
         let auditeur = &*crate::AUDITEUR;
         let ident = self.ident;
 
@@ -105,39 +99,41 @@ impl<'a> ConfigStruct<'a> {
                 FieldIdent::Ident(ident) => quote! { #ident },
                 FieldIdent::Index(index) => quote! { #index },
             };
+            let ty = field.ty;
 
-            if field.construction.is_create() {
-                let ty = field.ty;
-                quote! {
-                    #combined_field: <#ty as #auditeur::resource::Create>::create(
-                        input.#inner_field,
-                        plain.#inner_field,
-                    ).await?
+            match field.construction {
+                FieldConstruction::Create => {
+                    quote! {
+                        #combined_field: <#ty as #auditeur::input::Create>::create(
+                            &plain.#inner_field,
+                            app,
+                        ).await?
+                    }
                 }
-            } else {
-                let struct_ident = if field.construction.is_input() {
-                    quote! { input }
-                } else {
-                    quote! { plain }
-                };
-
-                quote! { #combined_field: #struct_ident.#inner_field }
+                FieldConstruction::Manual => {
+                    quote! {
+                        #combined_field: plain.#inner_field
+                    }
+                }
+                FieldConstruction::Input => {
+                    quote! {
+                        #combined_field: <#ty as #auditeur::input::Input>::create(app).await?
+                    }
+                }
             }
         });
 
         let (impl_generics, type_generics, where_clause) = self.shared.split_generics();
 
         quote! {
-            impl #impl_generics #auditeur::resource::CreateDeriveTypes for #ident #type_generics
+            impl #impl_generics #auditeur::input::CreateDeriveTypes for #ident #type_generics
                 #where_clause
             {
-                type Input = #input_ident;
+                type External = (#(#external_input),*);
                 type Plain = #plain_ident #type_generics;
 
-                type External = (#(#external_input),*);
-
-                async fn combine(input: #input_ident, plain: #plain_ident #type_generics)
-                    -> #auditeur::anyhow::Result<Self>
+                async fn finish(plain: #plain_ident #type_generics, app: &mut #auditeur::app::App)
+                    -> Result<Self, #auditeur::Error>
                 {
                     Ok(Self { #(#fields),* })
                 }
@@ -145,22 +141,17 @@ impl<'a> ConfigStruct<'a> {
         }
     }
 
-    fn expand_struct(&self, is_input: bool, name: &Ident) -> TokenStream {
-        let fields = self.field_idents(is_input);
-        let types = self.field_types(is_input);
+    fn expand_plain_struct(&self, name: &Ident) -> TokenStream {
+        let fields = self.field_idents(false);
+        let types = self.field_types(false);
 
-        let attrs = if self.shared.auto_impl.is_default() && !is_input {
+        let attrs = if self.shared.auto_impl.is_default() {
             quote! { #[derive(Default)] }
         } else {
             TokenStream::new()
         };
 
-        // include generics only if this is the basic struct
-        let generics = if is_input {
-            TokenStream::new()
-        } else {
-            self.shared.generics.to_token_stream()
-        };
+        let generics = self.shared.generics;
 
         quote! {
             #attrs
@@ -171,18 +162,7 @@ impl<'a> ConfigStruct<'a> {
         }
     }
 
-    fn expand_input_impl(&self, input_ident: &Ident) -> TokenStream {
-        let idents = self.field_idents(true);
-        let types = self.field_types(true);
-
-        let auditeur = &*crate::AUDITEUR;
-        let inner = crate::proc_macro_impls::input::expand_named_struct(idents, types);
-        quote! {
-            impl #auditeur::input::Input for #input_ident { #inner }
-        }
-    }
-
-    fn expand_default(&self, plain_ident: &Ident, input_ident: &Ident) -> TokenStream {
+    fn expand_default(&self, plain_ident: &Ident) -> TokenStream {
         let auditeur = &*crate::AUDITEUR;
         let ident = self.ident;
         let (impl_generics, type_generics, where_clause) = self.shared.split_generics();
@@ -191,11 +171,11 @@ impl<'a> ConfigStruct<'a> {
         let external_input = &self.shared.external_inputs;
 
         quote! {
-            impl #impl_generics #auditeur::resource::CreateDerive for #ident #type_generics
+            impl #impl_generics #auditeur::input::CreateDerive for #ident #type_generics
                 #where_clause
             {
-                async fn create(_: (#(#external_input),*), _: &#input_ident)
-                    -> #auditeur::anyhow::Result<#plain_ident>
+                async fn create(_: &(#(#external_input),*), _: &mut #auditeur::app::App)
+                    -> Result<#plain_ident, #auditeur::Error>
                 {
                     Ok(::std::default::Default::default())
                 }
@@ -298,11 +278,10 @@ impl<'a> ConfigField<'a> {
         self.construction.is_create() || is_input == self.construction.is_input()
     }
 
-    const fn ty(&self, is_input: bool) -> FieldType<'_> {
+    const fn ty(&self) -> FieldType<'_> {
         FieldType {
             ty: self.ty,
             is_create: self.construction.is_create(),
-            is_input,
         }
     }
 }
@@ -310,7 +289,6 @@ impl<'a> ConfigField<'a> {
 struct FieldType<'a> {
     ty: &'a syn::Type,
     is_create: bool,
-    is_input: bool,
 }
 
 impl ToTokens for FieldType<'_> {
@@ -318,15 +296,9 @@ impl ToTokens for FieldType<'_> {
         let ty = &self.ty;
         if self.is_create {
             let auditeur = &*crate::AUDITEUR;
-            if self.is_input {
-                tokens.extend(quote! {
-                    <#ty as #auditeur::resource::Create>::RegistryInput
-                });
-            } else {
-                tokens.extend(quote! {
-                    <#ty as #auditeur::resource::Create>::ExternalInput
-                });
-            }
+            tokens.extend(quote! {
+                <#ty as #auditeur::input::Create>::ExternalInput
+            });
         } else {
             ty.to_tokens(tokens);
         }

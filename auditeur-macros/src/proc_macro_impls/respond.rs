@@ -251,7 +251,7 @@ impl<'a> Config<'a> {
         let auditeur = &*crate::AUDITEUR;
         let expr = if item.generics.params.is_empty() && item.generics.where_clause.is_none() {
             let item_ident = &item.self_ty;
-            quote! { <#item_ident as #auditeur::app::Identifiable>::id() }
+            quote! { <#item_ident as #auditeur::component::IdentifiedType>::id() }
         } else if let Some(id) = &attrs.id {
             let id = &id.value;
             quote! { #id }
@@ -261,6 +261,14 @@ impl<'a> Config<'a> {
                 "id must be specified for a resource with generics",
             ));
             quote! { #auditeur::namespaced_id::ident!("error:recovery") }
+        };
+
+        let expr = quote! {
+            #auditeur::component::ComponentId {
+                registry: <#auditeur::component::resource::Resources
+                    as #auditeur::component::IdentifiedType>::id(),
+                component: #auditeur::component::ComponentIdPath::Static(#expr),
+            }
         };
 
         error.wrap(expr)
@@ -292,7 +300,7 @@ impl Config<'_> {
         let doc_vis = &self.doc_vis;
 
         let message_impl =
-            super::derive_listen_message(ident, &self.query_id, &syn::Generics::default());
+            super::derive_take_message(ident, &self.query_id, &syn::Generics::default());
 
         tokens.extend(quote! {
             #[non_exhaustive]
@@ -310,7 +318,7 @@ impl Config<'_> {
         let self_ty = &self.item.self_ty;
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
-            Transaction(#auditeur::resource::listener::BoxedTransactionFnOnce<#self_ty>),
+            Transaction(#auditeur::component::resource::listener::BoxedTransactionFnOnce<#self_ty>),
         });
     }
 
@@ -329,7 +337,7 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
-            impl #impl_generics #auditeur::resource::listener::Take<#query_ident> for #self_ty #where_clause {
+            impl #impl_generics #auditeur::component::resource::listener::Take<#query_ident> for #self_ty #where_clause {
                 async fn on(&mut self, query: #query_ident) -> #auditeur::anyhow::Result<()> {
                     match query {
                         #variants
@@ -367,8 +375,8 @@ impl Config<'_> {
         tokens.extend(quote! {
             #doc_vis
             pub struct #connection_ident {
-                dependency_handle: #auditeur::input::dependency::Handle,
-                giver: #auditeur::app::channels::Giver<#query_ident>,
+                dependency: #auditeur::app::map::Dependency<()>,
+                giver: #auditeur::component::take::Giver<#query_ident>,
                 #(#field_idents: #field_types,)*
             }
         });
@@ -405,42 +413,33 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
-            pub fn run_transaction<T: Send + Sync + 'static>(
+            pub async fn run_transaction<T: Send + Sync + 'static>(
                 &self,
                 transaction: impl for<'a>
-                    #auditeur::resource::listener::SendAsyncFnOnce<&'a mut #self_ty, T>,
-            ) -> #auditeur::resource::listener::RespondFuture<
-                T,
-                impl ::std::future::Future<Output = ()> + Send,
-                impl ::std::future::Future<Output = T> + Send + 'static,
-            > {
+                    #auditeur::component::resource::listener::SendAsyncFnOnce<&'a mut #self_ty, T>,
+            ) -> T {
                 let (response, receiver) = #auditeur::tokio::sync::oneshot::channel();
-                #auditeur::resource::listener::RespondFuture::new(
-                    async move {
-                        self.giver.give(#query_ident::Transaction(
-                            #auditeur::resource::listener::BoxedTransactionFnOnce::new_with_sender(
-                                transaction,
-                                response,
-                            ),
-                        )).await;
-                    },
-                    async move {
-                        receiver.await.expect(concat!(
-                            stringify!(#self_ty),
-                            " transaction panicked"
-                        ))
-                    }
-                )
+                self.giver.give(#query_ident::Transaction(
+                    #auditeur::component::resource::listener::BoxedTransactionFnOnce::new_with_sender(
+                        transaction,
+                        response,
+                    ),
+                ));
+
+                receiver.await.expect(concat!(
+                    stringify!(#self_ty),
+                    " transaction panicked"
+                ))
             }
 
-            pub async fn spawn_transaction(
+            pub fn spawn_transaction(
                 &self,
                 transaction: impl for<'a>
-                    #auditeur::resource::listener::SendAsyncFnOnce<&'a mut #self_ty, ()>,
+                    #auditeur::component::resource::listener::SendAsyncFnOnce<&'a mut #self_ty, ()>,
             ) {
                 self.giver.give(#query_ident::Transaction(
-                    #auditeur::resource::listener::BoxedTransactionFnOnce::new(transaction)
-                )).await;
+                    #auditeur::component::resource::listener::BoxedTransactionFnOnce::new(transaction)
+                ));
             }
         });
     }
@@ -450,7 +449,7 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         let new_docs = format!(
-            "Create a new [`{connection_ident}`] using a [`Registry`]({}::app::Registry).",
+            "Create a new [`{connection_ident}`] using an [`App`]({}::app::Registry).",
             auditeur.to_token_stream().to_string().replace(' ', "")
         );
 
@@ -462,27 +461,14 @@ impl Config<'_> {
             impl #connection_ident {
                 #[doc = #new_docs]
                 pub async fn new(
-                    registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::ComponentIdRef<'_>,
+                    app: &mut #auditeur::app::App,
                 ) -> ::std::result::Result<Self, #auditeur::Error> {
-                    let event_sender = registry.event_sender();
-                    let id = #id_expr.to_owned();
-                    let dependency = #auditeur::input::dependency::Full {
-                        link: #auditeur::input::dependency::Link {
-                            dependency: #auditeur::app::ComponentId::Resource(id),
-                            dependent: dependent.into_owned(),
-                        },
-                        removable: #auditeur::input::dependency::Removable::Inherit,
-                    };
-                    let dependency_handle = #auditeur::input::dependency::Handle::new(
-                        event_sender,
-                        dependency,
-                    );
                     #[allow(unused_variables)]
                     Ok(Self {
-                        dependency_handle,
-                        giver: registry.channels().giver(dependent).await?,
-                        #(#field_idents: <#field_types as #auditeur::input::Input>::create(registry, dependent).await?),*
+                        dependency: app.registries_mut().load(#id_expr).await?,
+                        giver: app.take_mut().giver().await?,
+                        #(#field_idents:
+                            <#field_types as #auditeur::input::Input>::create(app).await?,)*
                     })
                 }
             }
@@ -491,24 +477,14 @@ impl Config<'_> {
 
     fn expand_connection_impl_input(&self, tokens: &mut TokenStream) {
         let connection_ident = &self.connection_ident;
-        let id_expr = &self.id_expr;
-
-        let field_types = self.fields.iter().map(|field| &field.ty);
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
             impl #auditeur::input::Input for #connection_ident {
                 async fn create(
-                    registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::ComponentIdRef<'_>,
+                    app: &mut #auditeur::app::App,
                 ) -> Result<Self, #auditeur::Error> {
-                    Self::new(registry, dependent).await
-                }
-
-                fn constraints() -> #auditeur::input::Constraints {
-                    #auditeur::input::Constraints::empty()
-                        .after_resource(#id_expr)
-                        #(.extend(<#field_types as #auditeur::input::Input>::constraints()))*
+                    Self::new(app).await
                 }
             }
         });
@@ -525,7 +501,7 @@ impl Config<'_> {
     fn expand_connection_impl_clone_as(&self, tokens: &mut TokenStream) {
         tokens.extend(super::clone_as_struct(
             &self.connection_ident,
-            [format_ident!("dependency_handle"), format_ident!("giver")]
+            [format_ident!("dependency"), format_ident!("giver")]
                 .iter()
                 .chain(self.field_idents()),
             &syn::Generics::default(),
@@ -550,7 +526,7 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
-            impl #impl_generics #auditeur::resource::listener::Respond for #self_ty
+            impl #impl_generics #auditeur::component::resource::listener::Respond for #self_ty
             #where_clause
             {
                 type Query = #query_ident;
@@ -565,18 +541,10 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
-            impl #impl_generics #auditeur::input::get::GetRef for #self_ty
+            impl #impl_generics #auditeur::input::get::GetRefWith for #self_ty
             #where_clause
             {
-                type Ref = #connection_ident;
-
-                async fn get_ref(
-                    &self,
-                    registry: &#auditeur::app::Registry,
-                    dependent: #auditeur::app::ComponentIdRef<'_>,
-                ) -> Result<Self::Ref, #auditeur::Error> {
-                    #connection_ident::new(registry, dependent).await
-                }
+                type Method = #auditeur::input::get::GetInput<#connection_ident>;
             }
         });
     }
@@ -716,13 +684,6 @@ impl<'a> MethodConfig<'a> {
         });
     }
 
-    fn output(&self) -> TokenStream {
-        match &self.method.sig.output {
-            syn::ReturnType::Default => quote! { () },
-            syn::ReturnType::Type(_, ty) => ty.to_token_stream(),
-        }
-    }
-
     fn expand_connection_method(
         &self,
         self_ty: &syn::Type,
@@ -741,27 +702,19 @@ impl<'a> MethodConfig<'a> {
         let auditeur = &*crate::AUDITEUR;
         let ident = &self.method.sig.ident;
 
-        let output = self.output();
         let sig = overlay::Signature::new(&self.method.vis, &self.method.sig)
             .asyncness(true)
-            .receiver(quote! { &self })
-            .output(quote! { -> #auditeur::resource::listener::RespondFuture<
-                #output,
-                impl ::std::future::Future<Output = ()> + Send,
-                impl ::std::future::Future<Output = #output> + Send + 'static,
-            > });
+            .receiver(quote! { &self });
 
         let args = (self.method.sig.inputs.iter())
             .filter_map(fn_arg_as_typed)
             .map(|fn_arg| &fn_arg.pat);
 
-        let docs1 = (self.method.attrs.iter()).filter(|attr| attr.path().is_ident("doc"));
-        let docs2 = docs1.clone();
+        let docs = (self.method.attrs.iter()).filter(|attr| attr.path().is_ident("doc"));
 
         tokens.extend(quote! {
             #[allow(clippy::needless_pass_by_value)]
-            #[cfg(not(doc))]
-            #(#docs1)*
+            #(#docs)*
             #sig {
                 let (response, auditeur_receiver) = #auditeur::tokio::sync::oneshot::channel();
 
@@ -774,16 +727,6 @@ impl<'a> MethodConfig<'a> {
                     " panicked"
                 ))
             }
-        });
-
-        let doc_sig = overlay::Signature::new(&self.method.vis, &self.method.sig)
-            .asyncness(true)
-            .receiver(quote! { &self });
-
-        tokens.extend(quote! {
-            #[cfg(doc)]
-            #(#docs2)*
-            #doc_sig { unreachable!() }
         });
     }
 }
@@ -814,7 +757,7 @@ impl Attrs {
             .filter_map(attr_map)
             .flatten()
             .filter_map(component_map)
-            .last()
+            .next_back()
     }
 }
 

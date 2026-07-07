@@ -19,10 +19,7 @@ pub use ::namespaced_id;
 mod macros;
 pub use macros::*;
 
-#[cfg(feature = "path-any")]
-pub use path_any::PathAny as Any;
-#[cfg(not(feature = "path-any"))]
-pub use std::any::Any;
+pub use any::Any;
 
 #[cfg(feature = "path-any")]
 pub(crate) use path_any::PathAnyConst as AnyConst;
@@ -31,7 +28,10 @@ pub(crate) use std::any::Any as AnyConst;
 
 #[cfg(feature = "path-any")]
 pub mod any {
-    pub use super::Any;
+    #[cfg(feature = "path-any")]
+    pub use crate::path_any::PathAny as Any;
+    #[cfg(not(feature = "path-any"))]
+    pub use std::any::Any;
 
     /// Attempt to downcast the box to a concrete type.
     ///
@@ -67,21 +67,22 @@ pub use futures::try_join;
 pub use tokio;
 
 pub mod prelude {
+    pub use crate::children::HasChildren as _;
     pub use crate::component::IdentifiedType as _;
     pub use crate::{
         app::App,
         children::Children,
         component::ComponentId,
         component::bundle::Bundle,
+        component::listen::Shouter,
         component::resource::{
-            Runnable,
-            // listener::{Listen, ListenToRegistry, Listener, OnLoad, Take},
-            // watcher::Watcher,
+            listener::{Listen, Listener, Take},
+            watcher::Watcher,
         },
+        input::get::Get,
         input::{Create, CreateDerive, Input},
-        // input::get::Get,
         macros::{
-            GetRef, Input, Runnable, create, identified, listen_message, listener, resource,
+            GetRef, Input, create, identified, listen_message, listener, pure_resource, resource,
             respond,
         },
         namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},

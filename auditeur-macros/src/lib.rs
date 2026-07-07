@@ -53,7 +53,7 @@ impl<I, L: Iterator<Item = I>, R: Iterator<Item = I>> Iterator for Either<L, R> 
 
 mod proc_macro_impls {
     mod resource;
-    pub use resource::resource;
+    pub use resource::{get_runner_with, resource};
 
     pub mod input;
     pub use input::derive as derive_input;
@@ -171,6 +171,36 @@ pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro_impls::resource(&item, &id)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+#[proc_macro_attribute]
+pub fn pure_resource(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as Item);
+    if !attr.is_empty() {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::from(attr),
+            "attribute should be empty",
+        )
+        .into_compile_error()
+        .into();
+    }
+
+    let (ident, generics, _) = match extract_item_values(&item) {
+        Ok(tuple) => tuple,
+        Err(err) => return err.into_compile_error().into(),
+    };
+
+    let auditeur = &*crate::AUDITEUR;
+    let method = quote! {
+        #auditeur::component::resource::pure::PureMethod
+    };
+
+    let get_runner_with = proc_macro_impls::get_runner_with(ident, generics, &method);
+    quote! {
+        #get_runner_with
+        #item
+    }
+    .into()
 }
 
 #[proc_macro_attribute]
@@ -411,27 +441,6 @@ pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro_impls::listener_attr(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
-}
-
-#[proc_macro_derive(Runnable)]
-pub fn runnable_derive(item: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(item as Item);
-
-    let (ident, generics, _) = match extract_item_values(&item) {
-        Ok(tuple) => tuple,
-        Err(err) => return err.into_compile_error().into(),
-    };
-
-    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-
-    let auditeur = &*AUDITEUR;
-    quote! {
-        impl #impl_generics #auditeur::resource::Runnable for #ident #type_generics #where_clause {
-            async fn init(&mut self) -> #auditeur::anyhow::Result<()> { Ok(()) }
-            async fn exit(&mut self) -> #auditeur::anyhow::Result<()> { Ok(()) }
-        }
-    }
-    .into()
 }
 
 #[proc_macro_attribute]

@@ -20,16 +20,6 @@ providing a mechanism for forming one-to-one conversations.
 For example, [`#[respond]`] uses `Take` to allow other resources to call methods with return values
 on a listener.
 
-# Runnable
-
-[`Listener`] has [`Runnable`](trait@Runnable) as a supertrait, which provides callbacks for when
-the listener [initializes](Runnable::init) or [exits](Runnable::exit). These methods are included
-in the shared inputs like components.
-
-Unfortunately, since Rust doesn't support associated `const` defaults, these methods cannot have
-default implementations. As a workaround, use the [`Runnable`](macro@crate::Runnable) derive macro
-instead.
-
 # Macros
 
 To implement the [`Listener`] trait, see the [`listener`] proc-macro.
@@ -40,31 +30,25 @@ To implement the [`Listener`] trait, see the [`listener`] proc-macro.
 use auditeur::prelude::*;
 use std::time::Duration;
 # // proc_macro_crate shenanigans
-# use auditeur::{input, app, async_trait, anyhow, path_any, Message, resource, Error, tokio, try_join};
+# use auditeur::*;
 
 /// A message that tells [`ExitListener`] to exit the program
 #[derive(Clone, Debug)]
-#[message("test:exit")]
+#[listen_message("test:exit")]
 struct Exit;
 
 /// A [`Listener`] that exits the program once it receives an [`Exit`] message
-#[derive(Runnable)]
 #[create(default)]
 #[resource("test:exit_listener")]
 #[listener(listen(Exit))]
 struct ExitListener {
     #[create(input)]
-    stopper: Stopper,
+    app: App,
 }
 
 impl Listen<Exit> for ExitListener {
-    // Note that this method only has one [`Input`], so the last parameter is simple.
-    // If the method had none, the last parameter would have to be `(): ()` to signify no inputs.
-    // If the method had more than one, the last parameter would have to be a tuple of mutable
-    //   references (such as `(stopper, sender): (&mut Stopper, &mut Sender<Exit>)`).
     async fn on(&mut self, _: Exit) -> Result<()> {
-        // [`Stopper`] can be used to stop individual resources or the entire program
-        self.stopper.exit();
+        self.app.exit().await;
         Ok(())
     }
 }
@@ -73,32 +57,24 @@ impl Listen<Exit> for ExitListener {
 # #[tokio::main]
 # async fn main() {
 // Create a new App with only an ExitListener
-let app = App::new().with_bundle(
-    new_bundle!("test:exit")
-        .with_listener::<ExitListener>(())
-        .with_listen_channel::<Exit>()
-);
-// Build it into a Registry so that we can get the message sender before running it
-// Usually, it's simpler just to call app.run(_)
-let registry = app.build().await.expect("failed to build app");
+let mut app = App::builder()
+    .with::<Exit>(())
+    .with::<ExitListener>(())
+    .spawn();
 
-// Get a message sender from the registry
-let sender = registry.channels().shouter::<Exit>(ExitListener::component_id()).await
+// Get a message sender from the app
+let sender = app.listen_mut().shouter::<Exit>().await
     .expect("we added the channel in the bundle we added");
-// Start the registry running in the background now that we got the message sender
-let running_registry = tokio::task::spawn(registry.run());
 
 // Send the exit message in the registry, telling the ExitListener to exit the program
 // Usually, resources send messages to other resources, but the main function can send them too
-sender.send(Exit);
-// Drop the sender, telling the app that ExitListener is no longer using it (necessary since we 
-// used its id to get it from the registry)
+sender.shout(Exit);
+// Drop the sender, telling the app that we're no longer using it (and it thus can be cleaned up).
 drop(sender);
 
 // Make sure the app exits within an acceptable time frame
-tokio::time::timeout(Duration::from_secs(1), running_registry)
+tokio::time::timeout(Duration::from_secs(1), app.wait_for_exit())
     .await
-    .expect("ExitListener should exit immediately after the Exit message is sent")
-    .expect("the app shouldn't panic");
+    .expect("ExitListener should exit immediately after the Exit message is sent");
 # }
 ```

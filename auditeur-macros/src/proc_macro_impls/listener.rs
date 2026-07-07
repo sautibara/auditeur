@@ -32,7 +32,7 @@ pub fn listener_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 }
 
 pub struct Config<'a> {
-    registry_component: bool,
+    stop_component: bool,
     biased: bool,
     attrs: &'a Attrs,
     ident: &'a Ident,
@@ -41,9 +41,9 @@ pub struct Config<'a> {
 
 impl<'a> Config<'a> {
     fn new(attrs: &'a Attrs, ident: &'a Ident, generics: &'a syn::Generics) -> Self {
-        let registry_component = (attrs.attrs.iter())
-            .filter_map(Attr::as_registry_component)
-            .last()
+        let stop_component = (attrs.attrs.iter())
+            .filter_map(Attr::as_stop_component)
+            .next_back()
             // `registry_component`'s default is `true`.
             .is_none_or(|comp| comp.value.value);
 
@@ -51,7 +51,7 @@ impl<'a> Config<'a> {
         let biased = attrs.attrs.iter().any(Attr::is_biased_flag);
 
         Self {
-            registry_component,
+            stop_component,
             biased,
             attrs,
             ident,
@@ -60,40 +60,52 @@ impl<'a> Config<'a> {
     }
 
     fn expand(&self) -> proc_macro2::TokenStream {
+        let auditeur = &*AUDITEUR;
+
         let ident = self.ident;
         let (impl_generics, type_generics, where_clause) = self.generics.split_for_impl();
 
         let bias = self.bias();
         let components = self.components();
 
-        let auditeur = &*AUDITEUR;
+        let get_runner_with = super::get_runner_with(
+            ident,
+            self.generics,
+            &quote! {
+                #auditeur::component::resource::listener::ListenerMethod
+            },
+        );
+
         quote! {
-            impl #impl_generics #auditeur::resource::listener::Listener for #ident #type_generics
+            impl #impl_generics #auditeur::component::resource::listener::Listener
+                for #ident #type_generics
             #where_clause
             {
                 type Components = (#bias, #(#components),*);
             }
+
+            #get_runner_with
         }
     }
 
     fn components(&self) -> impl Iterator<Item = proc_macro2::TokenStream> {
-        self.registry_component()
+        self.stop_component()
             .into_iter()
             .chain(self.attrs.components())
     }
 
-    fn registry_component(&self) -> Option<proc_macro2::TokenStream> {
+    fn stop_component(&self) -> Option<proc_macro2::TokenStream> {
         let auditeur = &*AUDITEUR;
-        self.registry_component
-            .then(|| quote! { #auditeur::resource::listener::RegistryComponent })
+        self.stop_component
+            .then(|| quote! { #auditeur::component::resource::listener::StopComponent })
     }
 
     fn bias(&self) -> proc_macro2::TokenStream {
         let auditeur = &*AUDITEUR;
         if self.biased {
-            quote! { #auditeur::resource::listener::Biased }
+            quote! { #auditeur::component::resource::listener::Biased }
         } else {
-            quote! { #auditeur::resource::listener::Unbiased }
+            quote! { #auditeur::component::resource::listener::Unbiased }
         }
     }
 }
@@ -131,10 +143,10 @@ impl IntoIterator for Attrs {
 enum Attr {
     Listen(field::List<Component>),
     Take(field::List<Component>),
-    RegistryComponent(field::NameValue<syn::LitBool>),
+    StopComponent(field::NameValue<syn::LitBool>),
     Component(field::List<Component>),
     RespondFlag,
-    ListenToRegistryFlag,
+    StopComponentFlag,
     BiasedFlag,
 }
 
@@ -144,8 +156,8 @@ impl Attr {
             Self::RespondFlag => Either::Left(Either::Right(std::iter::once(simple_component(
                 "RespondComponent",
             )))),
-            Self::ListenToRegistryFlag => Either::Left(Either::Right(std::iter::once(
-                simple_component("ListenToRegistryComponent"),
+            Self::StopComponentFlag => Either::Left(Either::Right(std::iter::once(
+                simple_component("StopComponent"),
             ))),
             Self::Listen(messages) => Either::Right(Either::Left(
                 messages.iter().map(Component::component::<ListenSupplier>),
@@ -162,8 +174,8 @@ impl Attr {
         }
     }
 
-    const fn as_registry_component(&self) -> Option<&field::NameValue<syn::LitBool>> {
-        if let Self::RegistryComponent(v) = self {
+    const fn as_stop_component(&self) -> Option<&field::NameValue<syn::LitBool>> {
+        if let Self::StopComponent(v) = self {
             Some(v)
         } else {
             None
@@ -191,14 +203,14 @@ impl Parse for Attr {
         } else if ident == "components" {
             field::List::parse_after(ident, input).map(Self::Component)
         } else if ident == "registry_component" {
-            field::NameValue::parse_after(ident, input).map(Self::RegistryComponent)
-        } else if ident == "listen_to_registry" {
-            Ok(Self::ListenToRegistryFlag)
+            field::NameValue::parse_after(ident, input).map(Self::StopComponent)
+        } else if ident == "stop_component" {
+            Ok(Self::StopComponentFlag)
         } else if ident == "biased" {
             Ok(Self::BiasedFlag)
         } else {
             Err(input.error(format!(
-                "expected 'registry_component', 'biased', 'listen', 'take', 'listen_to_registry', or 'components', found '{ident}'"
+                "expected 'registry_component', 'biased', 'listen', 'take', 'stop_component', or 'components', found '{ident}'"
             )))
         }
     }
@@ -247,12 +259,12 @@ fn default_component(component: &str, ty: &syn::Type) -> proc_macro2::TokenStrea
     let component = Ident::new(component, ty.span());
 
     let auditeur = &*AUDITEUR;
-    quote! { #auditeur::resource::listener::#component<Self, #ty> }
+    quote! { #auditeur::component::resource::listener::#component<Self, #ty> }
 }
 
 fn simple_component(component: &str) -> proc_macro2::TokenStream {
     let component = Ident::new(component, Span::call_site());
 
     let auditeur = &*AUDITEUR;
-    quote! { #auditeur::resource::listener::#component<Self> }
+    quote! { #auditeur::component::resource::listener::#component<Self> }
 }
