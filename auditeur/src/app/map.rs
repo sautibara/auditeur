@@ -1144,6 +1144,10 @@ impl<T: Send + Sync> Dependency<T> {
         drop(handle);
     }
 
+    pub(crate) fn release_unsafe(this: &mut Self) {
+        this.handle.release_unsafe();
+    }
+
     /// Drops this dependency using a specific app handle.
     ///
     /// This can be more efficient than the default drop implementation, but only if the app handle
@@ -1212,6 +1216,23 @@ impl DependencyHandle {
         }
     }
 
+    fn release_unsafe(&mut self) {
+        // If drop_in is called, the sender will be None, so we should ignore the drop.
+        let Some(sender) = self.sender.take() else {
+            return;
+        };
+
+        let event = super::Method::Map(Method::DecrementDependency {
+            id: self.id.clone_inner(),
+        });
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(sender.into_send_async(event));
+        } else {
+            let _ = sender.send(event);
+        }
+    }
+
     /// Drops this dependency using a specific app handle.
     ///
     /// This can be more efficient than the default drop implementation, but only if the app handle
@@ -1249,20 +1270,7 @@ impl DependencyHandle {
 
 impl Drop for DependencyHandle {
     fn drop(&mut self) {
-        // If drop_in is called, the sender will be None, so we should ignore the drop.
-        let Some(sender) = self.sender.take() else {
-            return;
-        };
-
-        let event = super::Method::Map(Method::DecrementDependency {
-            id: self.id.clone_inner(),
-        });
-
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(sender.into_send_async(event));
-        } else {
-            let _ = sender.send(event);
-        }
+        self.release_unsafe();
     }
 }
 

@@ -11,8 +11,7 @@ pub mod input;
 #[cfg(feature = "path-any")]
 pub mod path_any;
 
-#[cfg(test)]
-mod tests;
+pub mod test;
 
 pub use ::namespaced_id;
 

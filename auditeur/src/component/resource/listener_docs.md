@@ -55,7 +55,7 @@ impl Listen<Exit> for ExitListener {
 
 
 # #[tokio::main]
-# async fn main() {
+# async fn main() -> Result<(), auditeur::Error> {
 // Create a new App with only an ExitListener
 let mut app = App::builder()
     .with::<Exit>(())
@@ -63,8 +63,7 @@ let mut app = App::builder()
     .spawn();
 
 // Get a message sender from the app
-let sender = app.listen_mut().shouter::<Exit>().await
-    .expect("we added the channel in the bundle we added");
+let sender = app.listen_mut().shouter::<Exit>().await?;
 
 // Send the exit message in the registry, telling the ExitListener to exit the program
 // Usually, resources send messages to other resources, but the main function can send them too
@@ -73,8 +72,6 @@ sender.shout(Exit);
 drop(sender);
 
 // Make sure the app exits within an acceptable time frame
-tokio::time::timeout(Duration::from_secs(1), app.wait_for_exit())
-    .await
-    .expect("ExitListener should exit immediately after the Exit message is sent");
+auditeur::test::finish(app, false).await
 # }
 ```

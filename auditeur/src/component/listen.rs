@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     app::{
+        event::Event,
         map::Dependency,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
     },
@@ -60,6 +61,12 @@ impl<M: ListenMessage> Listener<M> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.receiver.is_empty()
+    }
+}
+
+impl Listener<Event> {
+    pub fn release_dependency(&mut self) {
+        Dependency::release_unsafe(&mut self.receiver);
     }
 }
 

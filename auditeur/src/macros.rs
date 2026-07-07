@@ -250,9 +250,8 @@ pub use auditeur_macros::Any;
 ///     assert!(!listener.is_empty());
 ///     assert_eq!(counter.get().await, 5);
 ///
-///     app.exit().await;
-///     app.wait_for_exit().await;
-///     Ok(())
+///     drop((listener, counter));
+///     auditeur::test::finish(app, true).await
 /// }
 /// ```
 ///
@@ -314,9 +313,8 @@ pub use auditeur_macros::Any;
 ///
 ///     assert_eq!(&[4, 3, 2, 1, 0], &*vals);
 ///
-///     app.exit().await;
-///     app.wait_for_exit().await;
-///     Ok(())
+///     drop(vec);
+///     auditeur::test::finish(app, true).await
 /// }
 /// ```
 ///
@@ -398,7 +396,9 @@ pub use auditeur_macros::Any;
 ///     assert_eq!(*ident!("test:ident1"), conn.index(0).await);
 ///     assert_eq!(*ident!("test:identifiable1"), conn.index(1).await);
 ///     assert_eq!(*ident!("test:identifiable2"), conn.index(2).await);
-///     Ok(())
+///
+///     drop(conn);
+///     auditeur::test::finish(app, true).await
 /// }
 /// ```
 // /// ## `timeout = <expr>`
