@@ -816,6 +816,17 @@ impl<'a> AppRegistriesMut<'a> {
         Ok(Dependency { value, handle })
     }
 
+    pub fn load_lazy(
+        self,
+        id: ComponentId,
+    ) -> impl AppMutFuture<'a, Output = Result<Dependency<()>, Error>> {
+        let dependent = self.app.dependent().dependent_id();
+        let ty = self.app.dependent().dependency_type();
+        self.app
+            .map_mut()
+            .try_increment_dependency(id, dependent, ty)
+    }
+
     /// Take an (erased) component from the registrar in order to call get on it.
     ///
     /// # Errors

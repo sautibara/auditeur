@@ -465,7 +465,7 @@ impl Config<'_> {
                 ) -> ::std::result::Result<Self, #auditeur::Error> {
                     #[allow(unused_variables)]
                     Ok(Self {
-                        dependency: app.registries_mut().load(#id_expr).await?,
+                        dependency: app.registries_mut().load_lazy(#id_expr).await?,
                         giver: app.take_mut().giver().await?,
                         #(#field_idents:
                             <#field_types as #auditeur::input::Input>::create(app).await?,)*

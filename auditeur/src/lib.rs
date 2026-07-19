@@ -67,6 +67,7 @@ pub use tokio;
 
 pub mod prelude {
     pub use crate::children::HasChildren as _;
+    pub use crate::component::IdentifiedComponentType as _;
     pub use crate::component::IdentifiedType as _;
     pub use crate::{
         app::App,

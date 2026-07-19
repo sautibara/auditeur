@@ -695,26 +695,19 @@ impl Map {
                 id,
                 change: DependencyStateChange::Weaken,
             } => {
-                let dependency = &self.dependencies[&id.id].loads[&id.loads];
-                match dependency.effective_type() {
-                    // unremovable dependencies propagate to the dependent
-                    DependencyType::Unremovable => {
-                        propagate(self);
-                    }
-                    // removable dependencies send an event
-                    DependencyType::Removable => {
-                        if new_request {
-                            let id = id.clone().into_id();
-                            let _ = channels
-                                .event_sender
-                                .send(Event::RequestDependencyRemoval { id });
-                        }
-                    }
-                    // other dependencies are ignored
-                    DependencyType::Transient | DependencyType::Weak => (),
+                let dependency = self.dependencies[&id.id].loads[&id.loads];
+                // unremovable dependencies propagate to the dependent
+                if dependency.unremovable > 0 {
+                    propagate(self);
                 }
-            } // release doesn't propagate because it shouldn't have any blockers
-              // callbacks are all the same
+                // removable dependencies send an event
+                if dependency.removable > 0 && new_request {
+                    let id = id.clone().into_id();
+                    let _ = channels
+                        .event_sender
+                        .send(Event::RequestDependencyRemoval { id });
+                }
+            }
         }
     }
 
@@ -758,6 +751,8 @@ impl Map {
         for listener in &info.blocking {
             self.check_removal(listener, channels);
         }
+
+        // println!("{self:#?}");
     }
 
     fn request(&mut self, id: &ListenerId, channels: Channels<'_>) {

@@ -62,14 +62,21 @@ let mut app = App::builder()
     .with::<ExitListener>(())
     .spawn();
 
+// Make sure that the listener is loaded and listening before we send the message.
+let load = app
+    .registries_mut()
+    .load(ExitListener::component_id())
+    .await?;
+
 // Get a message sender from the app
 let sender = app.listen_mut().shouter::<Exit>().await?;
 
 // Send the exit message in the registry, telling the ExitListener to exit the program
-// Usually, resources send messages to other resources, but the main function can send them too
 sender.shout(Exit);
-// Drop the sender, telling the app that we're no longer using it (and it thus can be cleaned up).
-drop(sender);
+
+// Drop our dependencies, telling the app that we're no longer using them
+//   (and they thus can be unloaded).
+drop((sender, load));
 
 // Make sure the app exits within an acceptable time frame
 auditeur::test::finish(app, false).await

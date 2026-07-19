@@ -552,7 +552,7 @@ impl Builder {
             handle: HandleData {
                 method_sender: method_sender.clone(),
                 dependency: owned.increment_dependency(handle_dependency, &method_sender),
-                new_dependency_type: DependencyType::Unremovable,
+                new_dependency_type: DependencyType::Transient,
             },
             variant: Inner::Handle,
         };

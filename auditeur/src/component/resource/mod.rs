@@ -259,7 +259,6 @@ impl StopListener {
         }
 
         while let Some(event) = self.receiver.listen().await {
-            println!("{event:#?}");
             if let Event::RequestDependencyRemoval { id } = event
                 && id.dependency == self.dependency
                 && id.dependent == self.dependent
