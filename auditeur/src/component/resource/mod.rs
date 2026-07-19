@@ -174,11 +174,7 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
 
         let runner = R::runner(resource, app).await?;
         // NOTE: This is the handle that keeps the app alive as long as the runner is running.
-        let mut handle = app
-            .dependent_mut()
-            .with_ty(DependencyType::Unremovable)
-            .handle()
-            .await;
+        let mut handle = app.handle().await;
         let runner = async move { runner.run(&mut handle).await };
         let runner = Box::pin(runner);
 
@@ -263,6 +259,7 @@ impl StopListener {
         }
 
         while let Some(event) = self.receiver.listen().await {
+            println!("{event:#?}");
             if let Event::RequestDependencyRemoval { id } = event
                 && id.dependency == self.dependency
                 && id.dependent == self.dependent
@@ -278,8 +275,8 @@ impl Input for StopListener {
     async fn create(app: &mut App) -> Result<Self, Error> {
         Ok(Self {
             receiver: Listener::create(app).await?,
-            dependency: app.dependent().dependent().clone(),
-            dependent: app.dependent().app_id().clone(),
+            dependency: app.dependent().dependent_id().into_id(),
+            dependent: app.dependent().app_id().into_id(),
             stopped: false,
         })
     }

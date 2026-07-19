@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{app::map::DependencyId, prelude::*};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[listen_message("auditeur:registry_event")]
 pub enum Event {
     /// An error occurred in the app.

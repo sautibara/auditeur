@@ -1,5 +1,4 @@
-use std::{ops::Deref, sync::Arc};
-
+use std::sync::Arc;
 
 use crate::{
     app::{
@@ -59,7 +58,7 @@ impl HandleData {
     /// [dependent](Dependent) as the source component.
     fn wrap_error(&self, error: anyhow::Error) -> Error {
         Error::FromComponent {
-            id: self.dependent_added_id().deref().clone(),
+            id: self.dependent_id().into_id(),
             error,
         }
     }

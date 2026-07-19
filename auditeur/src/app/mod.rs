@@ -153,7 +153,10 @@ use futures::FutureExt;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
-use crate::app::map::{AppFnMap, AppFnMapMut, DependencyHandle, RequestSet, Waiter};
+use crate::app::map::{
+    AppFnMap, AppFnMapMut, Channels, DependencyHandle, LoadedComponentId, LoadedDependencyId,
+    RequestSet, Waiter,
+};
 use crate::app::registry::{
     AppFnRegistriesMut, ErasedLoader, Loaded, Loader, LoaderCallbacks, Registry,
 };
@@ -288,7 +291,7 @@ impl App {
     }
 
     #[must_use]
-    pub const fn dependent_mut(&mut self) -> DependentMut<'_> {
+    pub const fn dependent_mut(&mut self) -> DependentMut<'_, (), ()> {
         DependentMut::new(self)
     }
 }
@@ -338,7 +341,7 @@ impl App {
 
     fn get_event_listener_as(
         &mut self,
-        dependent: AddedComponentId,
+        dependent: LoadedComponentId,
         ty: DependencyType,
     ) -> impl AppMutFuture<'_, Output = Result<Listener<Event>, Error>> {
         AppFn.get_event_listener_as(dependent, ty).call(self)
@@ -374,7 +377,7 @@ enum Method {
     ReleaseEventListener,
 
     GetEventListener {
-        dependent: AddedComponentId,
+        dependent: LoadedComponentId,
         ty: DependencyType,
         sender: OneshotSender<Result<Listener<Event>, Error>>,
     },
@@ -443,6 +446,85 @@ pub struct Builder {
     children: Children,
 }
 
+impl Default for Owned {
+    fn default() -> Self {
+        Owned {
+            registrar: Registrar::default(),
+            errors: Errors::default(),
+            map: Map::default(),
+            event_sender: broadcast::Sender::new(1024),
+            event_sender_dependency: None,
+        }
+    }
+}
+
+impl Owned {
+    fn initialize(
+        &mut self,
+        children: Children,
+        sender: &flume::Sender<Method>,
+    ) -> Result<LoadedComponentId, Error> {
+        // The three common ancestors (registries, app registry, app).
+        let (registries, _) = ErasedComponent::new::<Registries, Registries>(());
+        let registries_id = self.add_child_validated(registries, None, sender)?;
+
+        let (app_registry, _) = ErasedComponent::new::<Registries, App>(());
+        let app_registry_id =
+            self.add_child_validated(app_registry, Some(registries_id), sender)?;
+
+        let (app_component, _) = ErasedComponent::new::<App, App>(());
+        let app_id = self.add_child_validated(app_component, Some(app_registry_id), sender)?;
+
+        // The main registries.
+        let (resources, _) = ErasedComponent::new::<Registries, Resources>(());
+        let (listen_messages, _) = ErasedComponent::new::<Registries, ListenMessages>(());
+        let (take_messages, _) = ErasedComponent::new::<Registries, TakeMessages>(());
+        let (bundles, _) = ErasedComponent::new::<Registries, Bundles>(());
+
+        self.add_child_validated(resources, Some(app_id.clone()), sender)?;
+        self.add_child_validated(listen_messages, Some(app_id.clone()), sender)?;
+        self.add_child_validated(take_messages, Some(app_id.clone()), sender)?;
+        self.add_child_validated(bundles, Some(app_id.clone()), sender)?;
+
+        let app_loaded_id = self.map.load_component(
+            app_id.clone(),
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+
+        // The event sender dependency.
+        let event_channel = ErasedComponent::from_loader::<ListenMessages>(ErasedLoader::new(
+            listen::PersistentChannelLoader::new(self.event_sender.clone()),
+        ));
+        let event_id = self.add_child_validated(event_channel, Some(app_id.clone()), sender)?;
+        let event_loaded_id = self.map.load_component(
+            event_id,
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+        let event_dependency = self.increment_dependency(
+            DependencyPart {
+                id: LoadedDependencyId::new(app_loaded_id.clone(), event_loaded_id),
+                ty: DependencyType::Unremovable,
+            },
+            sender,
+        );
+        self.event_sender_dependency = Some(event_dependency);
+
+        // Then add the rest of the children.
+        let children = children.adopted_by(app_id.deref().clone());
+        self.add_children(children, sender);
+
+        Ok(app_loaded_id)
+    }
+}
+
+// Returns a 2-tuple of the owned app and handle app.
+
 impl Builder {
     fn new() -> Self {
         Self {
@@ -453,100 +535,42 @@ impl Builder {
     #[expect(clippy::missing_panics_doc)]
     #[allow(clippy::must_use_candidate)] // no?
     pub fn spawn(self) -> App {
-        // Returns a 2-tuple of the owned registry and handle registry.
-        fn initialize(
-            sender: &flume::Sender<Method>,
-            children: Children,
-        ) -> Result<(App, App), Error> {
-            // Initialize the owned app.
-            let mut owned = Owned {
-                registrar: Registrar::default(),
-                errors: Errors::default(),
-                map: Map::default(),
-                event_sender: broadcast::Sender::new(1024),
-                event_sender_dependency: None,
-            };
-
-            // The three common ancestors (registries, app registry, app).
-            let (registries, _) = ErasedComponent::new::<Registries, Registries>(());
-            let registries_id = owned.add_child_validated(registries, None, sender)?;
-
-            let (app_registry, _) = ErasedComponent::new::<Registries, App>(());
-            let app_registry_id =
-                owned.add_child_validated(app_registry, Some(registries_id), sender)?;
-
-            let (app_component, _) = ErasedComponent::new::<App, App>(());
-            let app_id = owned.add_child_validated(app_component, Some(app_registry_id), sender)?;
-
-            // The main registries.
-            let (resources, _) = ErasedComponent::new::<Registries, Resources>(());
-            let (listen_messages, _) = ErasedComponent::new::<Registries, ListenMessages>(());
-            let (take_messages, _) = ErasedComponent::new::<Registries, TakeMessages>(());
-            let (bundles, _) = ErasedComponent::new::<Registries, Bundles>(());
-
-            owned.add_child_validated(resources, Some(app_id.clone_inner()), sender)?;
-            owned.add_child_validated(listen_messages, Some(app_id.clone_inner()), sender)?;
-            owned.add_child_validated(take_messages, Some(app_id.clone_inner()), sender)?;
-            owned.add_child_validated(bundles, Some(app_id.clone_inner()), sender)?;
-
-            // The event sender dependency.
-            let event_channel = ErasedComponent::from_loader::<ListenMessages>(ErasedLoader::new(
-                listen::PersistentChannelLoader::new(owned.event_sender.clone()),
-            ));
-            let event_id =
-                owned.add_child_validated(event_channel, Some(app_id.clone_inner()), sender)?;
-            let event_dependency = owned.increment_dependency(
-                DependencyPart {
-                    dependent: app_id.clone_inner(),
-                    dependency: event_id,
-                    ty: DependencyType::Unremovable,
-                },
-                sender,
-            );
-            owned.event_sender_dependency = Some(event_dependency);
-
-            // Then add the rest of the children.
-            let children = children.adopted_by(app_id.deref().clone());
-            owned.add_children(children, sender);
-
-            // Construct the handle dependency first to keep the app alive.
-            let handle_dependency = DependencyPart {
-                dependent: app_id.clone_inner(),
-                dependency: app_id.clone_inner(),
-                // Transient b/c main thread is expected to drop the handle.
-                ty: DependencyType::Transient,
-            };
-
-            let handle_app = App {
-                handle: HandleData {
-                    method_sender: sender.clone(),
-                    dependency: owned.increment_dependency(handle_dependency, sender),
-                    new_dependency_type: DependencyType::Unremovable,
-                },
-                variant: Inner::Handle,
-            };
-
-            // Then the owned dependency now that the app is being kept alive.
-            let owned_dependency = Dependency {
-                value: (),
-                handle: DependencyHandle::empty_unsafe(),
-            };
-
-            let owned_app = App {
-                handle: HandleData {
-                    method_sender: sender.clone(),
-                    dependency: owned_dependency,
-                    new_dependency_type: DependencyType::Unremovable,
-                },
-                variant: Inner::Owned(Box::new(owned)),
-            };
-
-            Ok((owned_app, handle_app))
-        }
-
+        let mut owned = Owned::default();
         let (method_sender, method_receiver) = flume::unbounded();
-        let (owned_app, handle_app) =
-            initialize(&method_sender, self.children).expect("app shouldn't fail to initialize");
+        let app_loaded_id = owned
+            .initialize(self.children, &method_sender)
+            .expect("app shouldn't fail to initialize");
+
+        // Construct the handle dependency first to keep the app alive.
+        let handle_dependency = DependencyPart {
+            id: LoadedDependencyId::new(app_loaded_id.clone(), app_loaded_id),
+            // Transient b/c main thread is expected to drop the handle.
+            ty: DependencyType::Transient,
+        };
+
+        let handle_app = App {
+            handle: HandleData {
+                method_sender: method_sender.clone(),
+                dependency: owned.increment_dependency(handle_dependency, &method_sender),
+                new_dependency_type: DependencyType::Unremovable,
+            },
+            variant: Inner::Handle,
+        };
+
+        // Then the owned dependency now that the app is being kept alive.
+        let dependency = Dependency {
+            value: (),
+            handle: DependencyHandle::empty_unsafe(),
+        };
+
+        let owned_app = App {
+            handle: HandleData {
+                method_sender,
+                dependency,
+                new_dependency_type: DependencyType::Unremovable,
+            },
+            variant: Inner::Owned(Box::new(owned)),
+        };
 
         // And start the owned app running in the background.
         let runner = AppRunner {
@@ -575,12 +599,12 @@ pub struct Dependent<'a> {
 }
 
 impl HandleData {
-    const fn dependent_added_id(&self) -> &AddedComponentId {
-        &self.dependency.info().dependent
+    fn dependent_id(&self) -> LoadedComponentId {
+        self.dependency.info().id.dependent()
     }
 
-    const fn app_id(&self) -> &AddedComponentId {
-        &self.dependency.info().dependency
+    fn app_id(&self) -> LoadedComponentId {
+        self.dependency.info().id.dependency()
     }
 }
 
@@ -592,21 +616,13 @@ impl<'a> Dependent<'a> {
     /// Returns the id of the component that [dependencies](Dependency) obtained from this app will
     /// have as the dependent.
     #[must_use]
-    pub fn dependent(self) -> &'a ComponentId {
-        self.dependent_added_id()
+    pub fn dependent_id(self) -> LoadedComponentId {
+        self.app.handle.dependent_id()
     }
 
     /// Returns the id of the app component.
     #[must_use]
-    pub fn app_id(self) -> &'a ComponentId {
-        self.app.handle.app_id()
-    }
-
-    const fn dependent_added_id(self) -> &'a AddedComponentId {
-        self.app.handle.dependent_added_id()
-    }
-
-    const fn app_added_id(self) -> &'a AddedComponentId {
+    pub fn app_id(self) -> LoadedComponentId {
         self.app.handle.app_id()
     }
 
@@ -618,65 +634,85 @@ impl<'a> Dependent<'a> {
     }
 }
 
-pub struct DependentMut<'a> {
-    app: &'a mut App,
+#[doc(hidden)]
+pub struct Present;
 
+pub struct DependentMut<'a, D, T> {
+    inner: DependentMutInner<'a>,
+    pd: PhantomData<(D, T)>,
+}
+
+pub struct DependentMutInner<'a> {
+    app: &'a mut App,
     dependency: Option<Dependency<()>>,
     ty: Option<DependencyType>,
 }
 
-impl<'a> DependentMut<'a> {
+impl<'a> DependentMut<'a, (), ()> {
     const fn new(app: &'a mut App) -> Self {
         Self {
-            app,
-            dependency: None,
-            ty: None,
+            inner: DependentMutInner {
+                app,
+                dependency: None,
+                ty: None,
+            },
+            pd: PhantomData,
         }
-    }
-
-    /// # Errors
-    ///
-    /// - [`Error::DependentNotFound`] if the component with id `dependent` does not exist.
-    pub async fn with_dependent(self, dependent: ComponentId) -> Result<Self, Error> {
-        let dependency = self.app.handle.app_id().deref().clone();
-        let dependency = (self.app.map_mut())
-            // All handles have an unremovable dependency on the app.
-            .try_increment_dependency(dependency, dependent, DependencyType::Unremovable)
-            .await?;
-        Ok(self.with_dependency(dependency))
-    }
-
-    async fn with_added_dependent(self, dependent: AddedComponentId) -> Self {
-        let dependency = self.app.handle.app_id().clone_inner();
-        let part = DependencyPart {
-            dependency,
-            dependent,
-            // All handles have an unremovable dependency on the app.
-            ty: DependencyType::Unremovable,
-        };
-        let dependency = self.app.map_mut().increment_dependency(part).await;
-        self.with_dependency(dependency)
-    }
-
-    fn with_dependency(mut self, dependency: Dependency<()>) -> Self {
-        self.dependency = Some(std::mem::replace(
-            &mut self.app.handle.dependency,
-            dependency,
-        ));
-        self
-    }
-
-    #[must_use]
-    pub const fn with_ty(mut self, ty: DependencyType) -> Self {
-        self.ty = Some(std::mem::replace(
-            &mut self.app.handle.new_dependency_type,
-            ty,
-        ));
-        self
     }
 }
 
-impl Drop for DependentMut<'_> {
+impl<'a, T> DependentMut<'a, (), T> {
+    pub async fn with_dependent<D: Send + Sync>(
+        self,
+        dependency: &Dependency<D>,
+    ) -> DependentMut<'a, Present, T> {
+        let dependent = Dependency::info_of(dependency).id.dependency();
+        self.with_dependent_inner(dependent).await
+    }
+
+    async fn with_dependent_inner(
+        self,
+        dependent: LoadedComponentId,
+    ) -> DependentMut<'a, Present, T> {
+        let dependency = self.inner.app.handle.app_id();
+        let part = DependencyPart {
+            id: LoadedDependencyId::new(dependent, dependency),
+            // All handles have an unremovable dependency on the app.
+            ty: DependencyType::Unremovable,
+        };
+        let dependency = self.inner.app.map_mut().increment_dependency(part).await;
+        self.with_dependency(dependency)
+    }
+
+    fn with_dependency(mut self, dependency: Dependency<()>) -> DependentMut<'a, Present, T> {
+        self.inner.dependency = Some(std::mem::replace(
+            &mut self.inner.app.handle.dependency,
+            dependency,
+        ));
+
+        DependentMut {
+            inner: self.inner,
+            pd: PhantomData,
+        }
+    }
+}
+
+impl<'a, D> DependentMut<'a, D, ()> {
+    #[must_use]
+    pub fn with_ty(mut self, ty: DependencyType) -> DependentMut<'a, D, Present> {
+        self.inner.ty = Some(std::mem::replace(
+            &mut self.inner.app.handle.new_dependency_type,
+            ty,
+        ));
+
+        DependentMut {
+            inner: self.inner,
+            pd: PhantomData,
+        }
+    }
+}
+
+impl Drop for DependentMutInner<'_> {
     fn drop(&mut self) {
         if let Some(id) = self.dependency.take() {
             self.app.handle.dependency = id;
@@ -688,16 +724,16 @@ impl Drop for DependentMut<'_> {
     }
 }
 
-impl Deref for DependentMut<'_> {
+impl<D, T> Deref for DependentMut<'_, D, T> {
     type Target = App;
     fn deref(&self) -> &Self::Target {
-        self.app
+        self.inner.app
     }
 }
 
-impl DerefMut for DependentMut<'_> {
+impl<D, T> DerefMut for DependentMut<'_, D, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.app
+        self.inner.app
     }
 }
 
@@ -768,7 +804,7 @@ impl AppFn {
         Self::using_handle_mut(|handle| {
             let method_sender = handle.method_sender.clone();
             let new_dependency_type = handle.new_dependency_type;
-            let part = handle.dependency.info().clone_inner();
+            let part = handle.dependency.info().clone();
 
             Self.map_mut()
                 .increment_dependency(part)
@@ -814,17 +850,14 @@ impl AppFn {
         self,
     ) -> impl AppMutFnOnce<Output = Result<Listener<Event>, Error>> {
         Self::using_handle_mut(|handle| {
-            Self.get_event_listener_as(
-                handle.dependent_added_id().clone_inner(),
-                handle.new_dependency_type,
-            )
+            Self.get_event_listener_as(handle.dependent_id(), handle.new_dependency_type)
         })
     }
 
     #[expect(clippy::unused_self)]
     const fn get_event_listener_as(
         self,
-        dependent: AddedComponentId,
+        dependent: LoadedComponentId,
         ty: DependencyType,
     ) -> impl AppMutFnOnce<Output = Result<Listener<Event>, Error>> {
         Self::oneshot_mut(
@@ -840,14 +873,13 @@ impl AppFn {
                     // It could be None if the app is in the process of exiting.
                     Error::DependencyNotFound {
                         dependency: Event::component_id(),
-                        dependent: dependent.deref().clone(),
+                        dependent: dependent.component.clone_id(),
                     }
                 })?;
-                let dependency = dependency.info().dependency.clone_inner();
+                let dependency = dependency.info().id.dependency();
 
                 let part = DependencyPart {
-                    dependent,
-                    dependency,
+                    id: LoadedDependencyId::new(dependent, dependency),
                     ty,
                 };
 
@@ -873,7 +905,7 @@ impl AppFn {
             |(), _| Method::ReleaseEventListener,
             async |(), owned, handle| {
                 if let Some(dependency) = owned.event_sender_dependency.take() {
-                    Dependency::drop_in_owned(dependency, owned, handle);
+                    Dependency::drop_in_owned(dependency, owned, &handle.method_sender);
                 }
             },
         )

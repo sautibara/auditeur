@@ -1,4 +1,4 @@
-use std::{assert_matches, fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{fmt::Debug, marker::PhantomData};
 
 use hashbrown::HashMap;
 use tokio::sync::oneshot;
@@ -6,7 +6,7 @@ use tokio::sync::oneshot;
 use crate::{
     app::{
         AddedComponentId, AppFn, AppMutFnOnce, AppMutFuture, OneshotSender,
-        map::{Dependency, DependencyPart, DependencyType, LoadIndex},
+        map::{Dependency, DependencyType, LoadedComponentId},
     },
     component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
     prelude::*,
@@ -182,7 +182,8 @@ impl LoaderCallbacks {
                     .call(component, app)
                     .await?;
 
-                let _ = component.get_loaded(app).await?;
+                let mut app = app.dependent_mut().with_dependent(&dependency).await;
+                let _ = component.get_loaded(&mut app).await?;
 
                 Ok(dependency)
             }
@@ -204,14 +205,10 @@ impl LoaderCallbacks {
             ) -> Result<Self::Output, Error> {
                 // NOTE: we know that the component is added b/c we have its ErasedComponent
                 let component_id = AddedComponentId::new_inner(component.component_id_dyn());
-                let app_id = app.dependent().app_added_id().clone_inner();
+                let app_id = app.dependent().app_id();
                 let dependency = app
                     .map_mut()
-                    .increment_dependency(DependencyPart {
-                        dependency: component_id,
-                        dependent: app_id,
-                        ty: self.0,
-                    })
+                    .increment_loaded_dependency(component_id, app_id, self.0)
                     .await;
 
                 Ok(dependency)
@@ -258,8 +255,9 @@ impl LoaderCallbacks {
                     .call(component, app)
                     .await?;
 
-                let loaded = component.get_loaded(app).await?;
-                let val = (self.func)(loaded, app).await?;
+                let mut app = app.dependent_mut().with_dependent(&dependency).await;
+                let loaded = component.get_loaded(&mut app).await?;
+                let val = (self.func)(loaded, &mut app).await?;
                 Ok(dependency.insert(val))
             }
         }
@@ -586,30 +584,23 @@ impl Registrar {
     /// # Panics
     ///
     /// - If a component with the same id has already been added.
-    pub(super) fn add(
-        &mut self,
-        component: ErasedComponent,
-        sender: &flume::Sender<super::Method>,
-    ) {
+    pub(super) fn add(&mut self, component: ErasedComponent) {
         let id = component.object.component_id_dyn();
-
-        let entry = self.components.entry(id);
-        assert_matches!(
-            entry,
-            hashbrown::hash_map::Entry::Vacant(_),
-            "a name collision should never happen in the registrar, as the map is checked first"
-        );
 
         let (oneshot_sender, receiver) = oneshot::channel();
         let _ = oneshot_sender.send(component);
 
-        let entry = entry.insert(Register {
-            component: receiver,
-        });
+        let previous = self.components.insert(
+            id,
+            Register {
+                component: receiver,
+            },
+        );
 
-        let _ = sender.send(super::Method::Registries(Method::SpawnOnAdd {
-            component: AddedComponentId::new_inner(entry.key().clone()),
-        }));
+        assert!(
+            previous.is_none(),
+            "a name collision should never happen in the registrar, as the map is checked first"
+        );
     }
 
     /// Removes a component from this registrar.
@@ -669,17 +660,9 @@ pub(super) enum Method {
         dependency: Dependency<()>,
         sender: OneshotSender<Dependency<BorrowedComponent>>,
     },
-    SpawnOnLoad {
-        component: AddedComponentId,
-        load_index: LoadIndex,
-    },
-    SpawnUnload {
-        component: AddedComponentId,
-        load_index: LoadIndex,
-    },
-    SpawnOnAdd {
-        component: AddedComponentId,
-    },
+    SpawnOnLoad(LoadedComponentId),
+    SpawnUnload(LoadedComponentId),
+    SpawnOnAdd(AddedComponentId),
 }
 
 impl Method {
@@ -690,23 +673,13 @@ impl Method {
                 let component = app.registries_mut().borrow(dependency).await;
                 let () = sender.send(component);
             }
-            Self::SpawnOnLoad {
-                component,
-                load_index,
-            } => {
-                app.registries_mut()
-                    .spawn_on_load(component, load_index)
-                    .await;
+            Self::SpawnOnLoad(id) => {
+                app.registries_mut().spawn_on_load(id).await;
             }
-            Self::SpawnUnload {
-                component,
-                load_index,
-            } => {
-                app.registries_mut()
-                    .spawn_unload(component, load_index)
-                    .await;
+            Self::SpawnUnload(id) => {
+                app.registries_mut().spawn_unload(id).await;
             }
-            Self::SpawnOnAdd { component } => app.registries_mut().spawn_on_add(component).await,
+            Self::SpawnOnAdd(id) => app.registries_mut().spawn_on_add(id).await,
         }
     }
 }
@@ -719,7 +692,7 @@ impl AppFnRegistriesMut {
     #[allow(clippy::should_implement_trait)]
     pub const fn add(self, mut children: Children) -> impl AppMutFnOnce<Output = ()> {
         AppFn::using_handle_mut(move |handle| {
-            children.adopt_by(handle.dependent_added_id().deref().clone());
+            children.adopt_by(handle.dependent_id().component.clone_id());
             AppFn::spawn_mut(
                 children,
                 |children, _| super::Method::Registries(Method::Add(children)),
@@ -809,7 +782,7 @@ impl<'a> AppRegistriesMut<'a> {
     where
         T: Send + 'static,
     {
-        let dependent = self.app.dependent().dependent().clone();
+        let dependent = self.app.dependent().dependent_id();
         let ty = self.app.dependent().dependency_type();
         let dependency = (self.app.map_mut())
             .try_increment_dependency(id, dependent, ty)
@@ -819,7 +792,7 @@ impl<'a> AppRegistriesMut<'a> {
         let dependency = self.app.registries_mut().borrow(dependency).await;
 
         // Then get the values from the dependency necessary to modify the app's dependent.
-        let dependency_id = Dependency::info_of(&dependency).dependency.clone_inner();
+        let dependency_id = Dependency::info_of(&dependency).id.dependency();
         let ty = Dependency::info_of(&dependency).ty;
 
         let component = dependency.value;
@@ -830,7 +803,7 @@ impl<'a> AppRegistriesMut<'a> {
         // This means that dependencies of the dependency have the correct dependent.
         let mut app = (self.app.dependent_mut())
             .with_ty(ty)
-            .with_added_dependent(dependency_id)
+            .with_dependent_inner(dependency_id)
             .await;
         let value = component
             .modify(async |component| {
@@ -861,7 +834,7 @@ impl<'a> AppRegistriesMut<'a> {
             async |dependency, owned, _| {
                 let component = owned
                     .registrar
-                    .borrow(&dependency.info().dependency)
+                    .borrow(&dependency.info().id.dependency().component)
                     .expect("component should be added to its registry, since we have a dependency to it");
 
                 dependency.insert(component)
@@ -870,17 +843,12 @@ impl<'a> AppRegistriesMut<'a> {
         .call(self.app)
     }
 
-    pub(super) async fn spawn_unload(self, component: AddedComponentId, load_index: LoadIndex) {
+    pub(super) async fn spawn_unload(self, id: LoadedComponentId) {
         AppFn::spawn_mut(
-            (component, load_index),
-            |(component, load_index), _| {
-                super::Method::Registries(Method::SpawnUnload {
-                    component,
-                    load_index,
-                })
-            },
-            async |(component, load_index), owned, handle| {
-                let Some(borrowed) = owned.registrar.borrow(&component) else {
+            id,
+            |id, _| super::Method::Registries(Method::SpawnUnload(id)),
+            async |id, owned, handle| {
+                let Some(borrowed) = owned.registrar.borrow(&id.component) else {
                     return;
                 };
 
@@ -891,7 +859,7 @@ impl<'a> AppRegistriesMut<'a> {
                         .modify(async |borrowed| borrowed.object.unload(&mut app).await)
                         .await;
                     app.errors_mut().drain_result(res).await;
-                    app.map_mut().unload_finished(component, load_index).await;
+                    app.map_mut().unload_finished(id).await;
                 });
             },
         )
@@ -899,17 +867,12 @@ impl<'a> AppRegistriesMut<'a> {
         .await;
     }
 
-    async fn spawn_on_load(self, component: AddedComponentId, load_index: LoadIndex) {
+    async fn spawn_on_load(self, id: LoadedComponentId) {
         AppFn::spawn_mut(
-            (component, load_index),
-            |(component, load_index), _| {
-                super::Method::Registries(Method::SpawnOnLoad {
-                    component,
-                    load_index,
-                })
-            },
-            async |(component, load_index), owned, handle| {
-                let Some(borrowed) = owned.registrar.borrow(&component) else {
+            id,
+            |id, _| super::Method::Registries(Method::SpawnOnLoad(id)),
+            async |id, owned, handle| {
+                let Some(borrowed) = owned.registrar.borrow(&id.component) else {
                     return;
                 };
 
@@ -920,7 +883,7 @@ impl<'a> AppRegistriesMut<'a> {
                         .modify(async |borrowed| borrowed.object.on_load(&mut app).await)
                         .await;
                     app.errors_mut().drain_result(res).await;
-                    app.map_mut().on_load_finished(component, load_index).await;
+                    app.map_mut().on_load_finished(id).await;
                 });
             },
         )
@@ -928,12 +891,12 @@ impl<'a> AppRegistriesMut<'a> {
         .await;
     }
 
-    async fn spawn_on_add(self, component: AddedComponentId) {
+    async fn spawn_on_add(self, id: AddedComponentId) {
         AppFn::spawn_mut(
-            component,
-            |component, _| super::Method::Registries(Method::SpawnOnAdd { component }),
-            async |component, owned, handle| {
-                let Some(borrowed) = owned.registrar.borrow(&component) else {
+            id,
+            |id, _| super::Method::Registries(Method::SpawnOnAdd(id)),
+            async |id, owned, handle| {
+                let Some(borrowed) = owned.registrar.borrow(&id) else {
                     return;
                 };
 
@@ -944,7 +907,7 @@ impl<'a> AppRegistriesMut<'a> {
                         .modify(async |borrowed| borrowed.object.on_add(&mut app).await)
                         .await;
                     app.errors_mut().drain_result(res).await;
-                    app.map_mut().on_add_finished(component).await;
+                    app.map_mut().on_add_finished(id).await;
                 });
             },
         )
