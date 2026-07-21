@@ -1,6 +1,5 @@
 use auditeur::prelude::*;
 use auditeur::*;
-use tokio::sync::broadcast;
 
 // All that needs to be done in the `#[listener]` macro is to pass in a `respond` flag.
 // The macro then pulls the necessary information from the `impl` block for which messages

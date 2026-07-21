@@ -1,12 +1,6 @@
 use std::sync::Arc;
 
-use crate::{
-    app::{
-        error::Errors,
-        map::{DependencyId, Map},
-    },
-    prelude::*,
-};
+use crate::{app::map::DependencyId, prelude::*};
 
 #[derive(Clone, Debug)]
 #[listen_message("auditeur:registry_event")]

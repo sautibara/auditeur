@@ -449,7 +449,7 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         let new_docs = format!(
-            "Create a new [`{connection_ident}`] using an [`App`]({}::app::Registry).",
+            "Create a new [`{connection_ident}`] using an [`App`]({}::app::App).",
             auditeur.to_token_stream().to_string().replace(' ', "")
         );
 

@@ -82,6 +82,14 @@ impl<'a> Config<'a> {
             #where_clause
             {
                 type Components = (#bias, #(#components),*);
+
+                async fn init(&mut self) -> #auditeur::anyhow::Result<()> {
+                    #auditeur::init_specialization!(self).await
+                }
+
+                async fn exit(&mut self) -> #auditeur::anyhow::Result<()> {
+                    #auditeur::exit_specialization!(self).await
+                }
             }
 
             #get_runner_with

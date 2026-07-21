@@ -448,7 +448,7 @@ pub struct Builder {
 
 impl Default for Owned {
     fn default() -> Self {
-        Owned {
+        Self {
             registrar: Registrar::default(),
             errors: Errors::default(),
             map: Map::default(),

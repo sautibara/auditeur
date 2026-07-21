@@ -98,6 +98,13 @@ pub use auditeur_macros::take_message;
 
 /// Implements [`Listener`] for any type.
 ///
+/// # Usage
+///
+/// ## Init and Exit
+///
+/// This macro uses the [`Init`] and [`Exit`] traits to provide callbacks for when the listener
+/// is started or stopped. To use them, just implement the traits.
+///
 /// # Parameters
 ///
 /// ## `Listen`
@@ -114,14 +121,12 @@ pub use auditeur_macros::take_message;
 ///
 /// To use other [`Component`]s, provide a list of component types in a `components` list.
 ///
-/// ## Registry Component
+/// ## Stop Component
 ///
-/// All listeners by default have a [`RegistryComponent`], which automatically handles exiting when
-/// a [`Stopper`] tells it to. If the `runtime-loading` feature is enabled, it also fulfils
-/// [`GetRequest`](crate::app::event::GetRequest)s. As such, only disable it if there is already
-/// another component that handles these two things.
+/// All listeners by default have a [`StopComponent`], which automatically handles exiting when
+/// the app tells it to. Only disable this if you will manually listen for this.
 ///
-/// To disable adding a [`RegistryComponent`], specify `registry_component = false`.
+/// To disable adding a [`StopComponent`], specify `stop_component = false`.
 ///
 /// ## Bias
 ///
@@ -129,7 +134,6 @@ pub use auditeur_macros::take_message;
 /// to poll each time. However, if the `biased` parameter is used, the listener will check the
 /// components in order instead. That is, the listener will always choose earlier components over
 /// later components, if they have new things to do.
-///
 ///
 /// # Syntax
 ///
@@ -141,7 +145,7 @@ pub use auditeur_macros::take_message;
 ///   | #[listener(<parameter>,*)]
 ///
 /// <parameter>:
-///   | registry_component = <boolean>
+///   | stop_component = <boolean>
 ///   | listen(<type>,*)
 ///   | take(<type>,*)
 ///   | components(<type>,*)

@@ -1990,14 +1990,12 @@ impl Debug for Releaser {
 
 #[cfg(test)]
 mod test {
-    use serde::de;
-
     use crate::{
         Error,
         app::{
-            self, Channels, HandleData, Owned,
+            self, Channels, Owned,
             event::Event,
-            map::{self, Dependency, LoadedComponentId},
+            map::{self, Dependency},
             registry,
         },
         children::Children,
