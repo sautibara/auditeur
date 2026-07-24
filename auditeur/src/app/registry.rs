@@ -35,6 +35,11 @@ type RegistryId = &'static NamespacedIdRef;
 pub trait Registry: IdentifiedType + 'static {
     type Loader: Loader<Loaded = Self::Loaded>;
     type Loaded: Loaded;
+
+    #[must_use]
+    fn children(children: Children) -> Children {
+        children
+    }
 }
 
 /// A value that can load a specific erased [`Component`] on demand.
@@ -450,7 +455,7 @@ impl<R: Registry> Component<Registries> for R {
     type ComponentInput = ();
 
     fn register((): Self::ComponentInput) -> (<Registries as Registry>::Loader, Children) {
-        (MarkerLoader::new(R::id()), Children::new())
+        (MarkerLoader::new(R::id()), R::children(Children::new()))
     }
 }
 

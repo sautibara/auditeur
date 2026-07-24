@@ -6,7 +6,7 @@ use crate::{
     children::HasChildren,
     component::{
         listen::{self, ListenMessage},
-        resource::{Resource, ResourceParts, Runner, StopListener},
+        resource::{Options, Resource, ResourceParts, Runner, StopListener},
         take::{TakeMessage, TakeMessages, Taker},
     },
     prelude::*,
@@ -20,6 +20,8 @@ use tokio::select;
 pub trait Listener: Resource {
     /// The list of [`Component`]s, starting with either [`Unbiased`] or [`Biased`].
     type Components: ComponentList<Self>;
+
+    const OPTIONS: Options = Options::new();
 
     fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
         async { Ok(()) }
@@ -280,6 +282,8 @@ impl<L: Listener> ResourceParts<L> for ListenerMethod {
     fn children() -> Children {
         L::Components::children(Children::new())
     }
+
+    const OPTIONS: Options = <L as Listener>::OPTIONS;
 }
 
 pub struct ListenerRunner<L: Listener> {
@@ -296,5 +300,22 @@ impl<L: Listener> Runner for ListenerRunner<L> {
 
         let res = self.listener.exit().await;
         app.errors_mut().drain_any_result(res).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::prelude::*;
+
+    #[tokio::test]
+    async fn weak_listener_exits() -> Result<(), Error> {
+        #[resource("test:resource")]
+        #[listener(weak)]
+        #[create(default)]
+        struct TestResource;
+
+        let app = App::builder().with::<TestResource>(()).spawn();
+
+        crate::test::finish(app, false).await
     }
 }

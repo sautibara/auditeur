@@ -161,6 +161,7 @@ use crate::app::registry::{
     AppFnRegistriesMut, ErasedLoader, Loaded, Loader, LoaderCallbacks, Registry,
 };
 use crate::component::bundle::Bundles;
+use crate::component::resource::AppFnResourcesMut;
 use crate::component::{IdentifiedComponent, IdentifiedComponentType};
 use crate::prelude::*;
 use crate::{
@@ -350,6 +351,11 @@ impl App {
     fn release_event_listener(&mut self) -> impl AppMutFuture<'_, Output = ()> {
         AppFn.release_event_listener().call(self)
     }
+
+    #[cfg(test)]
+    pub(crate) fn release_dependency_unsafe(&mut self) {
+        Dependency::release_unsafe(&mut self.handle.dependency);
+    }
 }
 
 struct OneshotSender<T>(oneshot::Sender<T>);
@@ -476,15 +482,16 @@ impl Owned {
         let app_id = self.add_child_validated(app_component, Some(app_registry_id), sender)?;
 
         // The main registries.
-        let (resources, _) = ErasedComponent::new::<Registries, Resources>(());
-        let (listen_messages, _) = ErasedComponent::new::<Registries, ListenMessages>(());
-        let (take_messages, _) = ErasedComponent::new::<Registries, TakeMessages>(());
-        let (bundles, _) = ErasedComponent::new::<Registries, Bundles>(());
-
-        self.add_child_validated(resources, Some(app_id.clone()), sender)?;
-        self.add_child_validated(listen_messages, Some(app_id.clone()), sender)?;
-        self.add_child_validated(take_messages, Some(app_id.clone()), sender)?;
-        self.add_child_validated(bundles, Some(app_id.clone()), sender)?;
+        let registries = Children::new()
+            .with::<Resources>(())
+            .with::<ListenMessages>(())
+            .with::<TakeMessages>(())
+            .with::<Bundles>(());
+        self.add_children(registries, sender);
+        assert!(
+            self.errors.is_empty(),
+            "adding main registries shouldn't fail"
+        );
 
         let app_loaded_id = self.map.load_component(
             app_id.clone(),
@@ -796,6 +803,10 @@ impl AppFn {
 
     pub const fn errors_mut(self) -> AppFnErrorsMut {
         AppFnErrorsMut
+    }
+
+    pub const fn resources_mut(self) -> AppFnResourcesMut {
+        AppFnResourcesMut
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::{
-    app::registry::{MarkerLoader, Registry},
+    app::registry::{MarkerLoader, Registries, Registry},
     children::HasChildren,
     component::{Component, ComponentIdPath, RegistryOf},
     prelude::*,
@@ -59,6 +59,10 @@ pub struct Bundles;
 impl Registry for Bundles {
     type Loader = MarkerLoader<Self>;
     type Loaded = ();
+}
+
+impl RegistryOf for Bundles {
+    type Registry = Registries;
 }
 
 impl Component<Bundles> for Bundle {

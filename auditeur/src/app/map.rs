@@ -1095,13 +1095,15 @@ impl Owned {
         sender: &flume::Sender<super::Method>,
     ) -> (ListenerId, Waiter) {
         let (release_id, waiter) = self.wait_for(request, sender);
-        self.map.request(
-            &release_id,
-            Channels {
-                event_sender: &self.event_sender,
-                method_sender: sender,
-            },
-        );
+        if self.map.listeners.contains_key(&release_id) {
+            self.map.request(
+                &release_id,
+                Channels {
+                    event_sender: &self.event_sender,
+                    method_sender: sender,
+                },
+            );
+        }
         (release_id, waiter)
     }
 }
@@ -1944,6 +1946,11 @@ pub struct Waiter {
 impl Waiter {
     pub async fn wait(self) {
         let _ = self.receiver.await;
+    }
+
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        !self.receiver.is_empty()
     }
 }
 

@@ -34,6 +34,7 @@ pub fn listener_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 pub struct Config<'a> {
     stop_component: bool,
     biased: bool,
+    weak: bool,
     attrs: &'a Attrs,
     ident: &'a Ident,
     generics: &'a syn::Generics,
@@ -50,9 +51,13 @@ impl<'a> Config<'a> {
         // `biased`'s default is `false`.
         let biased = attrs.attrs.iter().any(Attr::is_biased_flag);
 
+        // `weak`'s default is `false`.
+        let weak = attrs.attrs.iter().any(Attr::is_weak_flag);
+
         Self {
             stop_component,
             biased,
+            weak,
             attrs,
             ident,
             generics,
@@ -67,6 +72,7 @@ impl<'a> Config<'a> {
 
         let bias = self.bias();
         let components = self.components();
+        let options = self.options();
 
         let get_runner_with = super::get_runner_with(
             ident,
@@ -90,6 +96,8 @@ impl<'a> Config<'a> {
                 async fn exit(&mut self) -> #auditeur::anyhow::Result<()> {
                     #auditeur::exit_specialization!(self).await
                 }
+
+                const OPTIONS: #auditeur::component::resource::Options = #options;
             }
 
             #get_runner_with
@@ -114,6 +122,16 @@ impl<'a> Config<'a> {
             quote! { #auditeur::component::resource::listener::Biased }
         } else {
             quote! { #auditeur::component::resource::listener::Unbiased }
+        }
+    }
+
+    fn options(&self) -> proc_macro2::TokenStream {
+        let auditeur = &*AUDITEUR;
+        let weak = self.weak.then(|| {
+            quote! { .weak(true) }
+        });
+        quote! {
+            #auditeur::component::resource::Options::new() #weak
         }
     }
 }
@@ -153,8 +171,8 @@ enum Attr {
     Take(field::List<Component>),
     StopComponent(field::NameValue<syn::LitBool>),
     Component(field::List<Component>),
+    WeakFlag,
     RespondFlag,
-    StopComponentFlag,
     BiasedFlag,
 }
 
@@ -164,9 +182,6 @@ impl Attr {
             Self::RespondFlag => Either::Left(Either::Right(std::iter::once(simple_component(
                 "RespondComponent",
             )))),
-            Self::StopComponentFlag => Either::Left(Either::Right(std::iter::once(
-                simple_component("StopComponent"),
-            ))),
             Self::Listen(messages) => Either::Right(Either::Left(
                 messages.iter().map(Component::component::<ListenSupplier>),
             )),
@@ -197,6 +212,14 @@ impl Attr {
     const fn is_biased_flag(&self) -> bool {
         matches!(self, Self::BiasedFlag)
     }
+
+    /// Returns `true` if the attr is [`WeakFlag`].
+    ///
+    /// [`WeakFlag`]: Attr::WeakFlag
+    #[must_use]
+    const fn is_weak_flag(&self) -> bool {
+        matches!(self, Self::WeakFlag)
+    }
 }
 
 impl Parse for Attr {
@@ -210,15 +233,15 @@ impl Parse for Attr {
             Ok(Self::RespondFlag)
         } else if ident == "components" {
             field::List::parse_after(ident, input).map(Self::Component)
-        } else if ident == "registry_component" {
-            field::NameValue::parse_after(ident, input).map(Self::StopComponent)
         } else if ident == "stop_component" {
-            Ok(Self::StopComponentFlag)
+            field::NameValue::parse_after(ident, input).map(Self::StopComponent)
         } else if ident == "biased" {
             Ok(Self::BiasedFlag)
+        } else if ident == "weak" {
+            Ok(Self::WeakFlag)
         } else {
             Err(input.error(format!(
-                "expected 'registry_component', 'biased', 'listen', 'take', 'stop_component', or 'components', found '{ident}'"
+                "expected 'registry_component', 'biased', 'listen', 'take', 'stop_component', 'weak', or 'components', found '{ident}'"
             )))
         }
     }

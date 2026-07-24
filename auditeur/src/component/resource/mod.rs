@@ -4,8 +4,9 @@ use std::pin::Pin;
 
 use crate::{
     app::{
+        AppFn, AppMutFnOnce, AppMutFuture,
         event::Event,
-        map::{Dependency, DependencyType},
+        map::{Dependency, DependencyId, DependencyType, RequestSet, Waiter},
         registry::{
             EitherCallback, ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks,
             Registries, Registry,
@@ -19,7 +20,8 @@ use crate::{
     prelude::*,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use tokio::select;
 
 pub mod listener;
 pub mod pure;
@@ -143,6 +145,10 @@ pub struct Resources;
 impl Registry for Resources {
     type Loader = ErasedLoader<ResourcesLoaded>;
     type Loaded = ResourcesLoaded;
+
+    fn children(children: Children) -> Children {
+        children.with::<Stop>(())
+    }
 }
 
 impl RegistryOf for Resources {
@@ -169,6 +175,7 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
     type Loaded = ResourcesLoaded;
 
     async fn load(&self, app: &mut App) -> Result<ResourcesLoaded, Error> {
+        let stopper = Shouter::create(app).await?;
         let resource = R::create(&self.external_input, app).await?;
         let get_ref_loader = resource.maybe_get_ref(app).await?;
 
@@ -181,6 +188,8 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
         Ok(ResourcesLoaded {
             runner: Some(runner),
             get_ref_loader,
+            id: R::id(),
+            stopper,
         })
     }
 
@@ -224,6 +233,9 @@ impl<R: Resource> IdentifiedComponent for ResourceLoader<R> {
 pub struct ResourcesLoaded {
     runner: Option<Pin<Box<dyn Future<Output = ()> + Send + Sync>>>,
     get_ref_loader: Option<Box<dyn DynGetRefLoader>>,
+
+    id: &'static NamespacedIdRef,
+    stopper: Shouter<Stop>,
 }
 
 impl ResourcesLoaded {
@@ -243,12 +255,21 @@ impl ResourcesLoaded {
     }
 }
 
-impl Loaded for ResourcesLoaded {}
+impl Loaded for ResourcesLoaded {
+    async fn unload(self, _: &mut App) -> Result<(), Error> {
+        self.stopper.shout(Stop(self.id));
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+#[listen_message("auditeur:resource_stop")]
+struct Stop(&'static NamespacedIdRef);
 
 pub struct StopListener {
-    receiver: Listener<Event>,
-    dependency: ComponentId,
-    dependent: ComponentId,
+    stop_receiver: Listener<Stop>,
+    event_receiver: Listener<Event>,
+    id: ComponentIdPath,
     stopped: bool,
 }
 
@@ -258,24 +279,47 @@ impl StopListener {
             return;
         }
 
-        while let Some(event) = self.receiver.listen().await {
-            if let Event::RequestDependencyRemoval { id } = event
-                && id.dependency == self.dependency
-                && id.dependent == self.dependent
-            {
-                self.stopped = true;
-                break;
+        loop {
+            select! {
+                Some(Stop(id)) = self.stop_receiver.listen() => {
+                    if *self.id == id {
+                        break;
+                    }
+                }
+                Some(event) = self.event_receiver.listen() => {
+                    if let Event::RequestDependencyRemoval { id: DependencyId {
+                        dependent,
+                        dependency,
+                    }} = event
+                        && dependent == App::component_id()
+                        && dependency.registry == Resources::id()
+                        && dependency.component == self.id
+                    {
+                        break;
+                    }
+                }
             }
         }
+
+        self.stopped = true;
     }
 }
 
 impl Input for StopListener {
     async fn create(app: &mut App) -> Result<Self, Error> {
+        let dependent = app.dependent().dependent_id().into_id();
+        if dependent.registry != Resources::id() {
+            return Err(app.errors().wrap(anyhow!(
+                "the dependent for a StopListener should be in the '{}' registry, but it was actually in the '{}' registry",
+                Resources::id(),
+                dependent.registry
+            )));
+        }
+
         Ok(Self {
-            receiver: Listener::create(app).await?,
-            dependency: app.dependent().dependent_id().into_id(),
-            dependent: app.dependent().app_id().into_id(),
+            stop_receiver: Listener::create(app).await?,
+            event_receiver: Listener::create(app).await?,
+            id: dependent.component,
             stopped: false,
         })
     }
@@ -429,6 +473,21 @@ macro_rules! exit_specialization {
     }};
 }
 
+#[must_use]
+pub struct AppFnResourcesMut;
+impl AppFnResourcesMut {
+    pub fn stop_id(self, id: ComponentIdPath) -> impl AppMutFnOnce<Output = Waiter> {
+        AppFn.map_mut().request(RequestSet::unload(ComponentId {
+            registry: Resources::id(),
+            component: id,
+        }))
+    }
+
+    pub fn stop<R: Resource>(self) -> impl AppMutFnOnce<Output = Waiter> {
+        self.stop_id(ComponentIdPath::Static(R::id()))
+    }
+}
+
 pub struct AppResourcesMut<'a> {
     app: &'a mut App,
 }
@@ -462,10 +521,23 @@ impl<'a> AppResourcesMut<'a> {
             .await?;
         Ok(Get::new(dependency))
     }
+
+    pub fn stop<R: Resource>(self) -> impl AppMutFuture<'a, Output = Waiter> {
+        AppFn.resources_mut().stop::<R>().call(self.app)
+    }
+
+    pub fn stop_id(self, id: ComponentIdPath) -> impl AppMutFuture<'a, Output = Waiter> {
+        AppFn.resources_mut().stop_id(id).call(self.app)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use crate::{app::map::RequestSet, prelude::*};
+    use auditeur_macros::pure_resource;
+
     use super::{Exit, Init};
 
     #[tokio::test]
@@ -526,5 +598,60 @@ mod tests {
         let mut b = B;
         exit_specialization!(&mut b).await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn weak_resource_exits() -> Result<(), Error> {
+        #[resource("test:resource")]
+        #[pure_resource]
+        #[create(default)]
+        struct TestResource;
+
+        let app = App::builder().with::<TestResource>(()).spawn();
+
+        crate::test::finish(app, false).await
+    }
+
+    #[tokio::test]
+    async fn weak_resource_stops_itself() -> Result<(), Error> {
+        #[resource("test:resource")]
+        #[listener(weak)]
+        #[create(default)]
+        struct TestResource;
+
+        let mut app = App::builder().with::<TestResource>(()).spawn();
+
+        let dependency = app
+            .registries_mut()
+            .load(TestResource::component_id())
+            .await?;
+        drop(dependency);
+
+        crate::test::finish(app, false).await
+    }
+
+    #[tokio::test]
+    async fn strong_resource_keeps_alive() {
+        #[resource("test:resource")]
+        #[listener]
+        #[create(default)]
+        struct TestResource;
+
+        let mut app = App::builder().with::<TestResource>(()).spawn();
+
+        let waiter = app
+            .map_mut()
+            .wait_for(RequestSet::remove(App::component_id()))
+            .await;
+        // Release our dependency on the app so that we don't keep it alive.
+        app.release_dependency_unsafe();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiter.is_ready());
+
+        app.resources_mut().stop::<TestResource>().await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(waiter.is_ready());
     }
 }
