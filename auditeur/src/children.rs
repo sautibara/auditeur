@@ -1,6 +1,6 @@
 use crate::{
-    app::registry::{ErasedComponent, Registry},
-    component::{Component, RegistryOf},
+    app::registrar::ErasedComponent,
+    component::{Component, RegistryOf, registry::Registry},
     prelude::*,
 };
 

@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use thiserror::Error;
+
 use crate::{
     app::{
         AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, OneshotSender, Owned,
-        event::Event,
+        event::Event, map::Request,
     },
     prelude::*,
 };
@@ -198,4 +200,50 @@ impl<'a> AppErrorsMut<'a> {
             }
         }
     }
+}
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("component '{id}' had an error: {error:?}")]
+    FromComponent {
+        id: ComponentId,
+        #[source]
+        error: anyhow::Error,
+    },
+    #[error("attempted to add '{id}' to the app, but that component already exists")]
+    NameCollision { id: ComponentId },
+    #[error("attempted to load '{id}' to the app, but one of its dependencies depends on it")]
+    DependencyLoop { id: ComponentId },
+    #[error("attempted to Get resource '{id}', but it doesn't implement GetRef")]
+    ResourceNoGetRef { id: NamespacedId },
+    #[error("attempted to get '{id}' from the app, but the downcast failed")]
+    DowncastFailed { id: ComponentId },
+    #[error("attempted to get '{id}' as a dependent, but it doesn't exist in the app")]
+    AppDependentNotFound { id: ComponentId },
+    #[error("attempted to add '{child}' to the app, but its parent '{parent}' was not found")]
+    ParentNotFound {
+        child: ComponentId,
+        parent: ComponentId,
+    },
+    #[error(
+        "attempted to get '{dependency}' with dependent '{dependent}', but that dependency was not found"
+    )]
+    DependencyNotFound {
+        dependency: ComponentId,
+        dependent: ComponentId,
+    },
+    #[error(
+        "attempted to get '{dependency}' with dependent '{dependent}', but that dependent was not found"
+    )]
+    DependentNotFound {
+        dependency: ComponentId,
+        dependent: ComponentId,
+    },
+    #[error(
+        "attempted to add '{component}' to the app, but its registry '{}' was not found",
+        component.registry
+    )]
+    RegistryNotFound { component: ComponentId },
+    #[error("attemped to request the app to {request}, but the request was invalid")]
+    InvalidRequest { request: Request },
 }

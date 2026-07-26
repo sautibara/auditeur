@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
+use async_trait::async_trait;
+
+use crate::any;
 use crate::input::CreateDeriveTypes;
 use crate::{app::map::Dependency, component::resource::Resource, prelude::*};
 
@@ -37,7 +40,7 @@ impl<T: GetRef> DerefMut for Get<T> {
 #[allow(clippy::module_name_repetitions)] // no
 pub trait GetRef<R: GetRef = Self>: Send + Sync {
     type Loader: Send + Sync;
-    type Ref: crate::Any + Send + Sync;
+    type Ref: any::Any + Send + Sync;
 
     fn create_loader(
         resource: &R,
@@ -67,7 +70,7 @@ impl<R: GetRefWith> GetRef for R {
 }
 
 pub struct GetClone;
-impl<R: GetRef + Clone + crate::Any> GetRef<R> for GetClone {
+impl<R: GetRef + Clone + any::Any> GetRef<R> for GetClone {
     type Loader = R;
     type Ref = R;
 
@@ -81,7 +84,7 @@ impl<R: GetRef + Clone + crate::Any> GetRef<R> for GetClone {
 }
 
 pub struct GetInput<I: Input>(PhantomData<I>);
-impl<I: Input + crate::Any + Sync, R: GetRef> GetRef<R> for GetInput<I> {
+impl<I: Input + any::Any + Sync, R: GetRef> GetRef<R> for GetInput<I> {
     type Loader = ();
     type Ref = I;
 
@@ -97,7 +100,7 @@ impl<I: Input + crate::Any + Sync, R: GetRef> GetRef<R> for GetInput<I> {
 pub struct GetCreate<C>(PhantomData<C>);
 impl<C, R> GetRef<R> for GetCreate<C>
 where
-    C: CreateDerive<External = R, Plain: Sync + Clone> + crate::Any + Sync,
+    C: CreateDerive<External = R, Plain: Sync + Clone> + any::Any + Sync,
     R: GetRef,
 {
     type Loader = C::Plain;
@@ -130,17 +133,17 @@ pub trait MaybeGetRef {
 
 #[async_trait]
 pub trait DynGetRefLoader: Send + Sync {
-    async fn load_ref(&self, app: &mut App) -> Result<Box<dyn crate::Any>, Error>;
+    async fn load_ref(&self, app: &mut App) -> Result<Box<dyn any::Any>, Error>;
 }
 
 struct DynGetRefLoaderImpl<R: GetRef>(R::Loader);
 
 #[async_trait]
 impl<R: GetRef> DynGetRefLoader for DynGetRefLoaderImpl<R> {
-    async fn load_ref(&self, app: &mut App) -> Result<Box<dyn crate::Any>, Error> {
+    async fn load_ref(&self, app: &mut App) -> Result<Box<dyn any::Any>, Error> {
         R::load_ref(&self.0, app)
             .await
-            .map(|value| Box::new(value) as Box<dyn crate::Any>)
+            .map(|value| Box::new(value) as Box<dyn any::Any>)
     }
 }
 

@@ -1,7 +1,9 @@
 use crate::{
-    app::registry::{MarkerLoader, Registries, Registry},
     children::HasChildren,
-    component::{Component, ComponentIdPath, RegistryOf},
+    component::{
+        Component, ComponentIdPath, RegistryOf,
+        registry::{MarkerLoader, Registries, Registry},
+    },
     prelude::*,
 };
 
@@ -41,7 +43,7 @@ impl Identified for Bundle {
 impl HasChildren for Bundle {
     fn with_erased(
         mut self,
-        component: crate::app::registry::ErasedComponent,
+        component: crate::app::registrar::ErasedComponent,
         children: Children,
     ) -> Self {
         self.children = self.children.with_erased(component, children);

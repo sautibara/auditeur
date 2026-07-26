@@ -3,18 +3,18 @@ use std::marker::PhantomData;
 use tokio::sync::broadcast;
 
 use crate::{
-    app::{
-        event::Event,
-        map::Dependency,
+    any,
+    app::{event::Event, map::Dependency},
+    component::{
+        Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
     },
-    component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
     input::CloneIn,
     prelude::*,
 };
 
 pub trait ListenMessage:
-    IdentifiedType + Clone + crate::AnyConst + Send + Sync + Sized + 'static
+    IdentifiedType + Clone + any::AnyConst + Send + Sync + Sized + 'static
 {
 }
 
@@ -154,7 +154,7 @@ impl<M: ListenMessage> IdentifiedComponent for PersistentChannelLoader<M> {
 
 #[derive(Any)]
 pub struct ListenLoaded {
-    sender: Box<dyn crate::Any + Send + Sync>,
+    sender: Box<dyn any::Any + Send + Sync>,
 }
 
 impl ListenLoaded {
@@ -208,7 +208,7 @@ impl<'a> AppListenMut<'a> {
     /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
     pub async fn listener<M: ListenMessage>(self) -> Result<Listener<M>, Error> {
         self.app
-            .registries_mut()
+            .components_mut()
             .get::<ListenMessages, _>(ComponentIdPath::Static(M::id()), async |loaded, _| {
                 loaded.get_receiver()
             })
@@ -221,7 +221,7 @@ impl<'a> AppListenMut<'a> {
     /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
     pub async fn shouter<M: ListenMessage>(self) -> Result<Shouter<M>, Error> {
         self.app
-            .registries_mut()
+            .components_mut()
             .get::<ListenMessages, _>(ComponentIdPath::Static(M::id()), async |loaded, _| {
                 loaded.get_sender()
             })

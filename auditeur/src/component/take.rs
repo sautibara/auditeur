@@ -1,16 +1,17 @@
 use std::marker::PhantomData;
 
 use crate::{
-    app::{
-        map::Dependency,
+    any,
+    app::map::Dependency,
+    component::{
+        Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
     },
-    component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
     input::CloneIn,
     prelude::*,
 };
 
-pub trait TakeMessage: IdentifiedType + crate::AnyConst + Send + Sync + Sized + 'static {}
+pub trait TakeMessage: IdentifiedType + any::AnyConst + Send + Sync + Sized + 'static {}
 
 pub struct Giver<M: TakeMessage> {
     sender: Dependency<flume::Sender<M>>,
@@ -105,7 +106,7 @@ impl<M: TakeMessage> IdentifiedComponent for TakeLoader<M> {
 
 #[derive(Any)]
 pub struct TakeLoaded {
-    sender: Box<dyn crate::Any + Send + Sync>,
+    sender: Box<dyn any::Any + Send + Sync>,
 }
 
 #[derive(Any)]
@@ -155,7 +156,7 @@ impl<'a> AppTakeMut<'a> {
     /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
     pub async fn taker<M: TakeMessage>(self) -> Result<Taker<M>, Error> {
         self.app
-            .registries_mut()
+            .components_mut()
             .get::<TakeMessages, _>(ComponentIdPath::Static(M::id()), async |loaded, _| {
                 loaded.get_receiver()
             })
@@ -168,7 +169,7 @@ impl<'a> AppTakeMut<'a> {
     /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
     pub async fn giver<M: TakeMessage>(self) -> Result<Giver<M>, Error> {
         self.app
-            .registries_mut()
+            .components_mut()
             .get::<TakeMessages, _>(ComponentIdPath::Static(M::id()), async |loaded, _| {
                 loaded.get_sender()
             })

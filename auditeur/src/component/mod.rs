@@ -6,10 +6,11 @@ use namespaced_id::ArcNamespacedId;
 
 use crate::prelude::*;
 
-use crate::app::registry::{Registries, Registry};
+use crate::component::registry::{Registries, Registry};
 
 pub mod bundle;
 pub mod listen;
+pub mod registry;
 pub mod resource;
 pub mod take;
 
@@ -183,7 +184,6 @@ pub trait IdentifiedComponentType {
 impl<C> IdentifiedComponentType for C
 where
     C: RegistryOf + IdentifiedType,
-    C::Registry: IdentifiedType,
 {
     fn component_id() -> ComponentId {
         ComponentId::within::<C::Registry, C>()

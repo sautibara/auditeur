@@ -64,7 +64,7 @@ let mut app = App::builder()
 
 // Make sure that the listener is loaded and listening before we send the message.
 let load = app
-    .registries_mut()
+    .components_mut()
     .load(ExitListener::component_id())
     .await?;
 

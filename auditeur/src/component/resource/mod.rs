@@ -3,18 +3,20 @@
 use std::pin::Pin;
 
 use crate::{
+    any,
     app::{
         AppFn, AppMutFnOnce, AppMutFuture,
+        component::Waiter,
         event::Event,
-        map::{Dependency, DependencyId, DependencyType, RequestSet, Waiter},
-        registry::{
-            EitherCallback, ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks,
-            Registries, Registry,
-        },
+        map::{Dependency, DependencyId, DependencyType, RequestSet},
     },
     component::{
         Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
         listen::Listener,
+        registry::{
+            EitherCallback, ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks,
+            Registries, Registry,
+        },
     },
     input::get::{DynGetRefLoader, Get, GetRef, MaybeGetRef},
     prelude::*,
@@ -35,7 +37,7 @@ pub mod watcher;
 ///
 /// To implement this trait, use [`#[resource]`](macro@crate::resource)
 pub trait Resource:
-    IdentifiedType + ResourceParts + MaybeGetRef + Create + crate::Any + Send + Sync + Sized + 'static
+    IdentifiedType + ResourceParts + MaybeGetRef + Create + any::Any + Send + Sync + Sized + 'static
 {
 }
 
@@ -44,7 +46,7 @@ impl<
         + ResourceParts
         + MaybeGetRef
         + Create
-        + crate::Any
+        + any::Any
         + Send
         + Sync
         + Sized
@@ -239,7 +241,7 @@ pub struct ResourcesLoaded {
 }
 
 impl ResourcesLoaded {
-    pub(crate) async fn get(&self, app: &mut App) -> Result<Option<Box<dyn crate::Any>>, Error> {
+    pub(crate) async fn get(&self, app: &mut App) -> Result<Option<Box<dyn any::Any>>, Error> {
         let Some(loader) = self.get_ref_loader.as_ref() else {
             return Ok(None);
         };
@@ -477,10 +479,12 @@ macro_rules! exit_specialization {
 pub struct AppFnResourcesMut;
 impl AppFnResourcesMut {
     pub fn stop_id(self, id: ComponentIdPath) -> impl AppMutFnOnce<Output = Waiter> {
-        AppFn.map_mut().request(RequestSet::unload(ComponentId {
-            registry: Resources::id(),
-            component: id,
-        }))
+        AppFn
+            .components_mut()
+            .request(RequestSet::unload(ComponentId {
+                registry: Resources::id(),
+                component: id,
+            }))
     }
 
     pub fn stop<R: Resource>(self) -> impl AppMutFnOnce<Output = Waiter> {
@@ -501,9 +505,7 @@ impl<'a> AppResourcesMut<'a> {
     ///
     /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
     pub async fn get<R: Resource + GetRef>(self) -> Result<Get<R>, Error> {
-        let dependency = self
-            .app
-            .registries_mut()
+        let dependency = (self.app.components_mut())
             .get::<Resources, _>(
                 ComponentIdPath::Static(R::id()),
                 async move |loaded, app| {
@@ -622,7 +624,7 @@ mod tests {
         let mut app = App::builder().with::<TestResource>(()).spawn();
 
         let dependency = app
-            .registries_mut()
+            .components_mut()
             .load(TestResource::component_id())
             .await?;
         drop(dependency);
@@ -640,7 +642,7 @@ mod tests {
         let mut app = App::builder().with::<TestResource>(()).spawn();
 
         let waiter = app
-            .map_mut()
+            .components_mut()
             .wait_for(RequestSet::remove(App::component_id()))
             .await;
         // Release our dependency on the app so that we don't keep it alive.

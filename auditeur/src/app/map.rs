@@ -3,20 +3,20 @@ use std::{
     fmt::{Debug, Display},
     hash::Hash,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
-    sync::Arc,
 };
 
 use hashbrown::HashMap;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 
 use crate::{
     app::{
         AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, OneshotSender, Owned,
+        component::{AppComponentsMut, AppFnComponentsMut, Releaser, Waiter, waiter_channel},
         event::{DependencyLifecycle, Event},
-        registry::{ErasedComponent, Registries},
+        registrar::ErasedComponent,
     },
     children::Child,
-    component::{ComponentIdPath, IdentifiedComponentType},
+    component::{ComponentIdPath, IdentifiedComponentType, registry::Registries},
     input::CloneIn,
     prelude::*,
 };
@@ -311,7 +311,7 @@ impl Map {
 
         // Spawn the load.
         let _ = channels.method_sender.send(super::Method::Registries(
-            super::registry::Method::SpawnOnAdd(id),
+            super::registrar::Method::SpawnOnAdd(id),
         ));
     }
 
@@ -338,7 +338,7 @@ impl Map {
 
         // Spawn the load.
         let _ = channels.method_sender.send(super::Method::Registries(
-            super::registry::Method::SpawnOnLoad(id),
+            super::registrar::Method::SpawnOnLoad(id),
         ));
     }
 
@@ -380,7 +380,7 @@ impl Map {
 
         // Spawn the unload.
         let _ = channels.method_sender.send(super::Method::Registries(
-            super::registry::Method::SpawnUnload(id),
+            super::registrar::Method::SpawnUnload(id),
         ));
     }
 
@@ -1414,7 +1414,7 @@ impl<T: Send + Sync> Dependency<T> {
         func: impl AsyncFnOnce(&T, &mut App) -> U + Send,
     ) -> Dependency<U> {
         let dependency = app
-            .map_mut()
+            .components_mut()
             .increment_dependency(this.handle.id.clone())
             .await;
         let value = func(&this.value, app).await;
@@ -1574,7 +1574,7 @@ impl DependencyHandle {
             "dependency should be dropped in the app it came from"
         );
 
-        app.map_mut().decrement_dependency(self.id.clone())
+        app.components_mut().decrement_dependency(self.id.clone())
     }
 
     /// Drops this dependency in an owned app.
@@ -1644,15 +1644,15 @@ impl Method {
                 sender.send(map);
             }
             Self::Request { set, sender } => {
-                let waiter = app.map_mut().request(set).await;
+                let waiter = app.components_mut().request(set).await;
                 sender.send(waiter);
             }
             Self::WaitFor { set, sender } => {
-                let waiter = app.map_mut().wait_for(set).await;
+                let waiter = app.components_mut().wait_for(set).await;
                 sender.send(waiter);
             }
             Self::IncrementDependency { id, sender } => {
-                let dependency = app.map_mut().increment_dependency(id).await;
+                let dependency = app.components_mut().increment_dependency(id).await;
                 sender.send(dependency);
             }
             Self::TryIncrementDependency {
@@ -1662,7 +1662,7 @@ impl Method {
                 sender,
             } => {
                 let dependency = app
-                    .map_mut()
+                    .components_mut()
                     .try_increment_dependency(dependency, dependent, ty)
                     .await;
                 sender.send(dependency);
@@ -1674,15 +1674,19 @@ impl Method {
                 sender,
             } => {
                 let dependency = app
-                    .map_mut()
+                    .components_mut()
                     .increment_loaded_dependency(dependency, dependent, ty)
                     .await;
                 sender.send(dependency);
             }
-            Self::DecrementDependency { id } => app.map_mut().decrement_dependency(id).await,
-            Self::OnAddFinished(component) => app.map_mut().on_add_finished(component).await,
-            Self::OnLoadFinished(component) => app.map_mut().on_load_finished(component).await,
-            Self::UnloadFinished(component) => app.map_mut().unload_finished(component).await,
+            Self::DecrementDependency { id } => app.components_mut().decrement_dependency(id).await,
+            Self::OnAddFinished(component) => app.components_mut().on_add_finished(component).await,
+            Self::OnLoadFinished(component) => {
+                app.components_mut().on_load_finished(component).await;
+            }
+            Self::UnloadFinished(component) => {
+                app.components_mut().unload_finished(component).await;
+            }
         }
     }
 }
@@ -1690,6 +1694,12 @@ impl Method {
 /// Return type of [`AppFn::map()`], see [`AppMap`].
 #[must_use]
 pub struct AppFnMap;
+
+/// Return type of [`App::map()`].
+pub struct AppMap<'a> {
+    app: &'a App,
+}
+
 impl AppFnMap {
     /// See [`AppMap::get`].
     pub const fn get(self) -> impl AppFnOnce<Output = Map> {
@@ -1701,9 +1711,17 @@ impl AppFnMap {
     }
 }
 
-#[must_use]
-pub struct AppFnMapMut;
-impl AppFnMapMut {
+impl<'a> AppMap<'a> {
+    pub(super) const fn new(app: &'a App) -> Self {
+        Self { app }
+    }
+
+    pub fn get(self) -> impl AppFuture<'a, Output = Map> {
+        AppFn.map().get().call(self.app)
+    }
+}
+
+impl AppFnComponentsMut {
     #[expect(clippy::unused_self)]
     pub(super) const fn increment_dependency(
         self,
@@ -1713,6 +1731,48 @@ impl AppFnMapMut {
             id,
             |id, sender, _| super::Method::Map(Method::IncrementDependency { id, sender }),
             async |id, owned, handle| owned.increment_dependency(id, &handle.method_sender),
+        )
+    }
+
+    #[expect(clippy::unused_self)]
+    pub(super) fn try_increment_dependency(
+        self,
+        dependency: ComponentId,
+        dependent: LoadedComponentId,
+        ty: DependencyType,
+    ) -> impl AppMutFnOnce<Output = Result<Dependency<()>, Error>> {
+        AppFn::oneshot_mut(
+            (dependency, dependent, ty),
+            |(dependency, dependent, ty), sender, _| {
+                super::Method::Map(Method::TryIncrementDependency {
+                    dependency,
+                    dependent,
+                    ty,
+                    sender,
+                })
+            },
+            async |(dependency, dependent, ty), owned, handle| {
+                let dependency = owned.map.validate_id(dependency).map_err(|dependency| {
+                    Error::DependencyNotFound {
+                        dependency,
+                        dependent: dependent.component.clone_id(),
+                    }
+                })?;
+
+                let dependency = owned.map.load_component(
+                    dependency,
+                    Channels {
+                        event_sender: &owned.event_sender,
+                        method_sender: &handle.method_sender,
+                    },
+                );
+
+                let id = DependencyPart {
+                    id: LoadedDependencyId::new(dependent, dependency),
+                    ty,
+                };
+                Ok(owned.increment_dependency(id, &handle.method_sender))
+            },
         )
     }
 
@@ -1749,74 +1809,20 @@ impl AppFnMapMut {
     }
 }
 
-/// Return type of [`App::map()`].
-pub struct AppMap<'a> {
-    app: &'a App,
-}
-
-impl<'a> AppMap<'a> {
-    pub(super) const fn new(app: &'a App) -> Self {
-        Self { app }
-    }
-
-    pub fn get(self) -> impl AppFuture<'a, Output = Map> {
-        AppFn.map().get().call(self.app)
-    }
-}
-
-/// Return type of [`App::map_mut()`].
-pub struct AppMapMut<'a> {
-    app: &'a mut App,
-}
-
-impl<'a> AppMapMut<'a> {
-    pub(super) const fn new(app: &'a mut App) -> Self {
-        Self { app }
-    }
-
+impl<'a> AppComponentsMut<'a> {
     pub(super) fn try_increment_dependency(
         self,
         dependency: ComponentId,
         dependent: LoadedComponentId,
         ty: DependencyType,
     ) -> impl AppMutFuture<'a, Output = Result<Dependency<()>, Error>> {
-        AppFn::oneshot_mut(
-            (dependency, dependent, ty),
-            |(dependency, dependent, ty), sender, _| {
-                super::Method::Map(Method::TryIncrementDependency {
-                    dependency,
-                    dependent,
-                    ty,
-                    sender,
-                })
-            },
-            async |(dependency, dependent, ty), owned, handle| {
-                let dependency = owned.map.validate_id(dependency).map_err(|dependency| {
-                    Error::DependencyNotFound {
-                        dependency,
-                        dependent: dependent.component.clone_id(),
-                    }
-                })?;
-
-                let dependency = owned.map.load_component(
-                    dependency,
-                    Channels {
-                        event_sender: &owned.event_sender,
-                        method_sender: &handle.method_sender,
-                    },
-                );
-
-                let id = DependencyPart {
-                    id: LoadedDependencyId::new(dependent, dependency),
-                    ty,
-                };
-                Ok(owned.increment_dependency(id, &handle.method_sender))
-            },
-        )
-        .call(self.app)
+        AppFn
+            .components_mut()
+            .try_increment_dependency(dependency, dependent, ty)
+            .call(self.app)
     }
 
-    pub(super) fn increment_loaded_dependency(
+    pub(crate) fn increment_loaded_dependency(
         self,
         dependency: AddedComponentId,
         dependent: LoadedComponentId,
@@ -1856,7 +1862,10 @@ impl<'a> AppMapMut<'a> {
         self,
         id: DependencyPart,
     ) -> impl AppMutFuture<'a, Output = Dependency<()>> {
-        AppFn.map_mut().increment_dependency(id).call(self.app)
+        AppFn
+            .components_mut()
+            .increment_dependency(id)
+            .call(self.app)
     }
 
     fn decrement_dependency(self, id: DependencyPart) -> impl AppMutFuture<'a, Output = ()> {
@@ -1871,11 +1880,11 @@ impl<'a> AppMapMut<'a> {
     }
 
     pub fn request(self, request: RequestSet) -> impl AppMutFuture<'a, Output = Waiter> {
-        AppFn.map_mut().request(request).call(self.app)
+        AppFn.components_mut().request(request).call(self.app)
     }
 
     pub fn wait_for(self, request: RequestSet) -> impl AppMutFuture<'a, Output = Waiter> {
-        AppFn.map_mut().wait_for(request).call(self.app)
+        AppFn.components_mut().wait_for(request).call(self.app)
     }
 
     pub(super) async fn on_add_finished(self, id: AddedComponentId) {
@@ -1933,68 +1942,6 @@ impl<'a> AppMapMut<'a> {
     }
 }
 
-fn waiter_channel() -> (Releaser, Waiter) {
-    let (sender, receiver) = oneshot::channel();
-    let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
-    (Releaser { sender }, Waiter { receiver })
-}
-
-pub struct Waiter {
-    receiver: oneshot::Receiver<()>,
-}
-
-impl Waiter {
-    pub async fn wait(self) {
-        let _ = self.receiver.await;
-    }
-
-    #[must_use]
-    pub fn is_ready(&self) -> bool {
-        !self.receiver.is_empty()
-    }
-}
-
-#[derive(Clone)]
-pub struct Releaser {
-    sender: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
-}
-
-impl Releaser {
-    pub(crate) fn release(&self) {
-        if let Ok(mut opt) = self.sender.try_lock()
-            && let Some(sender) = opt.take()
-        {
-            let _ = sender.send(());
-        }
-    }
-}
-
-impl Hash for Releaser {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let pointer = Arc::as_ptr(&self.sender);
-        pointer.hash(state);
-    }
-}
-
-impl PartialEq for Releaser {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.sender, &other.sender)
-    }
-}
-
-impl Eq for Releaser {}
-
-impl Debug for Releaser {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let is_some = self.sender.lock().is_ok_and(|opt| opt.is_some());
-        if is_some {
-            write!(f, "Some(...)")
-        } else {
-            write!(f, "None")
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
@@ -2003,7 +1950,7 @@ mod test {
             self, Channels, Owned,
             event::Event,
             map::{self, Dependency},
-            registry,
+            registrar,
         },
         children::Children,
         component::IdentifiedComponentType,
@@ -2044,13 +1991,13 @@ mod test {
             expected.retain(|check| !(check.checker)(&method));
 
             match method {
-                app::Method::Registries(registry::Method::SpawnOnAdd(comp)) => {
+                app::Method::Registries(registrar::Method::SpawnOnAdd(comp)) => {
                     owned.map.finish_on_add(comp, channels!(sender, owned));
                 }
-                app::Method::Registries(registry::Method::SpawnOnLoad(comp)) => {
+                app::Method::Registries(registrar::Method::SpawnOnLoad(comp)) => {
                     owned.map.finish_on_load(comp, channels!(sender, owned));
                 }
-                app::Method::Registries(registry::Method::SpawnUnload(comp)) => {
+                app::Method::Registries(registrar::Method::SpawnUnload(comp)) => {
                     owned.map.finish_unload(comp, channels!(sender, owned));
                 }
                 app::Method::ReleaseEventListener => {
@@ -2088,17 +2035,17 @@ mod test {
             [
                 check!(|method| matches!(
                     method,
-                    app::Method::Registries(registry::Method::SpawnOnAdd(comp))
+                    app::Method::Registries(registrar::Method::SpawnOnAdd(comp))
                     if **comp == Event::component_id()
                 )),
                 check!(|method| matches!(
                     method,
-                    app::Method::Registries(registry::Method::SpawnOnLoad(comp))
+                    app::Method::Registries(registrar::Method::SpawnOnLoad(comp))
                     if *comp.component == Event::component_id()
                 )),
                 check!(|method| matches!(
                     method,
-                    app::Method::Registries(registry::Method::SpawnUnload(comp))
+                    app::Method::Registries(registrar::Method::SpawnUnload(comp))
                     if *comp.component == Event::component_id()
                 )),
                 check!(|method| matches!(method, app::Method::Exit)),

@@ -152,31 +152,29 @@ use std::ops::{Deref, DerefMut};
 use futures::FutureExt;
 use tokio::sync::{broadcast, oneshot};
 
+use crate::app::component::{AppComponentsMut, AppFnComponentsMut};
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
 use crate::app::map::{
-    AppFnMap, AppFnMapMut, Channels, DependencyHandle, LoadedComponentId, LoadedDependencyId,
-    RequestSet, Waiter,
-};
-use crate::app::registry::{
-    AppFnRegistriesMut, ErasedLoader, Loaded, Loader, LoaderCallbacks, Registry,
+    AppFnMap, Channels, DependencyHandle, LoadedComponentId, LoadedDependencyId, RequestSet,
 };
 use crate::component::bundle::Bundles;
+use crate::component::registry::LoaderCallback;
 use crate::component::resource::AppFnResourcesMut;
 use crate::component::{IdentifiedComponent, IdentifiedComponentType};
 use crate::prelude::*;
 use crate::{
     app::{
+        component::Waiter,
         error::{AppErrors, AppErrorsMut, Errors},
         event::Event,
-        map::{
-            AddedComponentId, AppMap, AppMapMut, Dependency, DependencyPart, DependencyType, Map,
-        },
-        registry::{AppRegistriesMut, ErasedComponent, Registrar, Registries},
+        map::{AddedComponentId, AppMap, Dependency, DependencyPart, DependencyType, Map},
+        registrar::Registrar,
     },
     children::HasChildren,
     component::{
         Component, RegistryOf,
         listen::{self, AppListenMut, ListenMessages, Listener},
+        registry::{ErasedLoader, Loaded, Loader, LoaderCallbacks, Registries, Registry},
         resource::{AppResourcesMut, Resources},
         take::{AppTakeMut, TakeMessages},
     },
@@ -184,10 +182,13 @@ use crate::{
 
 const EXPECT_RECV: &str = "handle shouldn't try to access app after it closes";
 
+pub mod component;
 pub mod error;
 pub mod event;
 pub mod map;
-pub mod registry;
+pub(crate) mod registrar;
+
+pub use registrar::ErasedComponent;
 
 /// A handle to the shared backend state of the app; the way that components interact.
 ///
@@ -256,7 +257,7 @@ impl App {
     /// Note that this doesn't request for the app to exit, it just waits for it. As such, this is
     /// most useful to be called right after [`Builder::spawn`].
     pub async fn wait_for_exit(mut self) {
-        let waiter = (self.map_mut())
+        let waiter = (self.components_mut())
             .wait_for(RequestSet::remove(Self::component_id()))
             .await;
         drop(self);
@@ -301,8 +302,8 @@ impl App {
 /// added components, and the [error list](error).
 impl App {
     #[must_use]
-    pub const fn registries_mut(&mut self) -> AppRegistriesMut<'_> {
-        AppRegistriesMut::new(self)
+    pub const fn components_mut(&mut self) -> AppComponentsMut<'_> {
+        AppComponentsMut::new(self)
     }
 
     #[must_use]
@@ -318,11 +319,6 @@ impl App {
     #[must_use]
     pub const fn map(&self) -> AppMap<'_> {
         AppMap::new(self)
-    }
-
-    #[must_use]
-    pub const fn map_mut(&mut self) -> AppMapMut<'_> {
-        AppMapMut::new(self)
     }
 
     /// Gets an event listener from the app.
@@ -375,7 +371,7 @@ impl<T> Debug for OneshotSender<T> {
 /// A message from a handle to run a method in the app.
 #[derive(Debug)]
 enum Method {
-    Registries(registry::Method),
+    Registries(registrar::Method),
     Errors(error::Method),
     Map(map::Method),
 
@@ -687,7 +683,10 @@ impl<'a, T> DependentMut<'a, (), T> {
             // All handles have an unremovable dependency on the app.
             ty: DependencyType::Unremovable,
         };
-        let dependency = self.inner.app.map_mut().increment_dependency(part).await;
+        let dependency = (self.inner.app)
+            .components_mut()
+            .increment_dependency(part)
+            .await;
         self.with_dependency(dependency)
     }
 
@@ -763,7 +762,7 @@ impl Loader for AppLoader {
         Ok(AppLoaded(()))
     }
 
-    fn on_load(&self) -> impl registry::LoaderCallback<Self, Output = ()> {
+    fn on_load(&self) -> impl LoaderCallback<Self, Output = ()> {
         // app has custom load / unload logic in the map
         LoaderCallbacks::none()
     }
@@ -785,16 +784,12 @@ impl RegistryOf for App {
 
 pub struct AppFn;
 impl AppFn {
-    pub const fn registries_mut(self) -> AppFnRegistriesMut {
-        AppFnRegistriesMut
+    pub const fn components_mut(self) -> AppFnComponentsMut {
+        AppFnComponentsMut
     }
 
     pub const fn map(self) -> AppFnMap {
         AppFnMap
-    }
-
-    pub const fn map_mut(self) -> AppFnMapMut {
-        AppFnMapMut
     }
 
     pub const fn errors(self) -> AppFnErrors {
@@ -817,7 +812,7 @@ impl AppFn {
             let new_dependency_type = handle.new_dependency_type;
             let part = handle.dependency.info().clone();
 
-            Self.map_mut()
+            Self.components_mut()
                 .increment_dependency(part)
                 .map(move |dependency| {
                     HandleData {
@@ -832,7 +827,7 @@ impl AppFn {
 
     pub const fn exit(self) -> impl AppMutFnOnce<Output = Waiter> {
         Self::using_handle_mut(|_| {
-            Self.map_mut()
+            Self.components_mut()
                 .request(RequestSet::remove(App::component_id()))
         })
     }

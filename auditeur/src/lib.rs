@@ -2,8 +2,6 @@
 #![feature(unboxed_closures, async_fn_traits)]
 #![recursion_limit = "512"]
 
-use thiserror::Error;
-
 pub mod app;
 pub mod children;
 pub mod component;
@@ -18,33 +16,16 @@ pub use ::namespaced_id;
 mod macros;
 pub use macros::*;
 
-pub use any::Any;
-
-#[cfg(feature = "path-any")]
-pub(crate) use path_any::PathAnyConst as AnyConst;
-#[cfg(not(feature = "path-any"))]
-pub(crate) use std::any::Any as AnyConst;
-
-#[cfg(feature = "path-any")]
 pub mod any {
     #[cfg(feature = "path-any")]
     pub use crate::path_any::PathAny as Any;
     #[cfg(not(feature = "path-any"))]
     pub use std::any::Any;
 
-    /// Attempt to downcast the box to a concrete type.
-    ///
-    /// # Errors
-    ///
-    /// - Returns the original `object` if the downcast failed
-    pub fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
-        super::path_any::downcast(object)
-    }
-}
-
-#[cfg(not(feature = "path-any"))]
-pub mod any {
-    pub use std::any::Any;
+    #[cfg(feature = "path-any")]
+    pub use crate::path_any::PathAnyConst as AnyConst;
+    #[cfg(not(feature = "path-any"))]
+    pub use std::any::Any as AnyConst;
 
     /// Attempt to downcast the box to a concrete type.
     ///
@@ -52,7 +33,11 @@ pub mod any {
     ///
     /// - Returns the original `object` if the downcast failed
     pub fn downcast<T: Any>(object: Box<dyn Any>) -> Result<Box<T>, Box<dyn Any>> {
-        Box::<dyn std::any::Any + 'static>::downcast(object)
+        #[cfg(feature = "path-any")]
+        let res = super::path_any::downcast(object);
+        #[cfg(not(feature = "path-any"))]
+        let res = Box::downcast(object);
+        res
     }
 }
 
@@ -70,7 +55,7 @@ pub mod prelude {
     pub use crate::component::IdentifiedComponentType as _;
     pub use crate::component::IdentifiedType as _;
     pub use crate::{
-        app::App,
+        app::{App, map::Dependency},
         children::Children,
         component::ComponentId,
         component::bundle::Bundle,
@@ -102,60 +87,10 @@ pub mod prelude {
     pub use anyhow;
     pub use anyhow::Result;
     pub use std::ops::ControlFlow;
-
-    // TODO: remove from prelude once listener and watcher are refactored
-    pub use async_trait::async_trait;
 }
 
-use prelude::*;
-
-use crate::app::map::Request;
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("component '{id}' had an error: {error:?}")]
-    FromComponent {
-        id: ComponentId,
-        #[source]
-        error: anyhow::Error,
-    },
-    #[error("attempted to add '{id}' to the app, but that component already exists")]
-    NameCollision { id: ComponentId },
-    #[error("attempted to load '{id}' to the app, but one of its dependencies depends on it")]
-    DependencyLoop { id: ComponentId },
-    #[error("attempted to Get resource '{id}', but it doesn't implement GetRef")]
-    ResourceNoGetRef { id: NamespacedId },
-    #[error("attempted to get '{id}' from the app, but the downcast failed")]
-    DowncastFailed { id: ComponentId },
-    #[error("attempted to get '{id}' as a dependent, but it doesn't exist in the app")]
-    AppDependentNotFound { id: ComponentId },
-    #[error("attempted to add '{child}' to the app, but its parent '{parent}' was not found")]
-    ParentNotFound {
-        child: ComponentId,
-        parent: ComponentId,
-    },
-    #[error(
-        "attempted to get '{dependency}' with dependent '{dependent}', but that dependency was not found"
-    )]
-    DependencyNotFound {
-        dependency: ComponentId,
-        dependent: ComponentId,
-    },
-    #[error(
-        "attempted to get '{dependency}' with dependent '{dependent}', but that dependent was not found"
-    )]
-    DependentNotFound {
-        dependency: ComponentId,
-        dependent: ComponentId,
-    },
-    #[error(
-        "attempted to add '{component}' to the app, but its registry '{}' was not found",
-        component.registry
-    )]
-    RegistryNotFound { component: ComponentId },
-    #[error("attemped to request the app to {request}, but the request was invalid")]
-    InvalidRequest { request: Request },
-}
+pub use app::App;
+pub use app::error::Error;
 
 /// A utility enum for when you have two different values that you may want to return.
 ///
