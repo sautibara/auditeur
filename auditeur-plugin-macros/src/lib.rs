@@ -64,15 +64,6 @@ fn export_inner(mut func: ItemFn) -> Result<proc_macro2::TokenStream, ExportErro
         }
     }
 
-    if let Some(FnArg::Typed(context_arg)) = func.sig.inputs.get(0) {
-        // Using the argument's span in case of a weird pattern.
-        let span = context_arg.span();
-        let ident = &context_arg.pat;
-        let stmt =
-            syn::parse2(quote_spanned! { span => #ident.init(); }).expect("statement should parse");
-        func.block.stmts.insert(0, stmt);
-    }
-
     Ok(quote! {
         #[::auditeur_plugin::stabby_export(canaries)]
         // a few pedantic lints to disable
@@ -154,7 +145,7 @@ fn export_check_return_value(span: Span) -> impl Iterator<Item = Stmt> {
             // this is allowed since it is in an if false block, so it never gets run but still
             // gets compiled and outputs errors
             // since it never gets run, we can just use unimplemented! for the argument
-            let _: ::auditeur_plugin::auditeur::bundle::Bundle = init(unimplemented!());
+            let _: ::auditeur_plugin::Plugin = init(unimplemented!());
         }
     };
     let return_type_assert = syn::parse2(return_type_assert).expect("statement should parse");

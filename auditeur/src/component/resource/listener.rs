@@ -272,6 +272,9 @@ macro_rules! impl_component_list {
 
 all_tuples!(impl_component_list, 1, 16, T, c);
 
+/// Used in the [`listener`](macro@crate::listener) attribute macro.
+///
+/// Use the `options` flag in the macro to use this trait.
 pub trait ListenerDerive: Send + Sync {
     const OPTIONS: Options = Options::new();
 

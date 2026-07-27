@@ -1,20 +1,14 @@
 use std::{ffi::OsStr, path::PathBuf};
 
-use auditeur::bundle_old::{self, Bundle};
+use auditeur::component::ComponentIdPath;
 use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
 
-use crate::{LibraryHandle, PluginContext};
+use crate::{LibraryHandle, Plugin, PluginComponent, PluginContext};
 
-type PluginFn = fn(PluginContext) -> Bundle;
+type PluginFn = fn(PluginContext) -> Plugin;
 
-/// A plugin and its associated [`Bundle`] that has not been loaded into the app yet.
-pub struct Plugin {
-    pub library: LibraryHandle,
-    pub init: bundle_old::SharedInitFn,
-}
-
-impl Plugin {
+impl PluginComponent {
     /// Load a plugin from a dynamic library at `path` and run its `main` function
     ///
     /// # Safety
@@ -30,7 +24,10 @@ impl Plugin {
     ///
     /// - If the library fails to load
     /// - If the library's main function fails to load
-    pub unsafe fn load_from_file_unchecked(path: impl AsRef<OsStr>) -> Result<Self, Error> {
+    pub unsafe fn load_from_file_unchecked(
+        path: impl AsRef<OsStr>,
+        id: impl Into<ComponentIdPath>,
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
 
         let library = libloading::Library::new(path)?;
@@ -48,12 +45,13 @@ impl Plugin {
                     additional_info: err.to_string(),
                 })?;
 
-        let context = PluginContext::new(handle.clone());
-        let init = bundle_old::SharedInitFn::new(move || main(context.clone()));
+        let context = PluginContext::new(handle);
+        let plugin = main(context.clone());
 
         Ok(Self {
-            library: handle,
-            init,
+            id: id.into(),
+            plugin,
+            context,
         })
     }
 }

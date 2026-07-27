@@ -19,7 +19,7 @@ pub mod take;
 /// See the documentation of [`Registry`] for more information about components.
 ///
 /// This trait usually has blanket implementations for each registry.
-pub trait Component<R: Registry>: Identified {
+pub trait Component<R: Registry> {
     type ComponentInput;
 
     fn register(input: Self::ComponentInput) -> (R::Loader, Children);

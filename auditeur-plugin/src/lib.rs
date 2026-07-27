@@ -1,3 +1,12 @@
+use auditeur::{
+    children::HasChildren,
+    component::{
+        registry::{Loaded, Loader, Registries, Registry},
+        Component, ComponentIdPath, IdentifiedComponent, RegistryOf,
+    },
+    prelude::{anyhow::anyhow, *},
+    Error,
+};
 use libloading::Library;
 use std::{path::PathBuf, sync::Arc};
 use tracing::warn;
@@ -17,8 +26,8 @@ pub mod prelude {
 
 /// Additional context given to a plugin during load
 ///
-/// This most notably contains a [`LibraryHandle`], which is sometimes necessary to keep the plugin
-/// loaded.
+/// This most notably contains a [`LibraryHandle`], which is sometimes necessary to keep the
+/// plugin loaded.
 #[derive(Clone)]
 pub struct PluginContext {
     library_handle: LibraryHandle,
@@ -38,14 +47,11 @@ impl PluginContext {
     pub fn library_handle(&self) -> LibraryHandle {
         self.library_handle.clone()
     }
+}
 
-    /// Initialize the plugin runtime within the shared library.
-    ///
-    /// **NOTE: This is automatically called when using [`#[export]`]**. Repeated calls shouldn't
-    /// break the runtime, but they also aren't necessary.
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn init(&self) {
-        // Currently doesn't need anything...
+impl Input for PluginContext {
+    async fn create(app: &mut App) -> Result<Self, Error> {
+        app.plugins_mut().get_ancestor_context().await
     }
 }
 
@@ -98,5 +104,150 @@ struct LibraryInfo {
 impl Drop for LibraryInfo {
     fn drop(&mut self) {
         warn!("unloading library at '{}'...", self.path.display());
+    }
+}
+
+#[derive(Default)]
+pub struct Plugin {
+    children: Children,
+}
+
+impl Plugin {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl HasChildren for Plugin {
+    fn with_erased(
+        mut self,
+        component: auditeur::app::ErasedComponent,
+        children: Children,
+    ) -> Self {
+        self.children = self.children.with_erased(component, children);
+        self
+    }
+}
+
+pub struct PluginComponent {
+    id: ComponentIdPath,
+    plugin: Plugin,
+    context: PluginContext,
+}
+
+impl Component<Plugins> for PluginComponent {
+    type ComponentInput = Self;
+    fn register(component: Self::ComponentInput) -> (<Plugins as Registry>::Loader, Children) {
+        let Self {
+            id,
+            plugin: Plugin { children },
+            context,
+        } = component;
+
+        (PluginLoader { id, context }, children)
+    }
+}
+
+#[identified("plugin:plugins")]
+pub struct Plugins;
+impl RegistryOf for Plugins {
+    type Registry = Registries;
+}
+
+impl Registry for Plugins {
+    type Loader = PluginLoader;
+    type Loaded = PluginLoaded;
+}
+
+#[doc(hidden)]
+pub struct PluginLoader {
+    id: ComponentIdPath,
+    context: PluginContext,
+}
+
+impl Loader for PluginLoader {
+    type Loaded = PluginLoaded;
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn load(&self, _: &mut App) -> Result<Self::Loaded, auditeur::Error> {
+        Ok(PluginLoaded {
+            context: self.context.clone(),
+        })
+    }
+}
+
+impl IdentifiedComponent for PluginLoader {
+    fn component_id_dyn(&self) -> ComponentId {
+        ComponentId {
+            registry: Plugins::id(),
+            component: self.id.clone(),
+        }
+    }
+}
+
+#[derive(Any)]
+#[doc(hidden)]
+pub struct PluginLoaded {
+    context: PluginContext,
+}
+
+impl Loaded for PluginLoaded {}
+
+pub trait AppExt {
+    fn plugins_mut(&mut self) -> AppPluginsMut<'_>;
+}
+
+impl AppExt for App {
+    fn plugins_mut(&mut self) -> AppPluginsMut<'_> {
+        AppPluginsMut { app: self }
+    }
+}
+
+pub struct AppPluginsMut<'a> {
+    app: &'a mut App,
+}
+
+impl AppPluginsMut<'_> {
+    /// Gets the context of the plugin with the id of `id`.
+    ///
+    /// # Errors
+    ///
+    /// - See [`AppComponentsMut::get`](::auditeur::app::component::AppComponentsMut::get).
+    pub async fn get_context(self, id: impl Into<ComponentIdPath>) -> Result<PluginContext, Error> {
+        self.app
+            .components_mut()
+            .get::<Plugins, _>(id.into(), async |loaded: &mut PluginLoaded, _: &mut App| {
+                Ok(loaded.context.clone())
+            })
+            .await
+            .map(|dependency| dependency.clone())
+    }
+
+    /// Gets the context of the nearest ancestor plugin of the current dependent.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::FromComponent`] iff there are no plugins in the ancestry of the current
+    ///   dependent.
+    /// - See [`AppComponentsMut::get`](::auditeur::app::component::AppComponentsMut::get).
+    #[expect(clippy::missing_panics_doc)]
+    pub async fn get_ancestor_context(self) -> Result<PluginContext, Error> {
+        let map = self.app.map().get().await;
+
+        let mut id = self.app.dependent().dependent_id().component;
+        loop {
+            if id.registry == Plugins::id() {
+                break;
+            }
+
+            let component = map.components.get(&id).expect("components should contain id b/c it's either kept alive by the current app handle or a parent of a component kept alive");
+            let Some(parent) = &component.parent else {
+                return Err(self.app.errors().wrap(anyhow!("[`AppPluginsMut::get_first_ancestor`] should only be called on a descendant of a plugin")));
+            };
+
+            id = parent.clone();
+        }
+
+        self.get_context(id.into_id().component).await
     }
 }
