@@ -97,7 +97,10 @@ impl<'a> ConfigStruct<'a> {
             let inner_field = field.ident;
             let combined_field = match field.ident {
                 FieldIdent::Ident(ident) => quote! { #ident },
-                FieldIdent::Index(index) => quote! { #index },
+                FieldIdent::Index(index) => {
+                    let index = syn::Index::from(index);
+                    quote! { #index }
+                }
             };
             let ty = field.ty;
 

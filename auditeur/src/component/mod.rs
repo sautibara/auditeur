@@ -23,10 +23,6 @@ pub trait Component<R: Registry>: Identified {
     type ComponentInput;
 
     fn register(input: Self::ComponentInput) -> (R::Loader, Children);
-    fn on_add(app: &mut App) -> impl Future<Output = Result<(), Error>> + Send + Sync {
-        let _ = app;
-        async { Ok(()) }
-    }
 }
 
 /// A type that belongs to a single well-defined [`Registry`].

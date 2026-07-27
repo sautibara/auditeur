@@ -3,7 +3,6 @@
 use std::{convert::Infallible, marker::PhantomData, pin::Pin};
 
 use crate::{
-    children::HasChildren,
     component::{
         listen::{self, ListenMessage},
         resource::{Options, Resource, ResourceParts, Runner, StopListener},
@@ -29,6 +28,11 @@ pub trait Listener: Resource {
 
     fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
         async { Ok(()) }
+    }
+
+    #[must_use]
+    fn children(children: Children) -> Children {
+        children
     }
 }
 
@@ -268,6 +272,23 @@ macro_rules! impl_component_list {
 
 all_tuples!(impl_component_list, 1, 16, T, c);
 
+pub trait ListenerDerive: Send + Sync {
+    const OPTIONS: Options = Options::new();
+
+    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+        async { Ok(()) }
+    }
+
+    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+        async { Ok(()) }
+    }
+
+    #[must_use]
+    fn children(children: Children) -> Children {
+        children
+    }
+}
+
 pub struct ListenerMethod;
 impl<L: Listener> ResourceParts<L> for ListenerMethod {
     type Runner = ListenerRunner<L>;
@@ -280,7 +301,9 @@ impl<L: Listener> ResourceParts<L> for ListenerMethod {
     }
 
     fn children() -> Children {
-        L::Components::children(Children::new())
+        let children = Children::new();
+        let children = <L as Listener>::children(children);
+        L::Components::children(children)
     }
 
     const OPTIONS: Options = <L as Listener>::OPTIONS;
@@ -305,6 +328,9 @@ impl<L: Listener> Runner for ListenerRunner<L> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
+    use tokio::sync::broadcast;
+
     use crate::prelude::*;
 
     #[tokio::test]
@@ -316,6 +342,44 @@ mod tests {
 
         let app = App::builder().with::<TestResource>(()).spawn();
 
+        crate::test::finish(app, false).await
+    }
+
+    #[tokio::test]
+    async fn listener_derive_init() -> Result<(), Error> {
+        #[resource("test:resource")]
+        #[listener(weak, options)]
+        struct TestResource(broadcast::Sender<()>);
+
+        // Create just passes in the sender.
+        impl Create for TestResource {
+            type ExternalInput = broadcast::Sender<()>;
+            async fn create(external: &Self::ExternalInput, _: &mut App) -> Result<Self, Error> {
+                Ok(Self(external.clone()))
+            }
+        }
+
+        impl ListenerDerive for TestResource {
+            async fn init(&mut self) -> anyhow::Result<()> {
+                self.0.send(())?;
+                Ok(())
+            }
+        }
+
+        let (sender, mut receiver) = broadcast::channel(1);
+        let mut app = App::builder().with::<TestResource>(sender).spawn();
+
+        // Make sure the resource loads at least once.
+        app.components_mut()
+            .load_lazy(TestResource::component_id())
+            .await?;
+
+        // Wait until the resource initializes.
+        (receiver.recv().await)
+            .map_err(|_| anyhow!("resource should send message"))
+            .map_err(|err| app.errors().wrap(err))?;
+
+        // Then exit.
         crate::test::finish(app, false).await
     }
 }

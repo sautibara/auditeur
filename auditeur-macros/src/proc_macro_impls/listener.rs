@@ -31,10 +31,12 @@ pub fn listener_attr(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     })
 }
 
+#[expect(clippy::struct_excessive_bools)]
 pub struct Config<'a> {
     stop_component: bool,
     biased: bool,
     weak: bool,
+    options: bool,
     attrs: &'a Attrs,
     ident: &'a Ident,
     generics: &'a syn::Generics,
@@ -54,10 +56,14 @@ impl<'a> Config<'a> {
         // `weak`'s default is `false`.
         let weak = attrs.attrs.iter().any(Attr::is_weak_flag);
 
+        // `options`'s default is `false`.
+        let options = attrs.attrs.iter().any(Attr::is_options_flag);
+
         Self {
             stop_component,
             biased,
             weak,
+            options,
             attrs,
             ident,
             generics,
@@ -82,21 +88,26 @@ impl<'a> Config<'a> {
             },
         );
 
+        let listener_derives = self.options.then(|| {
+            let this = self.as_listener_derive();
+            quote! {
+                async fn init(&mut self) -> #auditeur::anyhow::Result<()> {
+                    #this::init(self).await
+                }
+
+                async fn exit(&mut self) -> #auditeur::anyhow::Result<()> {
+                    #this::exit(self).await
+                }
+            }
+        });
+
         quote! {
             impl #impl_generics #auditeur::component::resource::listener::Listener
                 for #ident #type_generics
             #where_clause
             {
                 type Components = (#bias, #(#components),*);
-
-                async fn init(&mut self) -> #auditeur::anyhow::Result<()> {
-                    #auditeur::init_specialization!(self).await
-                }
-
-                async fn exit(&mut self) -> #auditeur::anyhow::Result<()> {
-                    #auditeur::exit_specialization!(self).await
-                }
-
+                #listener_derives
                 const OPTIONS: #auditeur::component::resource::Options = #options;
             }
 
@@ -125,14 +136,29 @@ impl<'a> Config<'a> {
         }
     }
 
+    fn as_listener_derive(&self) -> proc_macro2::TokenStream {
+        let auditeur = &*AUDITEUR;
+        let ident = self.ident;
+        let (_, ty_generics, _) = self.generics.split_for_impl();
+        quote! {
+            <#ident #ty_generics as #auditeur::component::resource::listener::ListenerDerive>
+        }
+    }
+
     fn options(&self) -> proc_macro2::TokenStream {
         let auditeur = &*AUDITEUR;
-        let weak = self.weak.then(|| {
-            quote! { .weak(true) }
-        });
-        quote! {
-            #auditeur::component::resource::Options::new() #weak
+        let mut options = quote! { #auditeur::component::resource::Options::new() };
+
+        if self.weak {
+            options = quote! { #options.weak(true) };
         }
+
+        if self.options {
+            let this = self.as_listener_derive();
+            options = quote! {  #this::OPTIONS.overlay_on(#options) };
+        }
+
+        options
     }
 }
 
@@ -174,6 +200,7 @@ enum Attr {
     WeakFlag,
     RespondFlag,
     BiasedFlag,
+    OptionsFlag,
 }
 
 impl Attr {
@@ -220,6 +247,14 @@ impl Attr {
     const fn is_weak_flag(&self) -> bool {
         matches!(self, Self::WeakFlag)
     }
+
+    /// Returns `true` if the attr is [`OptionsFlag`].
+    ///
+    /// [`OptionsFlag`]: Attr::OptionsFlag
+    #[must_use]
+    const fn is_options_flag(&self) -> bool {
+        matches!(self, Self::OptionsFlag)
+    }
 }
 
 impl Parse for Attr {
@@ -239,9 +274,11 @@ impl Parse for Attr {
             Ok(Self::BiasedFlag)
         } else if ident == "weak" {
             Ok(Self::WeakFlag)
+        } else if ident == "options" {
+            Ok(Self::OptionsFlag)
         } else {
             Err(input.error(format!(
-                "expected 'registry_component', 'biased', 'listen', 'take', 'stop_component', 'weak', or 'components', found '{ident}'"
+                "expected 'registry_component', 'biased', 'listen', 'take', 'stop_component', 'weak', 'options', or 'components', found '{ident}'"
             )))
         }
     }

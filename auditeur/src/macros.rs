@@ -100,10 +100,12 @@ pub use auditeur_macros::take_message;
 ///
 /// # Usage
 ///
-/// ## Init and Exit
+/// ## Options
 ///
-/// This macro uses the [`Init`] and [`Exit`] traits to provide callbacks for when the listener
-/// is started or stopped. To use them, just implement the traits.
+/// This macro is mainly used to fill out the type alias [`Listener::Components`]. If you wish
+/// to overwrite other parts of the trait, add an `options` flag to the macro and implement
+/// [`ListenerDerive`]. The macro will fill out the other parts of the trait based on what is
+/// in the implementation for [`ListenerDerive`].
 ///
 /// # Parameters
 ///
@@ -145,6 +147,9 @@ pub use auditeur_macros::take_message;
 ///   | #[listener(<parameter>,*)]
 ///
 /// <parameter>:
+///   | weak
+///   | options
+///   | biased
 ///   | stop_component = <boolean>
 ///   | listen(<type>,*)
 ///   | take(<type>,*)
