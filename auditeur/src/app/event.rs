@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use crate::{app::map::DependencyId, prelude::*};
+use crate::{
+    app::map::{DependencyId, ListenerId, Request},
+    prelude::*,
+};
 
 #[derive(Clone, Debug)]
 #[listen_message("auditeur:registry_event")]
+#[non_exhaustive]
 pub enum Event {
     /// An error occurred in the app.
     ///
@@ -22,6 +26,15 @@ pub enum Event {
     /// The app is requesting for a [removable](super::map::DependencyType::Removable) dependency
     /// to be removed.
     RequestDependencyRemoval { id: DependencyId },
+    /// A new listener is blocking a request.
+    ///
+    /// This event will be sent for every descendant blocking listener of a request. For example,
+    /// if the removal of a loaded component is requested, an event will be sent each for its
+    /// removal, unloading, and deactivation (and anything blocking any of those).
+    Requested {
+        listener: ListenerId,
+        request: Request,
+    },
     /// The app has exited.
     Exit,
 }

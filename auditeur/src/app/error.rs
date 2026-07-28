@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     app::{
         AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, OneshotSender, Owned,
-        event::Event, map::Request,
+        event::Event, map::RequestAction,
     },
     prelude::*,
 };
@@ -245,5 +245,5 @@ pub enum Error {
     )]
     RegistryNotFound { component: ComponentId },
     #[error("attemped to request the app to {request}, but the request was invalid")]
-    InvalidRequest { request: Request },
+    InvalidRequest { request: RequestAction },
 }

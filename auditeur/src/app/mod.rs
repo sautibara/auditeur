@@ -164,10 +164,9 @@ use crate::component::{IdentifiedComponent, IdentifiedComponentType};
 use crate::prelude::*;
 use crate::{
     app::{
-        component::Waiter,
         error::{AppErrors, AppErrorsMut, Errors},
         event::Event,
-        map::{AddedComponentId, AppMap, Dependency, DependencyPart, DependencyType, Map},
+        map::{AddedComponentId, AppMap, Dependency, DependencyPart, DependencyType, Map, Waiter},
         registrar::Registrar,
     },
     children::HasChildren,

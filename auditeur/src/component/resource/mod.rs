@@ -6,9 +6,8 @@ use crate::{
     any,
     app::{
         AppFn, AppMutFnOnce, AppMutFuture,
-        component::Waiter,
         event::Event,
-        map::{Dependency, DependencyId, DependencyType, RequestSet},
+        map::{Dependency, DependencyId, DependencyType, RequestSet, Waiter},
     },
     component::{
         Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,

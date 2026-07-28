@@ -3,15 +3,16 @@ use std::{
     fmt::{Debug, Display},
     hash::Hash,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
+    sync::Arc,
 };
 
 use hashbrown::HashMap;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     app::{
         AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, OneshotSender, Owned,
-        component::{AppComponentsMut, AppFnComponentsMut, Releaser, Waiter, waiter_channel},
+        component::{AppComponentsMut, AppFnComponentsMut},
         event::{DependencyLifecycle, Event},
         registrar::ErasedComponent,
     },
@@ -60,7 +61,7 @@ pub enum ListenerId {
     OnAdd(AddedComponentId),
     OnLoad(LoadedComponentId),
     OnUnload(LoadedComponentId),
-    Release(Releaser),
+    Release(Request),
 }
 
 impl ListenerId {
@@ -187,7 +188,7 @@ pub struct Listener {
     pub blocking: im::HashSet<ListenerId>,
     pub blocked_on: im::HashSet<ListenerId>,
 
-    pub requested: bool,
+    pub requests: im::HashSet<Request>,
     pub sticky: bool,
 }
 
@@ -354,7 +355,8 @@ impl Map {
             // Request a remove of the app.
             let remove_id = ListenerId::remove_component(AddedComponentId::app());
             if self.listeners.contains_key(&remove_id) {
-                self.request(&remove_id, channels);
+                let (releaser, _) = request_channel();
+                self.request(&remove_id, &releaser, channels);
             }
 
             // Release the app's event listener.
@@ -642,12 +644,14 @@ impl Map {
     fn on_request(
         &mut self,
         listener: &ListenerId,
-        blocked_on: im::HashSet<ListenerId>,
+        releaser: &Request,
+        blocked_on: &im::HashSet<ListenerId>,
         new_request: bool,
         channels: Channels<'_>,
     ) {
-        let propagate =
-            move |this: &mut Self| blocked_on.iter().for_each(|id| this.request(id, channels));
+        let propagate = move |this: &mut Self| {
+            (blocked_on.iter()).for_each(|id| this.request(id, releaser, channels));
+        };
         match listener {
             // component removal propagates to is children and also allows it to be removed
             ListenerId::Component {
@@ -665,7 +669,7 @@ impl Map {
                 let id = id.clone().loaded_unchecked(*index);
                 let id = ListenerId::deactivate_component(id);
                 if self.listeners.contains_key(&id) {
-                    self.request(&id, channels);
+                    self.request(&id, releaser, channels);
                 }
             }
             // component deactivation propagates to all its non-weak dependencies
@@ -687,7 +691,7 @@ impl Map {
             } => {
                 let id = ListenerId::weaken_dependency(id.clone());
                 if self.listeners.contains_key(&id) {
-                    self.request(&id, channels);
+                    self.request(&id, releaser, channels);
                 }
             }
             // dependency weakening propagates in different ways
@@ -755,19 +759,20 @@ impl Map {
         // println!("{self:#?}");
     }
 
-    fn request(&mut self, id: &ListenerId, channels: Channels<'_>) {
+    fn request(&mut self, id: &ListenerId, releaser: &Request, channels: Channels<'_>) {
         let listener = (self.listeners.get_mut(id))
             .expect("should not request a listener that does not exist");
 
-        let already_requested = std::mem::replace(&mut listener.requested, true);
-        if already_requested {
+        let request_is_new = listener.requests.is_empty();
+
+        let old_request = listener.requests.insert(releaser.clone());
+        if old_request.is_some() {
             return;
         }
 
-        // get this here to release our mutable reference
+        // clone this here to release our mutable reference
         let blocked_on = listener.blocked_on.clone();
-
-        self.on_request(id, blocked_on, true, channels);
+        self.on_request(id, releaser, &blocked_on, request_is_new, channels);
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -779,14 +784,14 @@ impl Map {
     ) {
         let blocked_info = &mut self.listeners[&blocked];
         blocked_info.blocked_on.insert(blocked_on.clone());
-        let requested = blocked_info.requested;
+        let requests = blocked_info.requests.clone();
 
         let blocked_on_info = &mut self.listeners[&blocked_on];
         blocked_on_info.blocking.insert(blocked.clone());
 
-        if requested {
-            let set = im::HashSet::from_iter([blocked_on]);
-            self.on_request(&blocked, set, false, channels);
+        let set = im::HashSet::from_iter([blocked_on]);
+        for releaser in requests {
+            self.on_request(&blocked, &releaser, &set, false, channels);
         }
     }
 
@@ -812,13 +817,13 @@ impl Map {
 
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum Request {
+pub enum RequestAction {
     RemoveComponent(ComponentId),
     UnloadComponent(ComponentId),
     RemoveDependency(DependencyId),
 }
 
-impl Display for Request {
+impl Display for RequestAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RemoveComponent(id) => write!(f, "remove component '{id}'"),
@@ -830,7 +835,7 @@ impl Display for Request {
 
 #[derive(Clone, Default, Debug)]
 pub struct RequestSet {
-    pub set: hashbrown::HashSet<Request>,
+    pub set: hashbrown::HashSet<RequestAction>,
 }
 
 impl RequestSet {
@@ -846,7 +851,7 @@ impl RequestSet {
 
     #[must_use]
     pub fn and_remove(mut self, component: ComponentId) -> Self {
-        self.set.insert(Request::RemoveComponent(component));
+        self.set.insert(RequestAction::RemoveComponent(component));
         self
     }
 
@@ -857,7 +862,7 @@ impl RequestSet {
 
     #[must_use]
     pub fn and_unload(mut self, component: ComponentId) -> Self {
-        self.set.insert(Request::UnloadComponent(component));
+        self.set.insert(RequestAction::UnloadComponent(component));
         self
     }
 
@@ -868,7 +873,7 @@ impl RequestSet {
 
     #[must_use]
     pub fn and_remove_dependency(mut self, dependency: DependencyId) -> Self {
-        self.set.insert(Request::RemoveDependency(dependency));
+        self.set.insert(RequestAction::RemoveDependency(dependency));
         self
     }
 }
@@ -1003,7 +1008,7 @@ impl Owned {
         request: RequestSet,
         sender: &flume::Sender<super::Method>,
     ) -> (ListenerId, Waiter) {
-        let (releaser, waiter) = waiter_channel();
+        let (releaser, waiter) = request_channel();
         let release_id = ListenerId::Release(releaser);
         let added = self.map.add_listener(
             &release_id,
@@ -1038,13 +1043,13 @@ impl Owned {
             };
 
             match &request {
-                Request::RemoveComponent(id) => {
+                RequestAction::RemoveComponent(id) => {
                     // NOTE: it's okay to assert that this is added b/c we check if the listener
                     // exists below
                     let id = AddedComponentId(id.clone());
                     add(self, ListenerId::remove_component(id));
                 }
-                Request::UnloadComponent(id) => {
+                RequestAction::UnloadComponent(id) => {
                     let id = AddedComponentId(id.clone());
 
                     if let Some(component) = self.map.components.get(&id) {
@@ -1055,7 +1060,7 @@ impl Owned {
                             .for_each(|listener| add(self, listener));
                     }
                 }
-                Request::RemoveDependency(id) => {
+                RequestAction::RemoveDependency(id) => {
                     let id = AddedDependencyId::new_unchecked(id.clone());
 
                     if let Some(dependency) = self.map.dependencies.get(&id) {
@@ -1098,6 +1103,7 @@ impl Owned {
         if self.map.listeners.contains_key(&release_id) {
             self.map.request(
                 &release_id,
+                waiter.request(),
                 Channels {
                     event_sender: &self.event_sender,
                     method_sender: sender,
@@ -1939,6 +1945,76 @@ impl<'a> AppComponentsMut<'a> {
         )
         .call(self.app)
         .await;
+    }
+}
+
+pub(crate) fn request_channel() -> (Request, Waiter) {
+    let (sender, receiver) = oneshot::channel();
+
+    let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
+    let releaser = Request { sender };
+    let waiter = Waiter {
+        receiver,
+        request: releaser.clone(),
+    };
+
+    (releaser, waiter)
+}
+
+pub struct Waiter {
+    receiver: oneshot::Receiver<()>,
+    request: Request,
+}
+
+impl Waiter {
+    pub async fn wait(self) {
+        let _ = self.receiver.await;
+    }
+
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        !self.receiver.is_empty()
+    }
+
+    #[must_use]
+    pub const fn request(&self) -> &Request {
+        &self.request
+    }
+}
+
+#[derive(Clone)]
+pub struct Request {
+    sender: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl Request {
+    pub(crate) fn release(&self) {
+        if let Ok(mut opt) = self.sender.try_lock()
+            && let Some(sender) = opt.take()
+        {
+            let _ = sender.send(());
+        }
+    }
+}
+
+impl Hash for Request {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let pointer = Arc::as_ptr(&self.sender);
+        pointer.hash(state);
+    }
+}
+
+impl PartialEq for Request {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.sender, &other.sender)
+    }
+}
+
+impl Eq for Request {}
+
+impl Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Request({:?})", Arc::as_ptr(&self.sender))
     }
 }
 
