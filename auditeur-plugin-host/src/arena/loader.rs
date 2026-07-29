@@ -6,7 +6,7 @@ use auditeur_plugin::{
         app::{
             AppFn, AppFnOnce, AppMutFnOnce,
             event::Event,
-            map::{ComponentStateChange, ListenerId, RequestAction, RequestSet},
+            map::{ComponentStateChange, DependencyType, ListenerId, RequestAction, RequestSet},
         },
         component::ComponentIdPath,
     },
@@ -104,8 +104,9 @@ impl Loader {
         app.components_mut().add(children).await;
 
         // And reload the stuff we didn't want to unload.
+        let mut app_transient = app.dependent_mut().with_ty(DependencyType::Transient);
         for id in to_load {
-            let _ = app.components_mut().load_lazy(id.into_id()).await;
+            let _ = app_transient.components_mut().load_lazy(id.into_id()).await;
         }
 
         self.to_reload.retain(|name| !loaded.contains(name));
