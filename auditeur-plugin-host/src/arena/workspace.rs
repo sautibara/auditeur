@@ -228,7 +228,7 @@ impl Workspace {
                 let _ = writeln!(
                     string,
                     "{} = {{ path = \"{}\" }}",
-                    &package.0,
+                    package.0,
                     path.display()
                 );
                 string

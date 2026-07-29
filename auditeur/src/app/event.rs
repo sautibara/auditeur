@@ -35,6 +35,8 @@ pub enum Event {
         listener: ListenerId,
         request: Request,
     },
+    /// A request has been fulfilled.
+    RequestSuccess { request: Request },
     /// The app has exited.
     Exit,
 }

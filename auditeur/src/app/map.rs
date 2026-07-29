@@ -635,7 +635,12 @@ impl Map {
                 // For now, registries are an implementation detail of the map.
                 // They're shown in it, but events aren't given.
             }
-            ListenerId::Release(releaser) => releaser.release(),
+            ListenerId::Release(request) => {
+                let _ = channels.event_sender.send(Event::RequestSuccess {
+                    request: request.clone(),
+                });
+                request.release();
+            }
             ListenerId::OnAdd(_) | ListenerId::OnLoad(_) | ListenerId::OnUnload(_) => (),
         }
     }
@@ -815,6 +820,42 @@ impl Map {
     }
 }
 
+// Public-facing API
+impl Map {
+    #[must_use]
+    pub fn descendants_of(
+        &self,
+        id: impl IntoIterator<Item = ComponentId>,
+    ) -> std::collections::HashSet<ComponentId> {
+        let mut descendants = std::collections::HashSet::new();
+        let mut queue: Vec<_> = id.into_iter().collect();
+
+        while let Some(id) = queue.pop() {
+            let remove = ListenerId::remove_component(AddedComponentId(id.clone()));
+            let Some(listener) = self.listeners.get(&remove) else {
+                continue;
+            };
+
+            descendants.insert(id);
+            queue.extend(listener.blocked_on.iter().filter_map(|listener| {
+                // WARN: this assumes that a component remove will only be blocked on other
+                // component removes if they're for its children.
+                if let ListenerId::Component {
+                    id,
+                    change: ComponentStateChange::Remove,
+                } = listener
+                {
+                    Some(id.clone().into_id())
+                } else {
+                    None
+                }
+            }));
+        }
+
+        descendants
+    }
+}
+
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum RequestAction {
@@ -875,6 +916,14 @@ impl RequestSet {
     pub fn and_remove_dependency(mut self, dependency: DependencyId) -> Self {
         self.set.insert(RequestAction::RemoveDependency(dependency));
         self
+    }
+}
+
+impl FromIterator<RequestAction> for RequestSet {
+    fn from_iter<T: IntoIterator<Item = RequestAction>>(iter: T) -> Self {
+        Self {
+            set: hashbrown::HashSet::from_iter(iter),
+        }
     }
 }
 

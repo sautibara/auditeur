@@ -39,6 +39,8 @@ pub fn derive(strct: &ItemStruct) -> proc_macro2::TokenStream {
     };
 
     quote! {
+        #[automatically_derived]
+        #[allow(clippy::unused_async_trait_impl)]
         impl #impl_generics #auditeur::input::Input for #ident #type_generics #where_clause {
             #implementations
         }

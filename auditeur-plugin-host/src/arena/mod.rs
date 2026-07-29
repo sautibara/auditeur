@@ -3,20 +3,12 @@ use std::{
     path::Path,
 };
 
-use auditeur_plugin::auditeur::{
-    app_old::{App, channels::EventSender},
-    path_any::PathAnyConst,
-    resource::listener::Component,
-};
+use auditeur_plugin::auditeur::{self, component::resource::listener::Component};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
-use crate::{
-    arena::source_list::LoadedPluginArtifacts,
-    prelude::*,
-    registry::{PluginRegistryConnection, PluginRegistryImpl},
-};
+use crate::{arena::source_list::LoadedPluginArtifacts, prelude::*};
 
 use self::{
     binaries::Binaries,
@@ -67,7 +59,7 @@ mod workspace;
 // This'll ensure that any code from sautibara-core that sautibara-rpc passes around will be
 // retained.
 
-pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
+pub trait Opts: Clone + auditeur::any::AnyConst + Send + Sync + Sized + 'static {
     fn default_config(&self) -> config::Host;
 
     fn static_dependencies(&self) -> &HashMap<SourceId, Source>;
@@ -81,11 +73,11 @@ pub trait Opts: PathAnyConst + Send + Sync + Sized + 'static {
     fn read_config_lock(&self) -> impl Future<Output = Result<Lockfile, Error>> + Send + Sync;
     fn write_config_lock(
         &self,
-        lock: &ArenaImpl<Self>,
+        lock: &Arena<Self>,
     ) -> impl Future<Output = Result<(), Error>> + Send + Sync;
 }
 
-#[derive(PathAny)]
+#[derive(Any, Clone)]
 pub struct DefaultOpts {
     project_dirs: ProjectDirs,
     static_dependencies: HashMap<SourceId, Source>,
@@ -132,7 +124,7 @@ impl Opts for DefaultOpts {
         crate::deserialize(file).await
     }
 
-    async fn write_config_lock(&self, lock: &ArenaImpl<Self>) -> Result<(), Error> {
+    async fn write_config_lock(&self, lock: &Arena<Self>) -> Result<(), Error> {
         tokio::fs::create_dir_all(self.project_dirs.config_dir()).await?;
         let file = self.project_dirs.config_dir().join("lock.ron");
         crate::serialize(file, lock)
@@ -141,6 +133,8 @@ impl Opts for DefaultOpts {
 
 #[derive(Debug)]
 enum Action {
+    /// Reload the config.
+    Refresh,
     /// Unload all plugins that aren't supposed to be loaded.
     Unload,
     /// Add a source to the [`SourceList`]
@@ -160,30 +154,15 @@ enum Action {
     LoadAll,
 }
 
-#[derive(Runnable)]
-#[create(external_input(Result<ArenaImpl<O>>))]
+#[create(external_input(O))]
 #[resource("plugin_host:arena")]
 #[listener(biased, respond, components(MainComponent))]
-pub struct Arena<O: Opts> {
-    inner: ArenaImpl<O>,
-
-    #[create(input)]
-    sender: EventSender,
-    #[create(input)]
-    registry: PluginRegistryConnection,
-}
-
-impl<O: Opts> CreateDerive for Arena<O> {
-    async fn create(arena: Self::External, _: &Self::Input) -> anyhow::Result<Self::Plain> {
-        arena.map(|inner| Self::Plain { inner })
-    }
-}
-
 #[derive(Serialize)]
-pub struct ArenaImpl<O: Opts> {
+pub struct Arena<O: Opts> {
     source_list: SourceList,
     workspace: Workspace,
     binaries: Binaries,
+
     #[serde(skip)]
     loader: Loader,
     #[serde(skip)]
@@ -192,6 +171,18 @@ pub struct ArenaImpl<O: Opts> {
     config: config::Host,
     #[serde(skip)]
     opts: O,
+
+    #[create(input)]
+    #[serde(skip)]
+    app: App,
+}
+
+impl<O: Opts> CreateDerive for Arena<O> {
+    async fn create(opts: &O, app: &mut App) -> Result<Self::Plain, auditeur::Error> {
+        Self::open_or_init(opts.clone())
+            .await
+            .map_err(|err| app.errors().wrap(err))
+    }
 }
 
 /// Information retained about an [`ArenaImpl`].
@@ -206,8 +197,8 @@ pub struct Lockfile {
 #[respond("plugin_host:arena")]
 impl<O: Opts> Arena<O> {
     pub async fn refresh(&mut self) {
-        if let Err(err) = self.inner.reload_config().await {
-            self.sender.send_error(Self::id(), anyhow::Error::from(err));
+        if let Err(err) = self.reload_config().await {
+            self.app.errors_mut().add_wrapped(err).await;
         }
     }
 }
@@ -243,95 +234,59 @@ impl Lockfile {
     }
 }
 
-impl<O: Opts> ArenaImpl<O> {
-    /// Open or initialize an [`ArenaImpl`] using the specified `config`
+impl<O: Opts> Arena<O> {
+    /// Open or initialize an [`Arena`] using the specified `config`
     ///
     /// # Errors
     ///
     /// - If the directory structure cannot be created
-    pub async fn open_or_init(opts: O) -> (Result<Self, Error>, Vec<Error>) {
-        async fn open_or_init<O: Opts>(opts: O) -> Result<ArenaImpl<O>, Error> {
-            debug!("initializing plugin arena");
+    async fn open_or_init(opts: O) -> Result<ArenaPlain<O>, Error> {
+        debug!("initializing plugin arena");
 
-            let config = match opts.read_config().await {
-                Ok(config) => config,
-                Err(Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
-                    let config = opts.default_config();
-                    opts.write_config(&config).await?;
-                    config
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            };
-
-            let Lockfile {
-                source_list,
-                workspace,
-                binaries,
-            } = match opts.read_config_lock().await {
-                Ok(mut lockfile) => {
-                    lockfile.init(&config).await?;
-                    lockfile
-                }
-                Err(err) => {
-                    if !matches!(
-                        &err,
-                        Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
-                    ) {
-                        error!("failed to parse arena lock file ({err}) - restarting from scratch");
-                    }
-
-                    Lockfile::open_with_config(&config).await?
-                }
-            };
-
-            let loader = Loader::default();
-
-            let mut arena = ArenaImpl {
-                source_list,
-                workspace,
-                binaries,
-                loader,
-                config,
-                actions: VecDeque::new(),
-                opts,
-            };
-            arena.source_diff();
-            Ok(arena)
-        }
-
-        let mut result = open_or_init(opts).await;
-        let errors = if let Ok(arena) = result.as_mut() {
-            arena.load_binaries().await.err().unwrap_or_default()
-        } else {
-            Vec::new()
+        let config = match opts.read_config().await {
+            Ok(config) => config,
+            Err(Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                let config = opts.default_config();
+                opts.write_config(&config).await?;
+                config
+            }
+            Err(err) => {
+                return Err(err);
+            }
         };
 
-        (result, errors)
-    }
-
-    async fn load_binaries(&mut self) -> Result<(), Vec<Error>> {
-        let mut errs = Vec::new();
-        let mut other_actions = VecDeque::new();
-
-        for action in self.actions.drain(..) {
-            if let Action::LoadSource(id) = &action
-                && let Some(source) = self.config.source(id)
-                && let source::Variant::Builtin(_) = source.variant()
-            {
-                let res = self.source_list.load_source(source, None, false).await;
-                if let Err(err) = res {
-                    errs.push(err);
-                }
-            } else {
-                other_actions.push_back(action);
+        let Lockfile {
+            source_list,
+            workspace,
+            binaries,
+        } = match opts.read_config_lock().await {
+            Ok(mut lockfile) => {
+                lockfile.init(&config).await?;
+                lockfile
             }
-        }
+            Err(err) => {
+                if !matches!(
+                    &err,
+                    Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
+                ) {
+                    error!("failed to parse arena lock file ({err}) - restarting from scratch");
+                }
 
-        self.actions = other_actions;
+                Lockfile::open_with_config(&config).await?
+            }
+        };
 
-        if errs.is_empty() { Ok(()) } else { Err(errs) }
+        let loader = Loader::default();
+
+        Ok(ArenaPlain {
+            source_list,
+            workspace,
+            binaries,
+            loader,
+            config,
+            actions: std::iter::once(Action::Refresh).collect(),
+            opts,
+        })
     }
 
     fn source_diff(&mut self) {
@@ -365,16 +320,15 @@ impl<O: Opts> ArenaImpl<O> {
         self.actions.push_back(Action::ResolveDependencies);
     }
 
-    #[instrument(skip(self, plugin_registry))]
-    async fn run_action(
-        &mut self,
-        action: Action,
-        plugin_registry: &PluginRegistryConnection,
-    ) -> Result<(), Vec<Error>> {
+    #[instrument(skip(self))]
+    async fn run_action(&mut self, action: Action) -> Result<(), Vec<Error>> {
         trace!("running action...");
         match action {
+            Action::Refresh => {
+                self.reload_config().await?;
+            }
             Action::Unload => {
-                self.unload(plugin_registry).await;
+                self.unload().await;
             }
             Action::LoadSource(source) => {
                 self.load_source(&source, false).await?;
@@ -395,7 +349,7 @@ impl<O: Opts> ArenaImpl<O> {
                 self.compile().await?;
             }
             Action::LoadAll => {
-                self.load(plugin_registry).await?;
+                self.load().await?;
             }
         }
         self.serialize_lock().await?;
@@ -407,16 +361,16 @@ impl<O: Opts> ArenaImpl<O> {
         Ok(())
     }
 
-    async fn unload(&mut self, plugin_registry: &PluginRegistryConnection) {
+    async fn unload(&mut self) {
         let plugins = self
             .loader
             .loaded()
-            .keys()
+            .iter()
             .filter(|plugin| !self.plugin_enabled(plugin).unwrap_or_default())
             .cloned()
             .collect();
 
-        self.loader.unload_all(plugins, plugin_registry).await;
+        self.loader.unload_all(plugins, &mut self.app).await;
     }
 
     async fn load_source(&mut self, source_id: &SourceId, check: bool) -> Result<(), Error> {
@@ -572,11 +526,11 @@ impl<O: Opts> ArenaImpl<O> {
         }
     }
 
-    async fn load(&mut self, plugin_registry: &PluginRegistryConnection) -> Result<(), Vec<Error>> {
+    async fn load(&mut self) -> Result<(), Vec<Error>> {
         let binaries: Vec<_> = self
             .enabled_binaries()
             .filter(|&(name, _)| {
-                !self.loader.loaded().contains_key(name) || self.loader.to_reload(name)
+                !self.loader.loaded().contains(name) || self.loader.to_reload(name)
             })
             .map(|(name, path)| (name.clone(), path.to_path_buf()))
             .collect();
@@ -588,7 +542,7 @@ impl<O: Opts> ArenaImpl<O> {
 
         debug!("loading {binaries:?} into registry");
 
-        self.loader.load_all(binaries, plugin_registry).await?;
+        self.loader.load_all(binaries, &mut self.app).await?;
         Ok(())
     }
 
@@ -662,68 +616,10 @@ impl<O: Opts> ArenaImpl<O> {
         })
         .await
     }
-
-    /// # Safety
-    ///
-    /// The plugin system calls foreign code through the use of [dynamic
-    /// linking](auditeur_plugin::LibraryHandle), so it is inherently unsafe - see
-    /// [`PluginRegistry::load_plugin_from_file_unchecked`] for more information. However, the
-    /// boundary is checked in many ways. The main way that unsafety could come from other plugins
-    /// is from them having unsafe code or intentionally going past the safety checks, which isn't
-    /// something that can be prevented. Thus, thus function isn't marked unsafe.
-    ///
-    /// # Errors
-    ///
-    /// If a plugin can't be loaded
-    pub fn add_to_plugin_registry(
-        &mut self,
-        registry: &mut PluginRegistryImpl,
-        app: &mut App,
-    ) -> Result<(), Vec<Error>> {
-        let binaries: Vec<_> = self
-            .enabled_binaries()
-            // disable automatically adding hotreload plugins
-            .filter(|(plugin, _)| {
-                self.source_list.get_plugin(plugin).is_some_and(|plugin| {
-                    self.config
-                        .plugins
-                        .get(&plugin.source)
-                        .is_some_and(|plugin| !plugin.hotreload)
-                })
-            })
-            .map(|(name, path)| (name.clone(), path.to_path_buf()))
-            .collect();
-
-        if binaries.is_empty() {
-            return Ok(());
-        }
-
-        debug!("adding {binaries:?} to the registry");
-
-        let mut errors = Vec::new();
-        for (name, path) in binaries {
-            trace!("adding '{}' to the registry", path.display());
-            // SAFETY: these binaries either must be builtin or built from rust projects, so they
-            // should be safe to run
-            let res = unsafe { registry.load_plugin_from_file_unchecked(name.clone(), &path) };
-            match res {
-                Ok((_, bundle)) => {
-                    self.loader.add_loaded(name, bundle.id().to_owned());
-                    app.add_bundle(bundle);
-                }
-                Err(err) => errors.push(err),
-            }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
-    }
 }
 
 struct SourceTracker<'a, O: Opts> {
-    arena: &'a ArenaImpl<O>,
+    arena: &'a Arena<O>,
     // value is if the plugin was enabled
     already_added: HashMap<PluginName, bool>,
     errors: Vec<Error>,
@@ -732,7 +628,7 @@ struct SourceTracker<'a, O: Opts> {
 }
 
 impl<'a, O: Opts> SourceTracker<'a, O> {
-    fn new(arena: &'a ArenaImpl<O>) -> Self {
+    fn new(arena: &'a Arena<O>) -> Self {
         Self {
             arena,
             already_added: HashMap::new(),
@@ -818,19 +714,23 @@ pub struct MainComponent {}
 impl<O: Opts> Component<Arena<O>> for MainComponent {
     type Value = ();
 
-    async fn wait(&mut self, listener: &Arena<O>) -> anyhow::Result<ControlFlow<(), Self::Value>> {
-        if listener.inner.actions.is_empty() {
+    async fn wait(&mut self, arena: &Arena<O>) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        if arena.actions.is_empty() {
             futures::future::pending().await
         } else {
             Ok(ControlFlow::Continue(()))
         }
     }
 
-    async fn handle(&mut self, (): (), listener: &mut Arena<O>) -> anyhow::Result<ControlFlow<()>> {
-        if let Some(action) = listener.inner.actions.pop_front() {
-            let res = listener.inner.run_action(action, &listener.registry).await;
-            if let Err(errs) = res {
-                listener.sender.send_errors(Arena::<O>::id(), errs);
+    async fn handle(&mut self, (): (), arena: &mut Arena<O>) -> anyhow::Result<ControlFlow<()>> {
+        let Some(action) = arena.actions.pop_front() else {
+            return Ok(ControlFlow::Continue(()));
+        };
+
+        let res = arena.run_action(action).await;
+        if let Err(errs) = res {
+            for err in errs {
+                arena.app.errors_mut().add_wrapped(err).await;
             }
         }
 

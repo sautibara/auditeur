@@ -112,8 +112,8 @@ impl<'a> AppErrors<'a> {
     /// Wraps an [`anyhow::Error`] into a [`crate::Error`] using the current
     /// [dependent](super::Dependent) as the source component.
     #[must_use]
-    pub fn wrap(self, error: anyhow::Error) -> Error {
-        self.app.handle.wrap_error(error)
+    pub fn wrap(self, error: impl Into<anyhow::Error>) -> Error {
+        self.app.handle.wrap_error(error.into())
     }
 
     /// Gets an immutable snapshot into the shared error list.
@@ -141,7 +141,8 @@ impl AppFnErrorsMut {
         self.add_shared(Arc::new(error))
     }
 
-    pub fn add_wrapped(self, error: anyhow::Error) -> impl AppMutFnOnce<Output = ()> {
+    pub fn add_wrapped(self, error: impl Into<anyhow::Error>) -> impl AppMutFnOnce<Output = ()> {
+        let error = error.into();
         AppFn::using_handle_mut(|handle| {
             let error = handle.wrap_error(error);
             AppFn.errors_mut().add(error)
@@ -168,7 +169,10 @@ impl<'a> AppErrorsMut<'a> {
     }
 
     /// Adds a new error to the shared error list, wrapping it like [`AppErrors::wrap`].
-    pub fn add_wrapped(self, error: anyhow::Error) -> impl AppMutFuture<'a, Output = ()> {
+    pub fn add_wrapped(
+        self,
+        error: impl Into<anyhow::Error>,
+    ) -> impl AppMutFuture<'a, Output = ()> {
         AppFn.errors_mut().add_wrapped(error).call(self.app)
     }
 

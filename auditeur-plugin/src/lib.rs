@@ -149,6 +149,10 @@ impl Component<Plugins> for PluginComponent {
     }
 }
 
+impl RegistryOf for PluginComponent {
+    type Registry = Plugins;
+}
+
 #[identified("plugin:plugins")]
 pub struct Plugins;
 impl RegistryOf for Plugins {

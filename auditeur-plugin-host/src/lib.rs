@@ -20,22 +20,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use arena::ArenaImpl;
-use auditeur_plugin::auditeur::app_old::{App, resource_map::LoadResults};
-use futures::Future;
+use auditeur_plugin::auditeur::namespaced_id::ArcNamespacedId;
 use ron::{extensions::Extensions, ser::PrettyConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod arena;
 pub mod config;
-pub mod registry;
 pub mod source;
 
 mod prelude {
     pub use crate::{
         Error, PluginName, config,
-        registry::PluginRegistry,
         source::{self, Binary, Id as SourceId, Source, Updated, git},
     };
     pub use auditeur_plugin::prelude::*;
@@ -49,7 +45,7 @@ pub use auditeur_plugin;
 #[expect(clippy::single_component_path_imports, unused_imports)]
 use auditeur_plugin_export;
 
-use crate::{arena::Arena, registry::PluginRegistryImpl};
+pub use crate::arena::Arena;
 
 /// Spawn a blocking closure in [`tokio`], resuming any panics from the closure if they occur
 async fn spawn_blocking<F, R>(func: F) -> R
@@ -99,17 +95,11 @@ fn path_exists_with_children(path: &Path) -> Result<bool, Error> {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[serde(transparent)]
-pub struct PluginName(pub String);
-
-impl Borrow<String> for PluginName {
-    fn borrow(&self) -> &String {
-        &self.0
-    }
-}
+pub struct PluginName(pub ArcNamespacedId);
 
 impl Borrow<str> for PluginName {
     fn borrow(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -119,44 +109,13 @@ impl Display for PluginName {
     }
 }
 
-pub trait AppExt {
-    /// # Safety
-    ///
-    /// The plugin system calls foreign code through the use of [dynamic
-    /// linking](auditeur_plugin::LibraryHandle), so it is inherently unsafe - see
-    /// [`PluginRegistry::load_plugin_from_file_unchecked`] for more information. However, the
-    /// boundary is checked in many ways. The main way that unsafety could come from other plugins
-    /// is from them having unsafe code or intentionally going past the safety checks, which isn't
-    /// something that can be prevented. Thus, thus function isn't marked unsafe.
-    #[allow(opaque_hidden_inferred_bound)] // I think this is a false positive?
-    fn with_plugin_system<O: arena::Opts>(self, opts: O) -> impl Future<Output = Self>;
-}
-
-impl AppExt for App {
-    async fn with_plugin_system<O: arena::Opts>(mut self, opts: O) -> Self {
-        let mut registry = PluginRegistryImpl::new();
-        let (mut arena, mut errors) = ArenaImpl::<O>::open_or_init(opts).await;
-        if let Ok(arena) = &mut arena {
-            let res = arena.add_to_plugin_registry(&mut registry, &mut self);
-            if let Err(errs) = res {
-                errors.extend(errs);
-            }
-        }
-        self.add_bundle(
-            new_bundle!("auditeur:plugin_host")
-                .with_listener::<Arena<O>>(arena.map_err(Into::into))
-                .with_listener::<PluginRegistry>(registry),
-        );
-        self.add_errors(Arena::<O>::id(), errors.into_iter().map(Into::into));
-        self
-    }
-}
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
     #[error("error when loading plugin: {0}")]
     Loading(#[from] auditeur_plugin::loading::Error),
+    #[error("error when interacting with app: {0}")]
+    App(#[from] auditeur_plugin::auditeur::Error),
     #[error("error with git repository '{url}': {error}")]
     Git {
         #[source]
@@ -238,8 +197,6 @@ pub enum Error {
         #[source]
         source: ignore::Error,
     },
-    #[error("failed to load all resources in a reload: {results}")]
-    FailedToLoad { results: Box<LoadResults> },
 }
 
 impl From<cargo_metadata::CompilerMessage> for Error {
