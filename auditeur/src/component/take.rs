@@ -11,7 +11,7 @@ use crate::{
     prelude::*,
 };
 
-pub trait TakeMessage: IdentifiedType + any::AnyConst + Send + Sync + Sized + 'static {}
+pub trait TakeMessage: IdentifiedType + any::AnyConst + Send + Sized + 'static {}
 
 pub struct Giver<M: TakeMessage> {
     sender: Dependency<flume::Sender<M>>,
@@ -82,7 +82,7 @@ impl<M: TakeMessage> Component<TakeMessages> for M {
 }
 
 struct TakeLoader<M: TakeMessage> {
-    pd: PhantomData<M>,
+    pd: PhantomData<fn() -> M>,
 }
 
 impl<M: TakeMessage> TakeLoader<M> {

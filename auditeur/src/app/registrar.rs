@@ -53,7 +53,7 @@ impl ErasedComponent {
 }
 
 #[async_trait::async_trait]
-pub trait DynComponent: IdentifiedComponent + Send + Sync {
+pub trait DynComponent: IdentifiedComponent + Send {
     /// Gets a reference to the underlying component, loading it if necessary.
     ///
     /// # Errors
@@ -62,7 +62,7 @@ pub trait DynComponent: IdentifiedComponent + Send + Sync {
     async fn get<'a, 'b>(
         &'a mut self,
         app: &'b mut App,
-    ) -> Result<&'a mut (dyn any::Any + Send + Sync + 'static), Error>;
+    ) -> Result<&'a mut (dyn any::Any + Send + 'static), Error>;
     /// Unloads the component from the app.
     ///
     /// # Errors
@@ -103,10 +103,10 @@ impl<L: Loader> IdentifiedComponent for DynComponentImpl<L> {
 
 #[async_trait::async_trait]
 impl<L: Loader> DynComponent for DynComponentImpl<L> {
-    async fn get(&mut self, app: &mut App) -> Result<&mut (dyn any::Any + Send + Sync), Error> {
+    async fn get(&mut self, app: &mut App) -> Result<&mut (dyn any::Any + Send), Error> {
         self.get_loaded(app)
             .await
-            .map(|reference| reference as &mut (dyn any::Any + Send + Sync))
+            .map(|reference| reference as &mut (dyn any::Any + Send))
     }
 
     async fn unload(&mut self, app: &mut App) -> Result<(), Error> {
@@ -131,7 +131,7 @@ impl<L: Loader> DynComponent for DynComponentImpl<L> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(in crate::app) struct Registrar {
     components: HashMap<ComponentId, Register>,
 }
@@ -338,10 +338,7 @@ impl<'a> AppComponentsMut<'a> {
         id: ComponentId,
         // WARN: The 'b lifetime will always be 'static, but for some reason the compiler gets
         // angry if we don't include it. I have no idea why.
-        func: impl for<'b> AsyncFnOnce(
-            &mut (dyn any::Any + Send + Sync + 'b),
-            &mut App,
-        ) -> Result<T, Error>,
+        func: impl for<'b> AsyncFnOnce(&mut (dyn any::Any + Send + 'b), &mut App) -> Result<T, Error>,
     ) -> Result<Dependency<T>, Error>
     where
         T: Send + 'static,

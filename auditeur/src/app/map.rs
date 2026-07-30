@@ -1462,12 +1462,15 @@ impl Dependency<()> {
     }
 }
 
-impl<T: Send + Sync> Dependency<T> {
+impl<T: Send> Dependency<T> {
     pub async fn clone_with<U: Send>(
         this: &Self,
         app: &mut App,
         func: impl AsyncFnOnce(&T, &mut App) -> U + Send,
-    ) -> Dependency<U> {
+    ) -> Dependency<U>
+    where
+        T: Sync,
+    {
         let dependency = app
             .components_mut()
             .increment_dependency(this.handle.id.clone())

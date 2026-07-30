@@ -137,6 +137,53 @@ impl dyn PathAny {
     }
 }
 
+impl dyn PathAny + Send {
+    /// Returns `true` if the type contained within the trait object is the same type as `T`
+    pub fn is<T: PathAny>(&self) -> bool {
+        self.path_id() == T::path_id_sized()
+    }
+
+    /// Downcast the trait object to the type `T`, returning None if it not the correct type
+    pub fn downcast_ref<T: PathAny>(&self) -> Option<&T> {
+        if self.is::<T>() {
+            unsafe { Some(self.downcast_ref_unchecked()) }
+        } else {
+            None
+        }
+    }
+
+    /// Downcast the trait object to the type `T` without checking if it's the same type
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the trait object is of the type `T`
+    pub unsafe fn downcast_ref_unchecked<T: PathAny>(&self) -> &T {
+        debug_assert!(self.is::<T>());
+        // SAFETY: caller guarantees that T is the correct type
+        unsafe { &*std::ptr::from_ref::<dyn PathAny>(self).cast::<T>() }
+    }
+
+    /// Downcast the trait object to the type `T`, returning None if it not the correct type
+    pub fn downcast_mut<T: PathAny>(&mut self) -> Option<&mut T> {
+        if self.is::<T>() {
+            unsafe { Some(self.downcast_mut_unchecked()) }
+        } else {
+            None
+        }
+    }
+
+    /// Downcast the trait object to the type `T` without checking if it's the same type
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the trait object is of the type `T`
+    pub unsafe fn downcast_mut_unchecked<T: PathAny>(&mut self) -> &mut T {
+        debug_assert!(self.is::<T>());
+        // SAFETY: caller guarantees that T is the correct type
+        unsafe { &mut *std::ptr::from_mut::<dyn PathAny>(self).cast::<T>() }
+    }
+}
+
 impl dyn PathAny + Send + Sync {
     /// Returns `true` if the type contained within the trait object is the same type as `T`
     pub fn is<T: PathAny>(&self) -> bool {

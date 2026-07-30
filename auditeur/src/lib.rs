@@ -36,7 +36,7 @@ pub mod any {
         #[cfg(feature = "path-any")]
         let res = super::path_any::downcast(object);
         #[cfg(not(feature = "path-any"))]
-        let res = Box::downcast(object);
+        let res = Box::<dyn Any>::downcast(object);
         res
     }
 }
@@ -68,7 +68,7 @@ pub mod prelude {
         input::{Create, CreateDerive, Input},
         macros::{
             GetRef, Input, create, identified, listen_message, listener, pure_resource, resource,
-            respond,
+            respond, take_message,
         },
         namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},
         // this is a #[macro_export] macro so it can't be in macros

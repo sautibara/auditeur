@@ -1,13 +1,11 @@
 //! Items that can be added to an [`App`] and potentially run
 
-use std::pin::Pin;
-
 use crate::{
     any,
     app::{
         AppFn, AppMutFnOnce, AppMutFuture,
         event::Event,
-        map::{Dependency, DependencyId, DependencyType, RequestSet, Waiter},
+        map::{Dependency, DependencyType, RequestSet, Waiter},
     },
     component::{
         Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
@@ -21,8 +19,7 @@ use crate::{
     prelude::*,
 };
 
-use anyhow::{Result, anyhow};
-use tokio::select;
+use anyhow::{Context, Result, anyhow};
 
 pub mod listener;
 pub mod pure;
@@ -91,11 +88,11 @@ impl<R: GetRunnerWith> ResourceParts for R {
         <R as GetRunnerWith>::OPTIONS.overlay_on(<R::Method as ResourceParts<Self>>::OPTIONS);
 }
 
-pub trait Runner: Send + Sync {
+pub trait Runner: Send {
     // NOTE: Why is the runner given an app handle? Well, we have to keep the app alive while the
     // runner is running, so we have to keep around an app handle anyways. Most resources could use
     // that app handle we're keeping around, so we may as well give a reference to it.
-    fn run(self, app: &mut App) -> impl Future<Output = ()> + Send + Sync;
+    fn run(self, app: &mut App) -> impl Future<Output = ()> + Send;
 }
 
 #[derive(Clone, Copy)]
@@ -183,11 +180,10 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
         let runner = R::runner(resource, app).await?;
         // NOTE: This is the handle that keeps the app alive as long as the runner is running.
         let mut handle = app.handle().await;
-        let runner = async move { runner.run(&mut handle).await };
-        let runner = Box::pin(runner);
+        let handle = tokio::task::spawn(async move { runner.run(&mut handle).await });
 
         Ok(ResourcesLoaded {
-            runner: Some(runner),
+            handle,
             get_ref_loader,
             id: R::id(),
             stopper,
@@ -203,23 +199,33 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
     }
 
     fn on_load(&self) -> impl LoaderCallback<ErasedLoader<ResourcesLoaded>, Output = ()> {
-        let ty = if R::OPTIONS.is_weak() {
-            DependencyType::Weak
-        } else {
-            DependencyType::Removable
-        };
+        if R::OPTIONS.is_weak() {
+            return EitherCallback::Left(
+                LoaderCallbacks::load(DependencyType::Transient).discard(),
+            );
+        }
 
-        LoaderCallbacks::get(ty, async |loaded: &mut ResourcesLoaded, _| {
-            Ok(loaded.take_runner())
-        })
-        .and_then(async |runner| {
-            tokio::task::spawn(Dependency::consume(runner, async |runner| {
-                if let Some(runner) = runner {
-                    runner.await;
-                }
-            }));
-            Ok(())
-        })
+        EitherCallback::Right(
+            LoaderCallbacks::get(
+                DependencyType::Removable,
+                async |_: &mut ResourcesLoaded, app: &mut App| app.get_event_listener().await,
+            )
+            .and_then(async |mut listener| {
+                tokio::task::spawn(async move {
+                    let info = Dependency::info_of(&listener);
+                    let this_id = info.id.clone().into_id();
+
+                    while let Some(event) = listener.listen().await {
+                        if let Event::RequestDependencyRemoval { id } = event
+                            && id == this_id
+                        {
+                            break;
+                        }
+                    }
+                });
+                Ok(())
+            }),
+        )
     }
 }
 
@@ -232,9 +238,9 @@ impl<R: Resource> IdentifiedComponent for ResourceLoader<R> {
 #[doc(hidden)]
 #[derive(Any)]
 pub struct ResourcesLoaded {
-    runner: Option<Pin<Box<dyn Future<Output = ()> + Send + Sync>>>,
     get_ref_loader: Option<Box<dyn DynGetRefLoader>>,
 
+    handle: tokio::task::JoinHandle<()>,
     id: &'static NamespacedIdRef,
     stopper: Shouter<Stop>,
 }
@@ -248,17 +254,15 @@ impl ResourcesLoaded {
         let reference = loader.load_ref(app).await?;
         Ok(Some(reference))
     }
-
-    pub(crate) fn take_runner(
-        &mut self,
-    ) -> Option<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> {
-        self.runner.take()
-    }
 }
 
 impl Loaded for ResourcesLoaded {
-    async fn unload(self, _: &mut App) -> Result<(), Error> {
+    async fn unload(self, app: &mut App) -> Result<(), Error> {
         self.stopper.shout(Stop(self.id));
+        self.handle
+            .await
+            .context(format!("resource '{}' failed to run", self.id))
+            .map_err(|err| app.errors().wrap(err))?;
         Ok(())
     }
 }
@@ -269,7 +273,6 @@ struct Stop(&'static NamespacedIdRef);
 
 pub struct StopListener {
     stop_receiver: Listener<Stop>,
-    event_receiver: Listener<Event>,
     id: ComponentIdPath,
     stopped: bool,
 }
@@ -280,25 +283,9 @@ impl StopListener {
             return;
         }
 
-        loop {
-            select! {
-                Some(Stop(id)) = self.stop_receiver.listen() => {
-                    if *self.id == id {
-                        break;
-                    }
-                }
-                Some(event) = self.event_receiver.listen() => {
-                    if let Event::RequestDependencyRemoval { id: DependencyId {
-                        dependent,
-                        dependency,
-                    }} = event
-                        && dependent == App::component_id()
-                        && dependency.registry == Resources::id()
-                        && dependency.component == self.id
-                    {
-                        break;
-                    }
-                }
+        while let Some(Stop(id)) = self.stop_receiver.listen().await {
+            if *self.id == id {
+                break;
             }
         }
 
@@ -319,7 +306,6 @@ impl Input for StopListener {
 
         Ok(Self {
             stop_receiver: Listener::create(app).await?,
-            event_receiver: Listener::create(app).await?,
             id: dependent.component,
             stopped: false,
         })

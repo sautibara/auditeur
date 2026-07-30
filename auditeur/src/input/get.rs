@@ -40,7 +40,7 @@ impl<T: GetRef> DerefMut for Get<T> {
 #[allow(clippy::module_name_repetitions)] // no
 pub trait GetRef<R: GetRef = Self>: Send + Sync {
     type Loader: Send + Sync;
-    type Ref: any::Any + Send + Sync;
+    type Ref: any::Any + Send;
 
     fn create_loader(
         resource: &R,
@@ -83,8 +83,8 @@ impl<R: GetRef + Clone + any::Any> GetRef<R> for GetClone {
     }
 }
 
-pub struct GetInput<I: Input>(PhantomData<I>);
-impl<I: Input + any::Any + Sync, R: GetRef> GetRef<R> for GetInput<I> {
+pub struct GetInput<I: Input>(PhantomData<fn() -> I>);
+impl<I: Input + any::Any, R: GetRef> GetRef<R> for GetInput<I> {
     type Loader = ();
     type Ref = I;
 
@@ -97,10 +97,10 @@ impl<I: Input + any::Any + Sync, R: GetRef> GetRef<R> for GetInput<I> {
     }
 }
 
-pub struct GetCreate<C>(PhantomData<C>);
+pub struct GetCreate<C>(PhantomData<fn() -> C>);
 impl<C, R> GetRef<R> for GetCreate<C>
 where
-    C: CreateDerive<External = R, Plain: Sync + Clone> + any::Any + Sync,
+    C: CreateDerive<External = R, Plain: Send + Sync + Clone> + any::Any,
     R: GetRef,
 {
     type Loader = C::Plain;
@@ -169,7 +169,7 @@ pub mod maybe_get_ref {
         }
     }
 
-    impl<R: super::GetRef + Send + Sync + 'static> Specialization for &mut &R {
+    impl<R: super::GetRef + 'static> Specialization for &mut &R {
         async fn specialization(
             &self,
             app: &mut App,

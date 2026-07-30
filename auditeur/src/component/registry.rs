@@ -95,7 +95,7 @@ pub trait Loader<L: Loader<Loaded = Self::Loaded> = Self>:
 }
 
 /// An erased [`Component`] that has been loaded into a [`Registry`].
-pub trait Loaded: any::Any + Sized + Send + Sync + 'static {
+pub trait Loaded: any::Any + Sized + Send + 'static {
     /// Unloads the underlying component using an app handle.
     ///
     /// The app handle is guaranteed to have the app as a dependent.
@@ -105,8 +105,8 @@ pub trait Loaded: any::Any + Sized + Send + Sync + 'static {
     }
 }
 
-pub trait LoaderCallback<L: Loader>: Sized + Send + Sync + 'static {
-    type Output: Send + Sync;
+pub trait LoaderCallback<L: Loader>: Sized + Send + 'static {
+    type Output: Send;
 
     #[doc(hidden)]
     fn call(
@@ -115,11 +115,10 @@ pub trait LoaderCallback<L: Loader>: Sized + Send + Sync + 'static {
         app: &mut App,
     ) -> impl Future<Output = Result<Self::Output, Error>> + Send;
 
-    fn and_then<T: Send + Sync>(
+    fn and_then<T: Send>(
         self,
         func: impl AsyncFnOnce<(Self::Output,), Output = Result<T, Error>, CallOnceFuture: Send>
         + Send
-        + Sync
         + 'static,
     ) -> impl LoaderCallback<L, Output = T> {
         struct AndThen<C, M> {
@@ -133,9 +132,8 @@ pub trait LoaderCallback<L: Loader>: Sized + Send + Sync + 'static {
             C: LoaderCallback<L>,
             M: AsyncFnOnce<(C::Output,), Output = Result<O, Error>, CallOnceFuture: Send>
                 + Send
-                + Sync
                 + 'static,
-            O: Send + Sync,
+            O: Send,
         {
             type Output = O;
             async fn call(
@@ -242,14 +240,13 @@ impl LoaderCallbacks {
         Load(ty)
     }
 
-    pub fn get<L: Loader, T: Send + Sync>(
+    pub fn get<L: Loader, T: Send>(
         ty: DependencyType,
         func: impl for<'a, 'b> AsyncFnOnce<
             (&'a mut L::Loaded, &'b mut App),
             Output = Result<T, Error>,
             CallOnceFuture: Send,
         > + Send
-        + Sync
         + 'static,
     ) -> impl LoaderCallback<L, Output = Dependency<T>> {
         struct Get<F> {
@@ -260,13 +257,12 @@ impl LoaderCallbacks {
         impl<L, T, F> LoaderCallback<L> for Get<F>
         where
             L: Loader,
-            T: Send + Sync,
+            T: Send,
             F: for<'a, 'b> AsyncFnOnce<
                     (&'a mut L::Loaded, &'b mut App),
                     Output = Result<T, Error>,
                     CallOnceFuture: Send,
                 > + Send
-                + Sync
                 + 'static,
         {
             type Output = Dependency<T>;
@@ -317,8 +313,8 @@ where
 }
 
 #[async_trait]
-trait DynLoaderCallback<L: Loader>: Send + Sync {
-    type Output: Send + Sync;
+trait DynLoaderCallback<L: Loader>: Send {
+    type Output: Send;
     async fn call_dyn(
         self: Box<Self>,
         component: &mut DynComponentImpl<L>,
@@ -338,11 +334,11 @@ impl<L: Loader, C: LoaderCallback<L>> DynLoaderCallback<L> for C {
     }
 }
 
-pub struct BoxedCallback<L: Loader, O: Send + Sync> {
+pub struct BoxedCallback<L: Loader, O: Send> {
     callback: Box<dyn DynLoaderCallback<L, Output = O>>,
 }
 
-impl<L: Loader, O: Send + Sync> BoxedCallback<L, O> {
+impl<L: Loader, O: Send> BoxedCallback<L, O> {
     fn new<C: LoaderCallback<L, Output = O>>(callback: C) -> Self {
         Self {
             callback: Box::new(callback),
@@ -350,7 +346,7 @@ impl<L: Loader, O: Send + Sync> BoxedCallback<L, O> {
     }
 }
 
-impl<L: Loader, O: Send + Sync + 'static> LoaderCallback<L> for BoxedCallback<L, O> {
+impl<L: Loader, O: Send + 'static> LoaderCallback<L> for BoxedCallback<L, O> {
     type Output = O;
 
     async fn call(

@@ -15,7 +15,7 @@ use crate::{
 /// All errors that occur in the app bubble up into a shared append-only error list. These values
 /// are immutable snapshots of that list, containing all errors that occurred before the snapshot
 /// was taken. To take a new snapshot, call [`AppErrors::get`].
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Errors {
     errors: im::Vector<Arc<Error>>,
 }

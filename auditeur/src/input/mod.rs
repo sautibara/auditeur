@@ -16,7 +16,7 @@ pub mod get;
 /// These must hold [`dependency::Handle`]s for all dependencies that these inputs contain. If this
 /// is derived, then it is already handled for you. But if it's done manually, then please make
 /// sure that this is the case.
-pub trait Input: Sized + Send + Sync + 'static {
+pub trait Input: Sized + Send + 'static {
     /// Create `Self` using the given [`Registry`] and id `as_resource`
     ///
     /// # Errors
@@ -25,7 +25,7 @@ pub trait Input: Sized + Send + Sync + 'static {
     fn create(app: &mut App) -> impl Future<Output = Result<Self, Error>> + Send;
 }
 
-impl<T: Send + Sync + 'static> Input for PhantomData<T> {
+impl<T: Send + 'static> Input for PhantomData<T> {
     async fn create(_: &mut App) -> Result<Self, Error> {
         Ok(Self)
     }

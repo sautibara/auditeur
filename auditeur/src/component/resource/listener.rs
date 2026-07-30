@@ -22,11 +22,11 @@ pub trait Listener: Resource {
 
     const OPTIONS: Options = Options::new();
 
-    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 
-    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 
@@ -37,18 +37,18 @@ pub trait Listener: Resource {
 }
 
 pub trait Component<L: Listener>: Input {
-    type Value: Send + Sync;
+    type Value: Send;
 
     fn wait(
         &mut self,
         listener: &L,
-    ) -> impl Future<Output = anyhow::Result<ControlFlow<(), Self::Value>>> + Send + Sync;
+    ) -> impl Future<Output = anyhow::Result<ControlFlow<(), Self::Value>>> + Send;
 
     fn handle(
         &mut self,
         value: Self::Value,
         listener: &mut L,
-    ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send + Sync;
+    ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send;
 
     #[must_use]
     fn children(children: Children) -> Children {
@@ -57,7 +57,7 @@ pub trait Component<L: Listener>: Input {
 }
 
 pub trait Listen<M: ListenMessage>: Listener {
-    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send + Sync;
+    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
@@ -110,7 +110,7 @@ impl<R: Take<M>, M: TakeMessage> Input for TakeComponent<R, M> {
 }
 
 pub trait Take<M: TakeMessage>: Listener {
-    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send + Sync;
+    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl<R: Take<M>, M: TakeMessage> Component<R> for TakeComponent<R, M> {
@@ -162,25 +162,21 @@ pub trait Respond: Listener {
 }
 
 // Credit: `https://stackoverflow.com/a/79744535`
-pub trait SendAsyncFnOnce<A, O>: FnOnce(A) -> Self::Fut + Send + Sync + 'static {
-    type Fut: Future<Output = O> + Send + Sync;
+pub trait SendAsyncFnOnce<A, O>: FnOnce(A) -> Self::Fut + Send + 'static {
+    type Fut: Future<Output = O> + Send;
 }
 
 impl<A, O, Out, F> SendAsyncFnOnce<A, O> for F
 where
-    Out: Future<Output = O> + Send + Sync,
-    F: FnOnce(A) -> Out + Send + Sync + 'static,
+    Out: Future<Output = O> + Send,
+    F: FnOnce(A) -> Out + Send + 'static,
 {
     type Fut = Out;
 }
 
 #[allow(clippy::type_complexity)] // wi wi wi
 pub struct BoxedTransactionFnOnce<R: Respond>(
-    Box<
-        dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + Sync + 'a>>
-            + Send
-            + Sync,
-    >,
+    Box<dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send>,
 );
 
 impl<R: Respond> BoxedTransactionFnOnce<R> {
@@ -213,8 +209,8 @@ pub struct Unbiased;
 pub struct Biased;
 
 #[allow(private_bounds)]
-pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send + Sync {
-    fn run(&mut self, listener: &mut L, app: &mut App) -> impl Future<Output = ()> + Send + Sync;
+pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send {
+    fn run(&mut self, listener: &mut L, app: &mut App) -> impl Future<Output = ()> + Send;
 
     fn children(children: Children) -> Children;
 }
@@ -275,14 +271,14 @@ all_tuples!(impl_component_list, 1, 16, T, c);
 /// Used in the [`listener`](macro@crate::listener) attribute macro.
 ///
 /// Use the `options` flag in the macro to use this trait.
-pub trait ListenerDerive: Send + Sync {
+pub trait ListenerDerive: Send {
     const OPTIONS: Options = Options::new();
 
-    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+    fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 
-    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync {
+    fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 

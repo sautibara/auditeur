@@ -55,13 +55,13 @@ macro_rules! app_future_def {
     ( @ $mut:tt (@generics_bounded $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
         app_future_def!( @ $mut (
             Source: @AppFnOnce<Output = Output>,
-            Output: Send + Sync + 'static,
+            Output: Send + 'static,
             HandleFn: FnOnce(Source, &'a HandleData) -> (Method, HandleFut)
-                + Send + Sync + 'static,
-            HandleFut: Future<Output = Output> + Send + Sync + 'a,
+                + Send + 'static,
+            HandleFut: Future<Output = Output> + Send + 'a,
             OwnedFn: FnOnce(Source, &'a @mut Owned, &'a HandleData) -> OwnedFut
-                + Send + Sync + 'static,
-            OwnedFut: Future<Output = Output> + Send + Sync + 'a
+                + Send + 'static,
+            OwnedFut: Future<Output = Output> + Send + 'a
         $($in)*) ( $($out)* ) $($rest)*);
     };
     ( @ $mut:tt (@generics_unbounded $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
@@ -77,14 +77,14 @@ macro_rules! app_future_def {
     ( @ $mut:tt (@type_defs $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
         app_future_def!( @ $mut (
             type Source: @AppFnOnce<Output = Self::Output>;
-            type Output: Send + Sync + 'static;
+            type Output: Send + 'static;
             type HandleFn: FnOnce(Self::Source, &'a HandleData) -> (Method, Self::HandleFut)
-                + Send + Sync + 'static;
-            type HandleFut: Future<Output = Self::Output> + Send + Sync + 'a;
+                + Send + 'static;
+            type HandleFut: Future<Output = Self::Output> + Send + 'a;
             type OwnedFn: FnOnce(Self::Source, &'a @mut Owned, &'a HandleData)
                 -> Self::OwnedFut
-                + Send + Sync + 'static;
-            type OwnedFut: Future<Output = Self::Output> + Send + Sync + 'a
+                + Send + 'static;
+            type OwnedFut: Future<Output = Self::Output> + Send + 'a
         $($in)*) ($($out)*) $($rest)*);
     };
     ( @ $mut:tt (@type_impls $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
@@ -198,23 +198,27 @@ pub use registrar::ErasedComponent;
 /// - A map of the relationships and dependencies between components,
 ///   accessible through [`Self::map`].
 #[identified("auditeur:app")]
+#[derive(Debug)]
 pub struct App {
     variant: Inner,
     handle: HandleData,
 }
 
+#[derive(Debug)]
 struct HandleData {
     method_sender: flume::Sender<Method>,
     dependency: Dependency<()>,
     new_dependency_type: DependencyType,
 }
 
+#[derive(Debug)]
 enum Inner {
     Owned(Box<Owned>),
     Handle,
 }
 
 /// The actual shared state of the app.
+#[derive(Debug)]
 struct Owned {
     registrar: Registrar,
     errors: Errors,
@@ -919,15 +923,14 @@ impl AppFn {
 
 impl AppFn {
     app_future_def! {
-        const fn @(spawn, spawn_mut)<I: Send + Sync + 'static>(
+        const fn @(spawn, spawn_mut)<I: Send + 'static>(
             input: I,
-            method: impl FnOnce(I, &HandleData) -> Method + Send + Sync + 'static,
+            method: impl FnOnce(I, &HandleData) -> Method + Send + 'static,
             owned: impl for<'a> AsyncFnOnce<
                 (I, &'a @mut Owned, &'a HandleData),
                 Output = (),
-                CallOnceFuture: Send + Sync,
+                CallOnceFuture: Send,
             > + Send
-            + Sync
             + 'static,
         ) -> impl @AppFnOnce<Output = ()> {
             struct Spawn<I, M, O> {
@@ -937,14 +940,13 @@ impl AppFn {
             }
 
             impl<
-                I: Send + Sync + 'static,
-                M: FnOnce(I, &HandleData) -> Method + Send + Sync + 'static,
+                I: Send + 'static,
+                M: FnOnce(I, &HandleData) -> Method + Send + 'static,
                 O: for<'a> AsyncFnOnce<
                         (I, &'a @mut Owned, &'a HandleData),
-                        CallOnceFuture: Send + Sync,
+                        CallOnceFuture: Send,
                         Output = (),
                     > + Send
-                    + Sync
                     + 'static,
             > @AppFnOnce for Spawn<I, M, O>
             {
@@ -968,16 +970,15 @@ impl AppFn {
     }
 
     app_future_def! {
-        const fn @(oneshot, oneshot_mut)<I: Send + Sync + 'static, O: Send + Sync + 'static>(
+        const fn @(oneshot, oneshot_mut)<I: Send + 'static, O: Send + 'static>(
             input: I,
             method: impl FnOnce(I, OneshotSender<O>, &HandleData)
-                -> Method + Send + Sync + 'static,
+                -> Method + Send + 'static,
             owned: impl for<'a> AsyncFnOnce<
                 (I, &'a @mut Owned, &'a HandleData),
                 Output = O,
-                CallOnceFuture: Send + Sync,
+                CallOnceFuture: Send,
             > + Send
-            + Sync
             + 'static,
         ) -> impl @AppFnOnce<Output = O> {
             struct Oneshot<I, M, O> {
@@ -987,15 +988,14 @@ impl AppFn {
             }
 
             impl<
-                I: Send + Sync + 'static,
-                Out: Send + Sync + 'static,
-                M: FnOnce(I, OneshotSender<Out>, &HandleData) -> Method + Send + Sync + 'static,
+                I: Send + 'static,
+                Out: Send + 'static,
+                M: FnOnce(I, OneshotSender<Out>, &HandleData) -> Method + Send + 'static,
                 O: for<'a> AsyncFnOnce<
                         (I, &'a @mut Owned, &'a HandleData),
-                        CallOnceFuture: Send + Sync,
+                        CallOnceFuture: Send,
                         Output = Out,
                     > + Send
-                    + Sync
                     + 'static,
             > @AppFnOnce for Oneshot<I, M, O>
             {
@@ -1026,19 +1026,19 @@ impl AppFn {
 
     app_future_def! {
         const fn @(using_handle, using_handle_mut)<
-            O: Send + Sync + 'static,
+            O: Send + 'static,
             F: @AppFnOnce<Output = O>
         >(
-            mapping: impl FnOnce(&HandleData) -> F + Send + Sync + 'static,
+            mapping: impl FnOnce(&HandleData) -> F + Send + 'static,
         ) -> impl @AppFnOnce<Output = O> {
             struct UsingHandle<M> {
                 mapping: M,
             }
 
             impl<
-                M: FnOnce(&HandleData) -> F + Send + Sync + 'static,
+                M: FnOnce(&HandleData) -> F + Send + 'static,
                 F: @AppFnOnce<Output = O>,
-                O: Send + Sync + 'static,
+                O: Send + 'static,
             > @AppFnOnce for UsingHandle<M>
             {
                 type Output = O;
@@ -1074,9 +1074,7 @@ impl AppFn {
 // functions
 
 #[must_use]
-pub trait AppFuture<'a>:
-    IntoFuture<IntoFuture: Send + Sync, Output: Send + Sync> + Send + Sync + Sized
-{
+pub trait AppFuture<'a>: IntoFuture<IntoFuture: Send, Output: Send> + Send + Sized {
     fn into_parts(self) -> (&'a App, impl AppFnOnce<Output = Self::Output>);
 
     fn into_fn_once(self) -> impl AppFnOnce<Output = Self::Output> {
@@ -1086,9 +1084,7 @@ pub trait AppFuture<'a>:
 }
 
 #[must_use]
-pub trait AppMutFuture<'a>:
-    IntoFuture<IntoFuture: Send + Sync, Output: Send + Sync> + Send + Sync + Sized
-{
+pub trait AppMutFuture<'a>: IntoFuture<IntoFuture: Send, Output: Send> + Send + Sized {
     fn into_parts(self) -> (&'a mut App, impl AppMutFnOnce<Output = Self::Output>);
 
     fn into_fn_once(self) -> impl AppMutFnOnce<Output = Self::Output> {
@@ -1138,8 +1134,8 @@ app_future_def! {
 }
 
 #[must_use]
-pub trait AppFnOnce: Send + Sync + Sized + 'static {
-    type Output: Send + Sync + 'static;
+pub trait AppFnOnce: Send + Sized + 'static {
+    type Output: Send + 'static;
 
     #[doc(hidden)]
     fn into_inner<'a>(self) -> impl AppFnOnceInner<'a, Output = Self::Output>;
@@ -1175,7 +1171,7 @@ pub trait AppFnOnce: Send + Sync + Sized + 'static {
         UsingMut::<Self>(self)
     }
 
-    fn then<U: Send + Sync + 'static>(
+    fn then<U: Send + 'static>(
         self,
         other: impl AppFnOnce<Output = U>,
     ) -> impl AppFnOnce<Output = (Self::Output, U)> {
@@ -1185,9 +1181,9 @@ pub trait AppFnOnce: Send + Sync + Sized + 'static {
         }
     }
 
-    fn map<U: Send + Sync + 'static>(
+    fn map<U: Send + 'static>(
         self,
-        mapping: impl FnOnce(Self::Output) -> U + Send + Sync + 'static,
+        mapping: impl FnOnce(Self::Output) -> U + Send + 'static,
     ) -> impl AppFnOnce<Output = U> {
         AppFnMapping {
             inner: self,
@@ -1197,8 +1193,8 @@ pub trait AppFnOnce: Send + Sync + Sized + 'static {
 }
 
 #[must_use]
-pub trait AppMutFnOnce: Send + Sync + Sized + 'static {
-    type Output: Send + Sync + 'static;
+pub trait AppMutFnOnce: Send + Sized + 'static {
+    type Output: Send + 'static;
 
     #[doc(hidden)]
     fn into_inner<'a>(self) -> impl AppMutFnOnceInner<'a, Output = Self::Output>;
@@ -1210,7 +1206,7 @@ pub trait AppMutFnOnce: Send + Sync + Sized + 'static {
         }
     }
 
-    fn then<U: Send + Sync + 'static>(
+    fn then<U: Send + 'static>(
         self,
         other: impl AppMutFnOnce<Output = U>,
     ) -> impl AppMutFnOnce<Output = (Self::Output, U)> {
@@ -1220,9 +1216,9 @@ pub trait AppMutFnOnce: Send + Sync + Sized + 'static {
         }
     }
 
-    fn map<U: Send + Sync + 'static>(
+    fn map<U: Send + 'static>(
         self,
-        mapping: impl FnOnce(Self::Output) -> U + Send + Sync + 'static,
+        mapping: impl FnOnce(Self::Output) -> U + Send + 'static,
     ) -> impl AppMutFnOnce<Output = U> {
         AppFnMapping {
             inner: self,
@@ -1238,8 +1234,8 @@ struct Then<B, A> {
 
 app_future_def! {
     impl<
-        BO: Send + Sync + 'static,
-        AO: Send + Sync + 'static,
+        BO: Send + 'static,
+        AO: Send + 'static,
         B: @AppFnOnce<Output = BO>,
         A: @AppFnOnce<Output = AO>,
     > @AppFnOnce for Then<B, A>
@@ -1295,9 +1291,9 @@ struct AppFnMapping<A, M> {
 app_future_def! {
     impl<
         A: @AppFnOnce<Output = O>,
-        O: Send + Sync + 'static,
-        U: Send + Sync + 'static,
-        M: FnOnce(O) -> U + Send + Sync + 'static,
+        O: Send + 'static,
+        U: Send + 'static,
+        M: FnOnce(O) -> U + Send + 'static,
     > @AppFnOnce for AppFnMapping<A, M>
     {
         type Output = U;
@@ -1325,7 +1321,7 @@ app_future_def! {
 
 app_future_def! {
     #[doc(hidden)]
-    pub trait @AppFnOnceInner<'a>: Into<@AppFnOnceImpl<'a, @generics_from_types>> + Send + Sync {
+    pub trait @AppFnOnceInner<'a>: Into<@AppFnOnceImpl<'a, @generics_from_types>> + Send {
         @type_defs;
     }
 
