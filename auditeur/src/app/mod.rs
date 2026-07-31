@@ -160,18 +160,17 @@ use crate::app::map::{
 use crate::component::bundle::Bundles;
 use crate::component::registry::LoaderCallback;
 use crate::component::resource::AppFnResourcesMut;
-use crate::component::{IdentifiedComponent, IdentifiedComponentType};
+use crate::component::{IdentifiedComponent, IdentifiedComponentType, Register};
 use crate::prelude::*;
 use crate::{
     app::{
         error::{AppErrors, AppErrorsMut, Errors},
-        event::Event,
         map::{AddedComponentId, AppMap, Dependency, DependencyPart, DependencyType, Map, Waiter},
         registrar::Registrar,
     },
     children::HasChildren,
     component::{
-        Component, RegistryOf,
+        RegistryOf,
         listen::{self, AppListenMut, ListenMessages, Listener},
         registry::{ErasedLoader, Loaded, Loader, LoaderCallbacks, Registries, Registry},
         resource::{AppResourcesMut, Resources},
@@ -187,6 +186,7 @@ pub mod event;
 pub mod map;
 pub(crate) mod registrar;
 
+pub use event::Event;
 pub use registrar::ErasedComponent;
 
 /// A handle to the shared backend state of the app; the way that components interact.
@@ -751,7 +751,7 @@ impl Registry for App {
     type Loaded = AppLoaded;
 }
 
-impl Component<Self> for App {
+impl Register<Self> for App {
     type ComponentInput = ();
     fn register((): Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
         (AppLoader(()), Children::new())

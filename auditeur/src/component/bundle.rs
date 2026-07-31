@@ -1,7 +1,7 @@
 use crate::{
     children::HasChildren,
     component::{
-        Component, ComponentIdPath, RegistryOf,
+        ComponentIdPath, Register, RegistryOf,
         registry::{MarkerLoader, Registries, Registry},
     },
     prelude::*,
@@ -67,12 +67,12 @@ impl RegistryOf for Bundles {
     type Registry = Registries;
 }
 
-impl Component<Bundles> for Bundle {
-    type ComponentInput = Self;
+impl Register<Bundle> for Bundles {
+    type ComponentInput = Bundle;
 
     fn register(
-        Self { id, children }: Self::ComponentInput,
-    ) -> (<Bundles as Registry>::Loader, Children) {
+        Bundle { id, children }: Self::ComponentInput,
+    ) -> (<Self as Registry>::Loader, Children) {
         (MarkerLoader::new(id), children)
     }
 }

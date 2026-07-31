@@ -1,12 +1,10 @@
 use syn::Ident;
 
-use crate::AUDITEUR;
-
 use quote::quote;
 
 #[cfg(feature = "path-any")]
 pub fn any(ident: &Ident, generics: &syn::Generics) -> proc_macro2::TokenStream {
-    let path_any_mod = AUDITEUR.path_any();
+    let path_any_mod = crate::AUDITEUR.path_any();
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 

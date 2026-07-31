@@ -64,6 +64,7 @@ pub mod prelude {
             listener::{Listen, Listener, ListenerDerive, Take},
             watcher::Watcher,
         },
+        component::take::Giver,
         input::get::Get,
         input::{Create, CreateDerive, Input},
         macros::{

@@ -491,7 +491,6 @@ impl Config<'_> {
     }
 
     fn expand_connection_impl_any(&self, tokens: &mut TokenStream) {
-        #[cfg(feature = "path-any")]
         tokens.extend(super::any(
             &self.connection_ident,
             &syn::Generics::default(),

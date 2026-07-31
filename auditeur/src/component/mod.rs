@@ -14,15 +14,13 @@ pub mod registry;
 pub mod resource;
 pub mod take;
 
-/// A type that can be added to a specific [`Registry`] as a component.
+/// A trait the defines how to load a component (as `C`) into a registry.
 ///
 /// See the documentation of [`Registry`] for more information about components.
-///
-/// This trait usually has blanket implementations for each registry.
-pub trait Component<R: Registry> {
+pub trait Register<C>: Registry {
     type ComponentInput;
 
-    fn register(input: Self::ComponentInput) -> (R::Loader, Children);
+    fn register(input: Self::ComponentInput) -> (Self::Loader, Children);
 }
 
 /// A type that belongs to a single well-defined [`Registry`].
@@ -30,8 +28,8 @@ pub trait Component<R: Registry> {
 /// Types can be added to multiple registries as long as they implement [`Register`] for each of
 /// them. This trait, however, is meant to be implemented only for types that only make sense to be
 /// added to a single registry.
-pub trait RegistryOf: Component<Self::Registry> {
-    type Registry: Registry;
+pub trait RegistryOf: Sized {
+    type Registry: Register<Self>;
 }
 
 #[derive(Hash, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -44,8 +42,8 @@ impl ComponentId {
     #[must_use]
     pub fn within<R, C>() -> Self
     where
-        R: Registry + IdentifiedType,
-        C: Component<R> + IdentifiedType,
+        R: Register<C> + IdentifiedType,
+        C: IdentifiedType,
     {
         Self {
             registry: R::id(),

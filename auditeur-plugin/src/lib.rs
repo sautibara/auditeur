@@ -2,7 +2,7 @@ use auditeur::{
     children::HasChildren,
     component::{
         registry::{Loaded, Loader, Registries, Registry},
-        Component, ComponentIdPath, IdentifiedComponent, RegistryOf,
+        ComponentIdPath, IdentifiedComponent, Register, RegistryOf,
     },
     prelude::{anyhow::anyhow, *},
     Error,
@@ -136,10 +136,10 @@ pub struct PluginComponent {
     context: PluginContext,
 }
 
-impl Component<Plugins> for PluginComponent {
-    type ComponentInput = Self;
-    fn register(component: Self::ComponentInput) -> (<Plugins as Registry>::Loader, Children) {
-        let Self {
+impl Register<PluginComponent> for Plugins {
+    type ComponentInput = PluginComponent;
+    fn register(component: Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
+        let PluginComponent {
             id,
             plugin: Plugin { children },
             context,

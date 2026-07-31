@@ -4,7 +4,7 @@ use crate::{
     any,
     app::map::Dependency,
     component::{
-        Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
+        ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
     },
     input::CloneIn,
@@ -74,7 +74,7 @@ impl RegistryOf for TakeMessages {
     type Registry = Registries;
 }
 
-impl<M: TakeMessage> Component<TakeMessages> for M {
+impl<M: TakeMessage> Register<M> for TakeMessages {
     type ComponentInput = ();
     fn register((): Self::ComponentInput) -> (ErasedLoader<TakeLoaded>, Children) {
         (ErasedLoader::new(TakeLoader::<M>::new()), Children::new())

@@ -8,7 +8,7 @@ use crate::{
         map::{Dependency, DependencyType, RequestSet, Waiter},
     },
     component::{
-        Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf,
+        ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf,
         listen::Listener,
         registry::{
             EitherCallback, ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks,
@@ -153,11 +153,9 @@ impl RegistryOf for Resources {
     type Registry = Registries;
 }
 
-impl<R: Resource> Component<Resources> for R {
+impl<R: Resource> Register<R> for Resources {
     type ComponentInput = R::ExternalInput;
-    fn register(
-        external_input: Self::ComponentInput,
-    ) -> (<Resources as Registry>::Loader, Children) {
+    fn register(external_input: Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
         (
             ErasedLoader::new(ResourceLoader::<R> { external_input }),
             R::children(),

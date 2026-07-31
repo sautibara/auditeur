@@ -6,7 +6,7 @@ use crate::{
         map::{AddedComponentId, DependencyType},
         registrar::DynComponentImpl,
     },
-    component::{Component, ComponentIdPath, IdentifiedComponent, IdentifiedType, RegistryOf},
+    component::{ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf},
     prelude::*,
 };
 use async_trait::async_trait;
@@ -26,10 +26,10 @@ impl RegistryOf for Registries {
     type Registry = Self;
 }
 
-impl<R: Registry> Component<Registries> for R {
+impl<R: Registry> Register<R> for Registries {
     type ComponentInput = ();
 
-    fn register((): Self::ComponentInput) -> (<Registries as Registry>::Loader, Children) {
+    fn register((): Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
         (MarkerLoader::new(R::id()), R::children(Children::new()))
     }
 }

@@ -135,6 +135,7 @@ impl<'a> ConfigStruct<'a> {
                 type External = (#(#external_input),*);
                 type Plain = #plain_ident #type_generics;
 
+                #[allow(clippy::unused_async_trait_impl)]
                 async fn finish(plain: #plain_ident #type_generics, app: &mut #auditeur::app::App)
                     -> Result<Self, #auditeur::Error>
                 {
@@ -177,6 +178,7 @@ impl<'a> ConfigStruct<'a> {
             impl #impl_generics #auditeur::input::CreateDerive for #ident #type_generics
                 #where_clause
             {
+                #[allow(clippy::unused_async_trait_impl)]
                 async fn create(_: &(#(#external_input),*), _: &mut #auditeur::app::App)
                     -> Result<#plain_ident, #auditeur::Error>
                 {

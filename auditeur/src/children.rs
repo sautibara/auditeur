@@ -1,6 +1,6 @@
 use crate::{
     app::registrar::ErasedComponent,
-    component::{Component, RegistryOf, registry::Registry},
+    component::{Register, RegistryOf},
     prelude::*,
 };
 
@@ -80,7 +80,7 @@ pub trait HasChildren: Sized {
     ///
     /// This is identical to calling [`Self::within`] with the registry [`C::Registry`].
     #[must_use]
-    fn with<C: RegistryOf>(self, input: C::ComponentInput) -> Self {
+    fn with<C: RegistryOf>(self, input: <C::Registry as Register<C>>::ComponentInput) -> Self {
         self.within::<C::Registry, C>(input)
     }
 
@@ -88,7 +88,7 @@ pub trait HasChildren: Sized {
     ///
     /// All children of this component are also immediately added to the collection.
     #[must_use]
-    fn within<R: Registry, C: Component<R>>(self, input: C::ComponentInput) -> Self {
+    fn within<R: Register<C>, C>(self, input: <R as Register<C>>::ComponentInput) -> Self {
         let (component, children) = ErasedComponent::new::<R, C>(input);
         self.with_erased(component, children)
     }

@@ -11,7 +11,7 @@ use crate::{
         map::{Dependency, LoadedComponentId},
     },
     component::{
-        Component, ComponentIdPath, IdentifiedComponent,
+        ComponentIdPath, IdentifiedComponent, Register,
         registry::{Loaded, Loader, LoaderCallback, Registry},
     },
     prelude::*,
@@ -30,8 +30,8 @@ impl Debug for ErasedComponent {
 }
 
 impl ErasedComponent {
-    pub fn new<R: Registry, C: Component<R>>(input: C::ComponentInput) -> (Self, Children) {
-        let (loader, children) = C::register(input);
+    pub fn new<R: Register<C>, C>(input: R::ComponentInput) -> (Self, Children) {
+        let (loader, children) = R::register(input);
         let component = Self {
             object: Box::new(DynComponentImpl::<R::Loader> {
                 loader,
@@ -133,11 +133,11 @@ impl<L: Loader> DynComponent for DynComponentImpl<L> {
 
 #[derive(Default, Debug)]
 pub(in crate::app) struct Registrar {
-    components: HashMap<ComponentId, Register>,
+    components: HashMap<ComponentId, StoredComponent>,
 }
 
 #[derive(Debug)]
-struct Register {
+struct StoredComponent {
     component: oneshot::Receiver<ErasedComponent>,
 }
 
@@ -155,7 +155,7 @@ impl Registrar {
 
         let previous = self.components.insert(
             id,
-            Register {
+            StoredComponent {
                 component: receiver,
             },
         );
