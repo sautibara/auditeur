@@ -3,8 +3,11 @@
 use std::{convert::Infallible, marker::PhantomData, pin::Pin};
 
 use crate::{
+    app::{AppFn, AppFnOnce, AppMutFnOnce, Event, event::ComponentLifecycle},
     component::{
+        ComponentIdPath,
         listen::{self, ListenMessage},
+        registry::Registry,
         resource::{Options, Resource, ResourceParts, Runner, StopListener},
         take::{TakeMessage, TakeMessages, Taker},
     },
@@ -154,6 +157,70 @@ impl<L: Listener> Component<L> for StopComponent {
     async fn handle(&mut self, _: Self::Value, _: &mut L) -> anyhow::Result<ControlFlow<()>> {
         // NOTE: This can't ever be called, since event is (should be) the never type.
         Ok(ControlFlow::Break(()))
+    }
+}
+
+pub trait OnAddIn<R: Registry>: Listener {
+    fn on_add(&mut self, id: ComponentIdPath) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+pub struct OnAddInComponent<R: Registry> {
+    listener: listen::Listener<Event>,
+    queue: Vec<ComponentIdPath>,
+    pd: PhantomData<fn() -> R>,
+}
+
+impl<R: Registry> Input for OnAddInComponent<R> {
+    async fn create(app: &mut App) -> Result<Self, Error> {
+        let (map, listener) = (AppFn.map().get().using_mut())
+            .then(AppFn.get_event_listener())
+            .call(app)
+            .await;
+        let listener = listener?;
+
+        let queue = (map.components.keys())
+            .filter(|component| component.registry == R::id())
+            .map(|id| id.component.clone())
+            .collect();
+
+        Ok(Self {
+            listener,
+            queue,
+            pd: PhantomData,
+        })
+    }
+}
+
+impl<L: OnAddIn<R>, R: Registry> Component<L> for OnAddInComponent<R> {
+    type Value = ComponentIdPath;
+
+    async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
+        if let Some(id) = self.queue.pop() {
+            return Ok(ControlFlow::Continue(id));
+        }
+
+        loop {
+            match self.listener.listen().await {
+                Some(Event::Component { id, lifecycle })
+                    if id.registry == R::id() && lifecycle == ComponentLifecycle::Add =>
+                {
+                    return Ok(ControlFlow::Continue(id.component));
+                }
+                Some(_) => (),
+                None => {
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+        }
+    }
+
+    async fn handle(
+        &mut self,
+        value: Self::Value,
+        listener: &mut L,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        listener.on_add(value).await?;
+        Ok(ControlFlow::Continue(()))
     }
 }
 

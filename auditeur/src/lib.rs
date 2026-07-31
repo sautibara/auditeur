@@ -61,7 +61,7 @@ pub mod prelude {
         component::bundle::Bundle,
         component::listen::Shouter,
         component::resource::{
-            listener::{Listen, Listener, ListenerDerive, Take},
+            listener::{Listen, Listener, ListenerDerive, OnAddIn, Take},
             watcher::Watcher,
         },
         component::take::Giver,

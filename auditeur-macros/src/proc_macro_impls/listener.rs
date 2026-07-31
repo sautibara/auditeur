@@ -195,6 +195,7 @@ impl IntoIterator for Attrs {
 enum Attr {
     Listen(field::List<Component>),
     Take(field::List<Component>),
+    OnAddIn(field::List<Component>),
     StopComponent(field::NameValue<syn::LitBool>),
     Component(field::List<Component>),
     WeakFlag,
@@ -209,11 +210,14 @@ impl Attr {
             Self::RespondFlag => Either::Left(Either::Right(std::iter::once(simple_component(
                 "RespondComponent",
             )))),
-            Self::Listen(messages) => Either::Right(Either::Left(
+            Self::Listen(messages) => Either::Right(Either::Left(Either::Left(
                 messages.iter().map(Component::component::<ListenSupplier>),
-            )),
-            Self::Take(messages) => Either::Right(Either::Right(Either::Left(
+            ))),
+            Self::Take(messages) => Either::Right(Either::Left(Either::Right(
                 messages.iter().map(Component::component::<TakeSupplier>),
+            ))),
+            Self::OnAddIn(messages) => Either::Right(Either::Right(Either::Left(
+                messages.iter().map(Component::component::<OnAddInSupplier>),
             ))),
             Self::Component(messages) => Either::Right(Either::Right(Either::Right(
                 messages
@@ -264,6 +268,8 @@ impl Parse for Attr {
             field::List::parse_after(ident, input).map(Self::Listen)
         } else if ident == "take" {
             field::List::parse_after(ident, input).map(Self::Take)
+        } else if ident == "on_add_in" {
+            field::List::parse_after(ident, input).map(Self::OnAddIn)
         } else if ident == "respond" {
             Ok(Self::RespondFlag)
         } else if ident == "components" {
@@ -278,7 +284,7 @@ impl Parse for Attr {
             Ok(Self::OptionsFlag)
         } else {
             Err(input.error(format!(
-                "expected 'registry_component', 'biased', 'listen', 'take', 'stop_component', 'weak', 'options', or 'components', found '{ident}'"
+                "expected 'registry_component', 'biased', 'listen', 'take', 'on_add_in', 'stop_component', 'weak', 'options', or 'components', found '{ident}'"
             )))
         }
     }
@@ -320,6 +326,13 @@ struct TakeSupplier;
 impl ComponentSupplier for TakeSupplier {
     fn supply_component(ty: &syn::Type) -> proc_macro2::TokenStream {
         default_component("TakeComponent", ty)
+    }
+}
+
+struct OnAddInSupplier;
+impl ComponentSupplier for OnAddInSupplier {
+    fn supply_component(ty: &syn::Type) -> proc_macro2::TokenStream {
+        default_component("OnAddInComponent", ty)
     }
 }
 
