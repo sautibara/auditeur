@@ -156,10 +156,12 @@ impl<'a> ConfigStruct<'a> {
         };
 
         let generics = self.shared.generics;
+        let derive_for_plain = &self.shared.derive_for_plain;
 
         quote! {
             #attrs
             #[doc(hidden)]
+            #[derive(#(#derive_for_plain),*)]
             pub struct #name #generics {
                 #(#fields: #types,)*
             }
@@ -314,6 +316,7 @@ struct Config<'a> {
     auto_impl: AutoImpl,
     external_inputs: Vec<&'a syn::Type>,
     generics: &'a syn::Generics,
+    derive_for_plain: Vec<&'a syn::Path>,
 }
 
 impl<'a> Config<'a> {
@@ -322,6 +325,7 @@ impl<'a> Config<'a> {
 
         let mut auto_impl = None;
         let mut external_inputs = Vec::new();
+        let mut derive_for_plain = Vec::new();
         for attr in &attrs.attrs {
             match attr {
                 Attr::AutoImplFlag(ident, ty) => {
@@ -337,6 +341,7 @@ impl<'a> Config<'a> {
                     }
                 }
                 Attr::ExternalInput(types) => external_inputs.extend(types),
+                Attr::DeriveForPlain(macros) => derive_for_plain.extend(macros),
             }
         }
 
@@ -346,6 +351,7 @@ impl<'a> Config<'a> {
             auto_impl,
             external_inputs,
             generics,
+            derive_for_plain,
         })
     }
 
@@ -413,6 +419,7 @@ impl IntoIterator for Attrs {
 enum Attr {
     AutoImplFlag(Ident, AutoImpl),
     ExternalInput(List<syn::Type>),
+    DeriveForPlain(List<syn::Path>),
 }
 
 impl Parse for Attr {
@@ -422,9 +429,11 @@ impl Parse for Attr {
             Ok(Self::AutoImplFlag(ident, AutoImpl::Default))
         } else if ident == "external_input" {
             List::parse_after(ident, input).map(Self::ExternalInput)
+        } else if ident == "derive_for_plain" {
+            List::parse_after(ident, input).map(Self::DeriveForPlain)
         } else {
             Err(input.error(format!(
-                "expected 'default' or 'external_input', found {ident}"
+                "expected 'default', 'derive_for_plain', or 'external_input', found {ident}"
             )))
         }
     }

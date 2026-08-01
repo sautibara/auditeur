@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Ident, Token, braced, fold::Fold, parse::Parse, punctuated::Punctuated, spanned::Spanned,
+    Ident, ReturnType, Token, braced, fold::Fold, parse::Parse, punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 use crate::{
@@ -701,8 +702,16 @@ impl<'a> MethodConfig<'a> {
         let auditeur = &*crate::AUDITEUR;
         let ident = &self.method.sig.ident;
 
+        let output = match &self.method.sig.output {
+            ReturnType::Default => quote! { () },
+            ReturnType::Type(_, ty) => ty.to_token_stream(),
+        };
+
         let sig = overlay::Signature::new(&self.method.vis, &self.method.sig)
-            .asyncness(true)
+            .output(quote! {
+                -> impl ::std::future::Future<Output = #output> + Send + 'static
+            })
+            .asyncness(false)
             .receiver(quote! { &self });
 
         let args = (self.method.sig.inputs.iter())
@@ -720,11 +729,13 @@ impl<'a> MethodConfig<'a> {
                 let query = #query_ident::#camel_case_ident { response, #(#args),* };
                 self.giver.give(query);
 
-                auditeur_receiver.await.expect(concat!(
-                    "respond: ",
-                    stringify!(#self_ty), "::", stringify!(#ident),
-                    " panicked"
-                ))
+                async {
+                    auditeur_receiver.await.expect(concat!(
+                        "respond: ",
+                        stringify!(#self_ty), "::", stringify!(#ident),
+                        " panicked"
+                    ))
+                }
             }
         });
     }

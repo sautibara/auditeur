@@ -3,7 +3,10 @@ use std::{
     path::Path,
 };
 
-use auditeur_plugin::auditeur::{self, component::resource::listener::Component};
+use auditeur_plugin::{
+    Plugins,
+    auditeur::{self, component::resource::listener::Component},
+};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
@@ -156,7 +159,7 @@ enum Action {
 
 #[create(external_input(O))]
 #[resource("plugin_host:arena")]
-#[listener(biased, respond, components(MainComponent))]
+#[listener(biased, options, respond, components(MainComponent))]
 #[derive(Serialize)]
 pub struct Arena<O: Opts> {
     source_list: SourceList,
@@ -182,6 +185,12 @@ impl<O: Opts> CreateDerive for Arena<O> {
         Self::open_or_init(opts.clone())
             .await
             .map_err(|err| app.errors().wrap(err))
+    }
+}
+
+impl<O: Opts> ListenerDerive for Arena<O> {
+    fn children(children: Children) -> Children {
+        children.with::<Plugins>(())
     }
 }
 
