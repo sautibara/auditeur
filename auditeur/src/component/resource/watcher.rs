@@ -8,7 +8,7 @@ use crate::{
 /// WARNING: There is no custom logic to tell the watcher to stop. Instead, watchers are expected
 /// to carry around a [`StopListener`](super::StopListener) to know when to stop.
 pub trait Watcher: Resource {
-    fn run(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send + Sync;
+    fn run(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     #[must_use]
     fn children() -> Children {

@@ -68,8 +68,8 @@ pub mod prelude {
         input::get::Get,
         input::{Create, CreateDerive, Input},
         macros::{
-            GetRef, Input, create, identified, listen_message, listener, pure_resource, resource,
-            respond, take_message,
+            CloneIn, GetRef, Input, create, identified, listen_message, listener, pure_resource,
+            resource, respond, take_message,
         },
         namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},
         // this is a #[macro_export] macro so it can't be in macros

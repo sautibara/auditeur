@@ -1,4 +1,5 @@
 use auditeur::prelude::*;
+#[allow(clippy::wildcard_imports)]
 use auditeur::*;
 
 // All that needs to be done in the `#[listener]` macro is to pass in a `respond` flag.
@@ -23,6 +24,7 @@ impl Counter {
     // types can hold references (since they're sent using messages). To get around this,
     // use transactions, clone items, or use `Arc`s.
     // Thankfully here we don't have to worry about that, since `usize` is copyable.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn get(&self) -> usize {
         self.value
     }

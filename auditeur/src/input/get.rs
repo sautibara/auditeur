@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 use async_trait::async_trait;
 
 use crate::any;
-use crate::input::CreateDeriveTypes;
+use crate::input::{CloneIn, CreateDeriveTypes};
 use crate::{app::map::Dependency, component::resource::Resource, prelude::*};
 
 pub struct Get<T: GetRef> {
@@ -80,6 +80,20 @@ impl<R: GetRef + Clone + any::Any> GetRef<R> for GetClone {
 
     async fn load_ref(loader: &Self::Loader, _: &mut App) -> Result<Self::Ref, Error> {
         Ok(loader.clone())
+    }
+}
+
+pub struct GetCloneIn;
+impl<R: GetRef + CloneIn + any::Any> GetRef<R> for GetCloneIn {
+    type Loader = R;
+    type Ref = R;
+
+    async fn create_loader(resource: &R, app: &mut App) -> Result<Self::Loader, Error> {
+        Ok(resource.clone_in(app).await)
+    }
+
+    async fn load_ref(loader: &Self::Loader, app: &mut App) -> Result<Self::Ref, Error> {
+        Ok(loader.clone_in(app).await)
     }
 }
 

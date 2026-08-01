@@ -161,6 +161,7 @@ use crate::component::bundle::Bundles;
 use crate::component::registry::LoaderCallback;
 use crate::component::resource::AppFnResourcesMut;
 use crate::component::{IdentifiedComponent, IdentifiedComponentType, Register};
+use crate::input::CloneIn;
 use crate::prelude::*;
 use crate::{
     app::{
@@ -354,6 +355,12 @@ impl App {
     #[cfg(test)]
     pub(crate) fn release_dependency_unsafe(&mut self) {
         Dependency::release_unsafe(&mut self.handle.dependency);
+    }
+}
+
+impl CloneIn for App {
+    async fn clone_in(&self, app: &mut App) -> Self {
+        app.handle().await
     }
 }
 
