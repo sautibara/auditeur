@@ -235,6 +235,7 @@ impl Workspace {
             });
         let opt_level = &self.opts.opt_level;
         let debug = self.opts.debug;
+        let inherits = if debug { "dev" } else { "release" };
         let profile = Self::PROFILE;
         let incremental = self.opts.incremental;
         let workspace_toml = format!(
@@ -245,7 +246,7 @@ impl Workspace {
             resolver = "2"
 
             [profile.{profile}]
-            inherits = "release"
+            inherits = "{inherits}"
             opt-level = {opt_level}
             debug = {debug}
             incremental = {incremental}
