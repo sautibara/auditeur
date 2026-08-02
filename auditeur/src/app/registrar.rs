@@ -256,7 +256,7 @@ impl AppFnComponentsMut {
             AppFn::spawn_mut(
                 children,
                 |children, _| super::Method::Registries(Method::Add(children)),
-                async |children, owned, handle| {
+                |children, owned, handle| {
                     owned.add_children(children, &handle.method_sender);
                 },
             )
@@ -399,7 +399,7 @@ impl<'a> AppComponentsMut<'a> {
             |dependency, sender, _| {
                 super::Method::Registries(Method::Borrow { dependency, sender })
             },
-            async |dependency, owned, _| {
+            |dependency, owned, _| {
                 let component = owned
                     .registrar
                     .borrow(&dependency.info().id.dependency().component)
@@ -415,7 +415,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Registries(Method::SpawnUnload(id)),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 let Some(borrowed) = owned.registrar.borrow(&id.component) else {
                     return;
                 };
@@ -439,7 +439,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Registries(Method::SpawnOnLoad(id)),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 let Some(borrowed) = owned.registrar.borrow(&id.component) else {
                     return;
                 };
@@ -463,7 +463,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Registries(Method::SpawnOnAdd(id)),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 let Some(borrowed) = owned.registrar.borrow(&id) else {
                     return;
                 };

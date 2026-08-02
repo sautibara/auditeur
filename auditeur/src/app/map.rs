@@ -1764,7 +1764,7 @@ impl AppFnMap {
         AppFn::oneshot(
             (),
             |(), sender, _| super::Method::Map(Method::Get { sender }),
-            async |(), owned, _| owned.map.clone(),
+            |(), owned, _| owned.map.clone(),
         )
     }
 }
@@ -1788,7 +1788,7 @@ impl AppFnComponentsMut {
         AppFn::oneshot_mut(
             id,
             |id, sender, _| super::Method::Map(Method::IncrementDependency { id, sender }),
-            async |id, owned, handle| owned.increment_dependency(id, &handle.method_sender),
+            |id, owned, handle| owned.increment_dependency(id, &handle.method_sender),
         )
     }
 
@@ -1809,7 +1809,7 @@ impl AppFnComponentsMut {
                     sender,
                 })
             },
-            async |(dependency, dependent, ty), owned, handle| {
+            |(dependency, dependent, ty), owned, handle| {
                 let dependency = owned.map.validate_id(dependency).map_err(|dependency| {
                     Error::DependencyNotFound {
                         dependency,
@@ -1843,7 +1843,7 @@ impl AppFnComponentsMut {
                     sender,
                 })
             },
-            async |request, owned, handle| {
+            |request, owned, handle| {
                 let (_, waiter) = owned.request(request, &handle.method_sender);
                 waiter
             },
@@ -1859,7 +1859,7 @@ impl AppFnComponentsMut {
                     sender,
                 })
             },
-            async |request, owned, handle| {
+            |request, owned, handle| {
                 let (_, waiter) = owned.wait_for(request, &handle.method_sender);
                 waiter
             },
@@ -1896,7 +1896,7 @@ impl<'a> AppComponentsMut<'a> {
                     sender,
                 })
             },
-            async |(dependency, dependent, ty), owned, handle| {
+            |(dependency, dependent, ty), owned, handle| {
                 let dependency = owned.map.load_component(
                     dependency,
                     Channels {
@@ -1930,7 +1930,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Map(Method::DecrementDependency { id }),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 owned.decrement_dependency(&id, &handle.method_sender);
             },
         )
@@ -1949,7 +1949,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Map(Method::OnAddFinished(id)),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 owned.map.finish_on_add(
                     id,
                     Channels {
@@ -1967,7 +1967,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Map(Method::OnLoadFinished(id)),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 owned.map.finish_on_load(
                     id,
                     Channels {
@@ -1985,7 +1985,7 @@ impl<'a> AppComponentsMut<'a> {
         AppFn::spawn_mut(
             id,
             |id, _| super::Method::Map(Method::UnloadFinished(id)),
-            async |id, owned, handle| {
+            |id, owned, handle| {
                 owned.map.finish_unload(
                     id,
                     Channels {

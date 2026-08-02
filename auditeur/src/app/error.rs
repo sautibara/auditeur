@@ -94,7 +94,7 @@ impl AppFnErrors {
         AppFn::oneshot(
             (),
             |(), sender, _| super::Method::Errors(Method::Get(sender)),
-            async |(), owned, _| owned.errors.clone(),
+            |(), owned, _| owned.errors.clone(),
         )
     }
 }
@@ -132,7 +132,7 @@ impl AppFnErrorsMut {
         AppFn::spawn_mut(
             error,
             |error, _| super::Method::Errors(Method::AddShared(error)),
-            async |error, owned, _| owned.add_shared_error(error),
+            |error, owned, _| owned.add_shared_error(error),
         )
     }
 

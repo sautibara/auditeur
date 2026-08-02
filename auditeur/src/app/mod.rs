@@ -59,9 +59,8 @@ macro_rules! app_future_def {
             HandleFn: FnOnce(Source, &'a HandleData) -> (Method, HandleFut)
                 + Send + 'static,
             HandleFut: Future<Output = Output> + Send + 'a,
-            OwnedFn: FnOnce(Source, &'a @mut Owned, &'a HandleData) -> OwnedFut
+            OwnedFn: FnOnce(Source, &'a @mut Owned, &'a HandleData) -> Output
                 + Send + 'static,
-            OwnedFut: Future<Output = Output> + Send + 'a
         $($in)*) ( $($out)* ) $($rest)*);
     };
     ( @ $mut:tt (@generics_unbounded $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
@@ -71,7 +70,6 @@ macro_rules! app_future_def {
             HandleFn,
             HandleFut,
             OwnedFn,
-            OwnedFut
         ) $($rest)* );
     };
     ( @ $mut:tt (@type_defs $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
@@ -82,9 +80,8 @@ macro_rules! app_future_def {
                 + Send + 'static;
             type HandleFut: Future<Output = Self::Output> + Send + 'a;
             type OwnedFn: FnOnce(Self::Source, &'a @mut Owned, &'a HandleData)
-                -> Self::OwnedFut
-                + Send + 'static;
-            type OwnedFut: Future<Output = Self::Output> + Send + 'a
+                -> Self::Output
+                + Send + 'static
         $($in)*) ($($out)*) $($rest)*);
     };
     ( @ $mut:tt (@type_impls $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
@@ -93,8 +90,7 @@ macro_rules! app_future_def {
             type Output = Output;
             type HandleFn = HandleFn;
             type HandleFut = HandleFut;
-            type OwnedFn = OwnedFn;
-            type OwnedFut = OwnedFut
+            type OwnedFn = OwnedFn
         ) $($rest)*);
     };
     ( @ $mut:tt (@generics_from_types $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
@@ -103,8 +99,7 @@ macro_rules! app_future_def {
             Self::Output,
             Self::HandleFn,
             Self::HandleFut,
-            Self::OwnedFn,
-            Self::OwnedFut
+            Self::OwnedFn
         ) $($rest)*);
     };
     // Pushing a delimiter onto the delimiter stack.
@@ -883,7 +878,7 @@ impl AppFn {
                 ty,
                 sender,
             },
-            async |(dependent, ty), owned, handle| {
+            |(dependent, ty), owned, handle| {
                 // Get the dependency id that was stored when the app was created.
                 let dependency = owned.event_sender_dependency.as_ref().ok_or_else(|| {
                     // It could be None if the app is in the process of exiting.
@@ -919,7 +914,7 @@ impl AppFn {
         Self::spawn_mut(
             (),
             |(), _| Method::ReleaseEventListener,
-            async |(), owned, handle| {
+            |(), owned, handle| {
                 if let Some(dependency) = owned.event_sender_dependency.take() {
                     Dependency::drop_in_owned(dependency, owned, &handle.method_sender);
                 }
@@ -933,12 +928,9 @@ impl AppFn {
         const fn @(spawn, spawn_mut)<I: Send + 'static>(
             input: I,
             method: impl FnOnce(I, &HandleData) -> Method + Send + 'static,
-            owned: impl for<'a> AsyncFnOnce<
-                (I, &'a @mut Owned, &'a HandleData),
-                Output = (),
-                CallOnceFuture: Send,
-            > + Send
-            + 'static,
+            owned: impl FnOnce(I, &@mut Owned, &HandleData)
+                + Send
+                + 'static,
         ) -> impl @AppFnOnce<Output = ()> {
             struct Spawn<I, M, O> {
                 input: I,
@@ -949,11 +941,8 @@ impl AppFn {
             impl<
                 I: Send + 'static,
                 M: FnOnce(I, &HandleData) -> Method + Send + 'static,
-                O: for<'a> AsyncFnOnce<
-                        (I, &'a @mut Owned, &'a HandleData),
-                        CallOnceFuture: Send,
-                        Output = (),
-                    > + Send
+                O: FnOnce(I, &@mut Owned, &HandleData)
+                    + Send
                     + 'static,
             > @AppFnOnce for Spawn<I, M, O>
             {
@@ -981,12 +970,7 @@ impl AppFn {
             input: I,
             method: impl FnOnce(I, OneshotSender<O>, &HandleData)
                 -> Method + Send + 'static,
-            owned: impl for<'a> AsyncFnOnce<
-                (I, &'a @mut Owned, &'a HandleData),
-                Output = O,
-                CallOnceFuture: Send,
-            > + Send
-            + 'static,
+            owned: impl FnOnce(I, &@mut Owned, & HandleData) -> O + Send + 'static,
         ) -> impl @AppFnOnce<Output = O> {
             struct Oneshot<I, M, O> {
                 input: I,
@@ -998,11 +982,8 @@ impl AppFn {
                 I: Send + 'static,
                 Out: Send + 'static,
                 M: FnOnce(I, OneshotSender<Out>, &HandleData) -> Method + Send + 'static,
-                O: for<'a> AsyncFnOnce<
-                        (I, &'a @mut Owned, &'a HandleData),
-                        CallOnceFuture: Send,
-                        Output = Out,
-                    > + Send
+                O: FnOnce(I, &@mut Owned, &HandleData) -> Out
+                    + Send
                     + 'static,
             > @AppFnOnce for Oneshot<I, M, O>
             {
@@ -1056,13 +1037,13 @@ impl AppFn {
                         source: self,
                         handle_fn: |this, handle| {
                             let fn_once: F = (this.mapping)(handle);
-                            let inner: @AppFnOnceImpl<_, _, _, _, _, _>
+                            let inner: @AppFnOnceImpl<_, _, _, _, _>
                                 = fn_once.into_inner().into();
                             (inner.handle_fn)(inner.source, handle)
                         },
                         owned_fn: |this, owned, handle| {
                             let fn_once: F = (this.mapping)(handle);
-                            let inner: @AppFnOnceImpl<_, _, _, _, _, _>
+                            let inner: @AppFnOnceImpl<_, _, _, _, _>
                                 = fn_once.into_inner().into();
                             (inner.owned_fn)(inner.source, owned, handle)
                         },
@@ -1116,10 +1097,10 @@ app_future_def! {
 
     impl<'a, F: @AppFnOnceInner<'a>> IntoFuture for @AppFutureImpl<'a, F> {
         type Output = F::Output;
-        type IntoFuture = futures::future::Either<F::HandleFut, F::OwnedFut>;
+        type IntoFuture = futures::future::Either<F::HandleFut, futures::future::Ready<F::Output>>;
 
         fn into_future(self) -> Self::IntoFuture {
-            let func: @AppFnOnceImpl<_, _, _, _, _, _> = self.func.into();
+            let func: @AppFnOnceImpl<_, _, _, _, _> = self.func.into();
             match & @mut self.app.variant {
                 Inner::Handle => {
                     let (method, future) = (func.handle_fn)(func.source, &self.app.handle);
@@ -1127,7 +1108,9 @@ app_future_def! {
                     futures::future::Either::Left(future)
                 }
                 Inner::Owned(owned) => {
-                    futures::future::Either::Right((func.owned_fn)(func.source, owned, &self.app.handle))
+                    futures::future::Either::Right(futures::future::ready(
+                        (func.owned_fn)(func.source, owned, &self.app.handle)
+                    ))
                 }
             }
         }
@@ -1164,11 +1147,11 @@ pub trait AppFnOnce: Send + Sized + 'static {
                     pd: PhantomData,
                     source: self,
                     handle_fn: |this, handle| {
-                        let this: AppFnOnceImpl<_, _, _, _, _, _> = this.0.into_inner().into();
+                        let this: AppFnOnceImpl<_, _, _, _, _> = this.0.into_inner().into();
                         (this.handle_fn)(this.source, handle)
                     },
                     owned_fn: move |this, owned, handle| {
-                        let this: AppFnOnceImpl<_, _, _, _, _, _> = this.0.into_inner().into();
+                        let this: AppFnOnceImpl<_, _, _, _, _> = this.0.into_inner().into();
                         (this.owned_fn)(this.source, owned, handle)
                     },
                 }
@@ -1253,37 +1236,42 @@ app_future_def! {
                 pd: PhantomData,
                 source: self,
                 handle_fn: move |this, handle| {
-                    let before_inner: @AppFnOnceImpl<_, _, _, _, _, _> =
+                    let before_inner: @AppFnOnceImpl<_, _, _, _, _> =
                         this.before.into_inner().into();
-                    let after_inner: @AppFnOnceImpl<_, _, _, _, _, _> =
+                    let after_inner: @AppFnOnceImpl<_, _, _, _, _> =
                         this.after.into_inner().into();
 
                     let (before_method, before_fut) =
                         (before_inner.handle_fn)(before_inner.source, handle);
                     let (after_method, after_fut) =
                         (after_inner.handle_fn)(after_inner.source, handle);
+
+                    let joined_fut = futures::FutureExt::then(
+                        before_fut,
+                        |before_val| futures::FutureExt::map(
+                            after_fut,
+                            |after_val| (before_val, after_val)
+                        )
+                    );
+
                     (
                         Method::Then {
                             before: Box::new(before_method),
                             after: Box::new(after_method),
                         },
-                        async move { (before_fut.await, after_fut.await) },
+                        joined_fut,
                     )
                 },
-                owned_fn: |this, owned, handle| async move {
-                    let @AppFnOnceImpl {
-                        pd,
-                        source,
-                        handle_fn,
-                        owned_fn,
-                    } = this.before.into_inner().into();
-                    let before = (owned_fn)(source, owned, handle).await;
-                    drop((handle_fn, pd));
+                owned_fn: |this, owned, handle| {
+                    let Then { before, after } = this;
 
-                    let after_inner: @AppFnOnceImpl<_, _, _, _, _, _> =
-                        this.after.into_inner().into();
-                    let after = (after_inner.owned_fn)(after_inner.source, owned, handle).await;
-                    (before, after)
+                    let before: @AppFnOnceImpl<_, _, _, _, _> = before.into_inner().into();
+                    let before_val = (before.owned_fn)(before.source, owned, handle);
+
+                    let after: @AppFnOnceImpl<_, _, _, _, _> = after.into_inner().into();
+                    let after_val = (after.owned_fn)(after.source, owned, handle);
+
+                    (before_val, after_val)
                 },
             }
         }
@@ -1309,17 +1297,17 @@ app_future_def! {
                 pd: PhantomData,
                 source: self,
                 handle_fn: move |this, handle| {
-                    let inner: @AppFnOnceImpl<_, _, _, _, _, _> = this.inner.into_inner().into();
+                    let inner: @AppFnOnceImpl<_, _, _, _, _> = this.inner.into_inner().into();
                     let (method, fut) = (inner.handle_fn)(inner.source, handle);
                     // WARN: doing this map manually (through an await or something)
-                    // causes to an ICE for some reason...
+                    // causes an ICE for some reason...
                     let fut = futures::future::FutureExt::map(fut, this.mapping);
                     (method, fut)
                 },
                 owned_fn: |this, owned, handle| {
-                    let inner: @AppFnOnceImpl<_, _, _, _, _, _> = this.inner.into_inner().into();
-                    let fut = (inner.owned_fn)(inner.source, owned, handle);
-                    futures::future::FutureExt::map(fut, this.mapping)
+                    let inner: @AppFnOnceImpl<_, _, _, _, _> = this.inner.into_inner().into();
+                    let val = (inner.owned_fn)(inner.source, owned, handle);
+                    (this.mapping)(val)
                 },
             }
         }
