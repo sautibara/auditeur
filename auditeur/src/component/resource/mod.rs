@@ -20,6 +20,7 @@ use crate::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use tracing::{Instrument, debug};
 
 pub mod listener;
 pub mod pure;
@@ -178,7 +179,14 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
         let runner = R::runner(resource, app).await?;
         // NOTE: This is the handle that keeps the app alive as long as the runner is running.
         let mut handle = app.handle().await;
-        let handle = tokio::task::spawn(async move { runner.run(&mut handle).await });
+        let handle = tokio::task::spawn(
+            async move {
+                debug!("starting");
+                runner.run(&mut handle).await;
+                debug!("exited");
+            }
+            .instrument(info_span!("run")),
+        );
 
         Ok(ResourcesLoaded {
             handle,

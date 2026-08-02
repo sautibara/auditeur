@@ -146,6 +146,7 @@ use std::ops::{Deref, DerefMut};
 
 use futures::FutureExt;
 use tokio::sync::{broadcast, oneshot};
+use tracing::debug;
 
 use crate::app::component::{AppComponentsMut, AppFnComponentsMut};
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
@@ -392,6 +393,8 @@ enum Method {
         before: Box<Self>,
         after: Box<Self>,
     },
+
+    CheckForStragglers,
 }
 
 impl Method {
@@ -419,6 +422,11 @@ impl Method {
                 } => {
                     let listener = app.get_event_listener_as(dependent, ty).await;
                     sender.send(listener);
+                }
+                Self::CheckForStragglers => {
+                    let map = app.map().get().await;
+                    warn!("app is taking a long time to exit...");
+                    debug!("current state of map: {map:#?}");
                 }
             }
         }

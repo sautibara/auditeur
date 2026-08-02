@@ -2,6 +2,7 @@ use std::fmt::Debug;
 
 use hashbrown::HashMap;
 use tokio::sync::oneshot;
+use tracing::{Instrument, debug};
 
 use crate::{
     any,
@@ -83,9 +84,11 @@ pub struct DynComponentImpl<L: Loader> {
 }
 
 impl<L: Loader> DynComponentImpl<L> {
+    #[instrument(name = "get", skip_all, fields(id = self.component_id_dyn().to_string()))]
     pub async fn get_loaded(&mut self, app: &mut App) -> Result<&mut L::Loaded, Error> {
         if self.loaded.is_none() {
-            let loaded = self.loader.load(app).await?;
+            debug!("loading...");
+            let loaded = self.loader.load(app).instrument(info_span!("load")).await?;
             self.loaded = Some(loaded);
         }
 
@@ -284,6 +287,7 @@ impl<'a> AppComponentsMut<'a> {
     ///
     /// - Visible only in [`App::errors`] - not returned.
     #[allow(clippy::should_implement_trait)]
+    #[instrument(skip(self))]
     pub fn add(self, children: Children) -> impl AppMutFuture<'a, Output = ()> {
         AppFn.components_mut().add(children).call(self.app)
     }

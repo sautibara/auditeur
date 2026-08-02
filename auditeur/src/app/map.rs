@@ -4,10 +4,12 @@ use std::{
     hash::Hash,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
     sync::Arc,
+    time::Duration,
 };
 
 use hashbrown::HashMap;
 use tokio::sync::{broadcast, oneshot};
+use tracing::debug;
 
 use crate::{
     app::{
@@ -661,8 +663,17 @@ impl Map {
             // component removal propagates to is children and also allows it to be removed
             ListenerId::Component {
                 change: ComponentStateChange::Remove,
-                ..
+                id,
             } => {
+                if new_request && **id == App::component_id() {
+                    debug!("exiting...");
+                    let sender = channels.method_sender.clone();
+                    tokio::task::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let _ = sender.send_async(super::Method::CheckForStragglers).await;
+                    });
+                }
+
                 self.release_stick(listener, channels);
                 propagate(self);
             }

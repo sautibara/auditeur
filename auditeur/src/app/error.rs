@@ -44,6 +44,7 @@ impl Owned {
 
     /// Add an arc error to the shared error list and notify listeners.
     pub(super) fn add_shared_error(&mut self, error: Arc<Error>) {
+        error!("{error}");
         self.errors.errors.push_back(error.clone());
         let _ = self.event_sender.send(Event::Error(error));
     }
