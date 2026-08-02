@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![feature(unboxed_closures, async_fn_traits)]
 #![recursion_limit = "512"]
 
@@ -91,33 +90,3 @@ pub mod prelude {
 
 pub use app::App;
 pub use app::error::Error;
-
-/// A utility enum for when you have two different values that you may want to return.
-///
-/// This is best used for when the return type is opaque, such as `impl Iterator`.
-enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<L, R, I> Iterator for Either<L, R>
-where
-    L: Iterator<Item = I>,
-    R: Iterator<Item = I>,
-{
-    type Item = I;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Left(left) => left.next(),
-            Self::Right(right) => right.next(),
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            Self::Left(left) => left.size_hint(),
-            Self::Right(right) => right.size_hint(),
-        }
-    }
-}

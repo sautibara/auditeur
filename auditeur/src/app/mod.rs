@@ -175,8 +175,6 @@ use crate::{
     },
 };
 
-const EXPECT_RECV: &str = "handle shouldn't try to access app after it closes";
-
 pub mod component;
 pub mod error;
 pub mod event;
@@ -223,11 +221,6 @@ struct Owned {
 
     event_sender: broadcast::Sender<Event>,
     event_sender_dependency: Option<Dependency<()>>,
-}
-
-struct OwnedHandle<'a> {
-    owned: &'a mut Owned,
-    handle: &'a HandleData,
 }
 
 impl App {
@@ -931,6 +924,7 @@ impl AppFn {
     }
 }
 
+#[allow(dead_code)] // some immutable functions aren't used
 impl AppFn {
     app_future_def! {
         const fn @(spawn, spawn_mut)<I: Send + 'static>(

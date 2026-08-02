@@ -108,20 +108,6 @@ impl ListenerId {
             change: RegistryStateChange::Remove,
         }
     }
-
-    const fn sticky(&self) -> bool {
-        matches!(
-            self,
-            Self::Dependency { .. }
-                | Self::Component {
-                    change: ComponentStateChange::Remove,
-                    ..
-                }
-                | Self::OnAdd(_)
-                | Self::OnLoad(_)
-                | Self::OnUnload(_)
-        )
-    }
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
@@ -1516,12 +1502,6 @@ impl<T: Send> Dependency<T> {
         T: Clone,
     {
         Self::clone_with_owned(this, owned, sender, |val, _| val.clone())
-    }
-
-    pub(crate) async fn consume(this: Self, func: impl AsyncFnOnce(T)) {
-        let Self { value, handle } = this;
-        func(value).await;
-        drop(handle);
     }
 
     pub(crate) fn release_unsafe(this: &mut Self) {

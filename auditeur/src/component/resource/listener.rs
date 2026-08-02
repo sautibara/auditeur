@@ -17,7 +17,6 @@ use crate::{
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 use tokio::select;
-use tracing::debug;
 
 #[doc = include_str!("listener_docs.md")]
 pub trait Listener: Resource {

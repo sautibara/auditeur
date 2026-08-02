@@ -11,8 +11,6 @@ use crate::{
 };
 use async_trait::async_trait;
 
-type RegistryId = &'static NamespacedIdRef;
-
 /// A [`Registry`] for all registries added to an [`App`].
 #[identified("auditeur:registry")]
 pub struct Registries;

@@ -74,8 +74,6 @@ pub trait DynComponent: IdentifiedComponent + Send {
     async fn on_add(&mut self, app: &mut App) -> Result<(), Error>;
     /// Runs code intended for when the component is loaded in the app.
     async fn on_load(&mut self, app: &mut App) -> Result<(), Error>;
-    /// Returns `true` iff the component is currently loaded
-    fn is_loaded(&self) -> bool;
 }
 
 pub struct DynComponentImpl<L: Loader> {
@@ -128,10 +126,6 @@ impl<L: Loader> DynComponent for DynComponentImpl<L> {
         let callback = self.loader.on_load();
         callback.call(self, app).await
     }
-
-    fn is_loaded(&self) -> bool {
-        self.loaded.is_some()
-    }
 }
 
 #[derive(Default, Debug)]
@@ -167,27 +161,6 @@ impl Registrar {
             previous.is_none(),
             "a name collision should never happen in the registrar, as the map is checked first"
         );
-    }
-
-    /// Removes a component from this registrar.
-    pub(super) fn remove_unchecked(
-        &mut self,
-        id: &ComponentId,
-        callback: impl FnOnce() + Send + 'static,
-    ) {
-        if let Some(register) = self.components.remove(id) {
-            tokio::task::spawn(async {
-                let component = (register.component.await)
-                    .expect("a component borrowed from the registry should never be dropped");
-                assert!(!component.object.is_loaded());
-
-                drop(component);
-
-                callback();
-            });
-        } else {
-            callback();
-        }
     }
 
     /// Takes a component out of this registrar in order to modify it.
