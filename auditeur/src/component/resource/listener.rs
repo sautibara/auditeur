@@ -17,6 +17,7 @@ use crate::{
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 use tokio::select;
+use tracing::debug;
 
 #[doc = include_str!("listener_docs.md")]
 pub trait Listener: Resource {
@@ -63,21 +64,19 @@ pub trait Listen<M: ListenMessage>: Listener {
     fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-pub struct ListenComponent<L: Listen<M>, M: ListenMessage> {
+pub struct ListenComponent<M: ListenMessage> {
     receiver: listen::Listener<M>,
-    listener: PhantomData<L>,
 }
 
-impl<L: Listen<M>, M: ListenMessage> Input for ListenComponent<L, M> {
+impl<M: ListenMessage> Input for ListenComponent<M> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         Ok(Self {
             receiver: app.listen_mut().listener().await?,
-            listener: PhantomData,
         })
     }
 }
 
-impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
+impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<M> {
     type Value = M;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
@@ -98,16 +97,14 @@ impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<L, M> {
     }
 }
 
-pub struct TakeComponent<R: Take<M>, M: TakeMessage> {
+pub struct TakeComponent<M: TakeMessage> {
     taker: Taker<M>,
-    pd: PhantomData<R>,
 }
 
-impl<R: Take<M>, M: TakeMessage> Input for TakeComponent<R, M> {
+impl<M: TakeMessage> Input for TakeComponent<M> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         Ok(Self {
             taker: app.take_mut().taker().await?,
-            pd: PhantomData,
         })
     }
 }
@@ -116,7 +113,7 @@ pub trait Take<M: TakeMessage>: Listener {
     fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-impl<R: Take<M>, M: TakeMessage> Component<R> for TakeComponent<R, M> {
+impl<R: Take<M>, M: TakeMessage> Component<R> for TakeComponent<M> {
     type Value = M;
 
     async fn wait(&mut self, _: &R) -> anyhow::Result<ControlFlow<(), Self::Value>> {
@@ -268,7 +265,7 @@ impl<R: Respond> BoxedTransactionFnOnce<R> {
     }
 }
 
-pub type RespondComponent<L> = TakeComponent<L, <L as Respond>::Query>;
+pub type RespondComponent<L> = TakeComponent<<L as Respond>::Query>;
 
 #[derive(Input)]
 pub struct Unbiased;

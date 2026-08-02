@@ -98,6 +98,12 @@ impl<'a> Config<'a> {
                 async fn exit(&mut self) -> #auditeur::anyhow::Result<()> {
                     #this::exit(self).await
                 }
+
+                fn children(children: #auditeur::children::Children)
+                    -> #auditeur::children::Children
+                {
+                    #this::children(children)
+                }
             }
         });
 
@@ -340,7 +346,7 @@ fn default_component(component: &str, ty: &syn::Type) -> proc_macro2::TokenStrea
     let component = Ident::new(component, ty.span());
 
     let auditeur = &*AUDITEUR;
-    quote! { #auditeur::component::resource::listener::#component<Self, #ty> }
+    quote! { #auditeur::component::resource::listener::#component<#ty> }
 }
 
 fn simple_component(component: &str) -> proc_macro2::TokenStream {
