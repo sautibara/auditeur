@@ -150,6 +150,7 @@ use tracing::debug;
 
 use crate::app::component::{AppComponentsMut, AppFnComponentsMut};
 use crate::app::error::{AppFnErrors, AppFnErrorsMut};
+use crate::app::event::FlushRequest;
 use crate::app::map::{
     AppFnMap, Channels, DependencyHandle, LoadedComponentId, LoadedDependencyId, RequestSet,
 };
@@ -388,6 +389,7 @@ enum Method {
     },
 
     CheckForStragglers,
+    Flush(ComponentId),
 }
 
 impl Method {
@@ -420,6 +422,22 @@ impl Method {
                     let map = app.map().get().await;
                     warn!("app is taking a long time to exit...");
                     debug!("current state of map: {map:#?}");
+                }
+                Self::Flush(id) => {
+                    AppFn::spawn_mut(
+                        id,
+                        |id, _| Self::Flush(id),
+                        |id, owned, _| {
+                            owned.registrar.remove_unchecked(&id);
+
+                            let id = id.into();
+                            let event_sender = owned.event_sender.clone();
+                            let request = FlushRequest::new(id, event_sender);
+                            let _ = owned.event_sender.send(Event::Flush(request));
+                        },
+                    )
+                    .call(app)
+                    .await;
                 }
             }
         }

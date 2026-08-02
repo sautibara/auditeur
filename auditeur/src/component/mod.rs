@@ -138,6 +138,21 @@ impl Ord for ComponentIdPath {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HeapComponentId {
+    pub registry: NamespacedId,
+    pub component: NamespacedId,
+}
+
+impl From<ComponentId> for HeapComponentId {
+    fn from(id: ComponentId) -> Self {
+        Self {
+            registry: id.registry.to_owned(),
+            component: id.component.deref().to_owned(),
+        }
+    }
+}
+
 /// A type whose values have associated [`NamespacedId`]s that uniquely represent them.
 pub trait Identified {
     fn id_dyn(&self) -> &NamespacedIdRef;

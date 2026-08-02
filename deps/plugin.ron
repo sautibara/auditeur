@@ -3,7 +3,7 @@
     (
       path: "rubicon/rubicon",
       plugin: (
-        name: "rubicon",
+        name: "rubicon:rubicon",
       ),
       export: (
         builtin: true,
@@ -12,7 +12,7 @@
     (
       path: "tokio_rubicon/tokio",
       plugin: (
-        name: "tokio",
+        name: "rubicon:tokio",
       ),
       export: (
         builtin: true,
@@ -21,7 +21,7 @@
     (
       path: "parking_lot_rubicon",
       plugin: (
-        name: "parking_lot",
+        name: "rubicon:parking_lot",
       ),
       export: (
         builtin: true,
@@ -30,7 +30,7 @@
     (
       path: "parking_lot_rubicon/core",
       plugin: (
-        name: "parking_lot_core",
+        name: "rubicon:parking_lot_core",
       ),
       export: (
         builtin: true,
@@ -39,7 +39,7 @@
     (
       path: "parking_lot_rubicon/lock_api",
       plugin: (
-        name: "lock_api",
+        name: "rubicon:lock_api",
       ),
       export: (
         builtin: true,
@@ -48,7 +48,7 @@
     (
       path: "tracing_rubicon/tracing",
       plugin: (
-        name: "tracing",
+        name: "rubicon:tracing",
       ),
       export: (
         builtin: true,
@@ -57,7 +57,7 @@
     (
       path: "tracing_rubicon/tracing-subscriber",
       plugin: (
-        name: "tracing-subscriber",
+        name: "rubicon:tracing-subscriber",
       ),
       export: (
         builtin: true,
@@ -66,7 +66,7 @@
     (
       path: "async-io_rubicon",
       plugin: (
-        name: "async-io",
+        name: "rubicon:async-io",
       ),
       export: (
         builtin: true,
@@ -75,7 +75,7 @@
     (
       path: "crossbeam_rubicon",
       plugin: (
-        name: "crossbeam",
+        name: "rubicon:crossbeam",
       ),
       export: (
         builtin: true,
@@ -84,7 +84,7 @@
     (
       path: "crossbeam_rubicon/crossbeam-channel",
       plugin: (
-        name: "crossbeam-channel",
+        name: "rubicon:crossbeam-channel",
       ),
       export: (
         builtin: true,
@@ -93,7 +93,7 @@
     (
       path: "crossbeam_rubicon/crossbeam-deque",
       plugin: (
-        name: "crossbeam-deque",
+        name: "rubicon:crossbeam-deque",
       ),
       export: (
         builtin: true,
@@ -102,7 +102,7 @@
     (
       path: "crossbeam_rubicon/crossbeam-epoch",
       plugin: (
-        name: "crossbeam-epoch",
+        name: "rubicon:crossbeam-epoch",
       ),
       export: (
         builtin: true,
@@ -111,7 +111,7 @@
     (
       path: "crossbeam_rubicon/crossbeam-queue",
       plugin: (
-        name: "crossbeam-queue",
+        name: "rubicon:crossbeam-queue",
       ),
       export: (
         builtin: true,
@@ -120,7 +120,7 @@
     (
       path: "crossbeam_rubicon/crossbeam-utils",
       plugin: (
-        name: "crossbeam-utils",
+        name: "rubicon:crossbeam-utils",
       ),
       export: (
         builtin: true,
@@ -129,7 +129,7 @@
     (
       path: "sharded-slab_rubicon",
       plugin: (
-        name: "sharded-slab",
+        name: "rubicon:sharded-slab",
       ),
       export: (
         builtin: true,
@@ -138,7 +138,7 @@
     (
       path: "blocking_rubicon",
       plugin: (
-        name: "blocking",
+        name: "rubicon:blocking",
       ),
       export: (
         builtin: true,
@@ -147,7 +147,7 @@
     (
       path: "futures-rs_rubicon/futures",
       plugin: (
-        name: "futures",
+        name: "rubicon:futures",
       ),
       export: (
         builtin: true,
@@ -156,7 +156,7 @@
     (
       path: "futures-rs_rubicon/futures-channel",
       plugin: (
-        name: "futures-channel",
+        name: "rubicon:futures-channel",
       ),
       export: (
         builtin: true,
@@ -165,7 +165,7 @@
     (
       path: "futures-rs_rubicon/futures-core",
       plugin: (
-        name: "futures-core",
+        name: "rubicon:futures-core",
       ),
       export: (
         builtin: true,
@@ -174,7 +174,7 @@
     (
       path: "futures-rs_rubicon/futures-executor",
       plugin: (
-        name: "futures-executor",
+        name: "rubicon:futures-executor",
       ),
       export: (
         builtin: true,
@@ -183,7 +183,7 @@
     (
       path: "futures-rs_rubicon/futures-io",
       plugin: (
-        name: "futures-io",
+        name: "rubicon:futures-io",
       ),
       export: (
         builtin: true,
@@ -192,7 +192,7 @@
     (
       path: "futures-rs_rubicon/futures-macro",
       plugin: (
-        name: "futures-macro",
+        name: "rubicon:futures-macro",
       ),
       export: (
         builtin: true,
@@ -201,7 +201,7 @@
     (
       path: "futures-rs_rubicon/futures-sink",
       plugin: (
-        name: "futures-sink",
+        name: "rubicon:futures-sink",
       ),
       export: (
         builtin: true,
@@ -210,7 +210,7 @@
     (
       path: "futures-rs_rubicon/futures-task",
       plugin: (
-        name: "futures-task",
+        name: "rubicon:futures-task",
       ),
       export: (
         builtin: true,
@@ -219,7 +219,7 @@
     (
       path: "futures-rs_rubicon/futures-util",
       plugin: (
-        name: "futures-util",
+        name: "rubicon:futures-util",
       ),
       export: (
         builtin: true,

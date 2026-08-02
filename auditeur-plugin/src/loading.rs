@@ -1,7 +1,6 @@
 use std::{ffi::OsStr, path::PathBuf};
 
 use auditeur::component::ComponentIdPath;
-use stabby::libloading::StabbyLibrary;
 use thiserror::Error;
 
 use crate::{LibraryHandle, Plugin, PluginComponent, PluginContext};
@@ -36,14 +35,12 @@ impl PluginComponent {
             path: PathBuf::from(path),
         };
         let handle = LibraryHandle::from_library_info(info);
-        let main: PluginFn =
-            *handle
-                .library()
-                .get_canaried::<PluginFn>(b"init")
-                .map_err(|err| Error::CantLoadInitFunction {
-                    path: path.to_string_lossy().to_string(),
-                    additional_info: err.to_string(),
-                })?;
+        let main: PluginFn = *handle.library().get::<PluginFn>(b"init").map_err(|err| {
+            Error::CantLoadInitFunction {
+                path: path.to_string_lossy().to_string(),
+                additional_info: err.to_string(),
+            }
+        })?;
 
         let context = PluginContext::new(handle);
         let plugin = main(context.clone());

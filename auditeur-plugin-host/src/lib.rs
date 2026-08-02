@@ -103,6 +103,12 @@ impl Borrow<str> for PluginName {
     }
 }
 
+impl Borrow<NamespacedIdRef> for PluginName {
+    fn borrow(&self) -> &NamespacedIdRef {
+        &self.0
+    }
+}
+
 impl Display for PluginName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

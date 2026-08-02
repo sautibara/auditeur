@@ -1,4 +1,7 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
+};
 
 use auditeur_plugin::{
     Plugins,
@@ -19,6 +22,8 @@ use crate::PluginName;
 pub struct Loader {
     loaded: HashSet<PluginName>,
     to_reload: HashSet<PluginName>,
+
+    libraries: HashMap<PluginName, VecDeque<LibraryHandle>>,
 }
 
 impl Loader {
@@ -98,6 +103,12 @@ impl Loader {
                     return children;
                 };
 
+                let library = plugin.context().library_handle();
+                self.libraries
+                    .entry(id.clone())
+                    .or_default()
+                    .push_back(library);
+
                 loaded.insert(id.clone());
                 children.with::<auditeur_plugin::PluginComponent>(plugin)
             });
@@ -136,5 +147,31 @@ impl Loader {
 
     pub fn to_reload(&self, name: &PluginName) -> bool {
         self.to_reload.contains(name)
+    }
+
+    pub fn on(&mut self, message: Event) {
+        if let Event::Flushed { id } = message
+            && id.registry == Plugins::id()
+            && let Some(libraries) = self.libraries.get_mut(&*id.component)
+        {
+            warn!(
+                "plugin '{}' was flushed, releasing our library",
+                id.component
+            );
+            libraries.pop_front();
+        }
+    }
+}
+
+impl Drop for Loader {
+    fn drop(&mut self) {
+        if self.libraries.values().any(|list| !list.is_empty()) {
+            warn!("arena dropped while libraries were loaded");
+        }
+
+        for library in self.libraries.drain().flat_map(|(_, libraries)| libraries) {
+            warn!("leaking {library}");
+            std::mem::forget(library);
+        }
     }
 }

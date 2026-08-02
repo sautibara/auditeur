@@ -31,7 +31,7 @@ fn update_submodules_of(repo: &Repository, host: Host) -> Result<(), git2::Error
     ) -> Result<(), git2::Error> {
         for mut subm in repo.submodules()? {
             // use the url of the submodule so we can input an ssh key if necessary
-            let mut opts = submodule_update_options(host, subm.url().unwrap_or_default());
+            let mut opts = submodule_update_options(host, subm.url()?.unwrap_or_default());
             subm.update(true, Some(&mut opts))?;
             list.push(subm.open()?);
         }

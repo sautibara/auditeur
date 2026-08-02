@@ -15,12 +15,11 @@ auditeur-plugin-macros = { version = "0.1.0", path = "../auditeur-plugin-macros"
 stabby-macros = { version = "6.2.2" }
 # for loading
 thiserror = { version = "1.0.58", optional = true }
-stabby = { version = "72.1.1", features = ["libloading"], optional = true }
 libloading = "0.8.3"
 tracing = "0.1"
 
 [features]
-loading = ["dep:thiserror", "dep:stabby"]
+loading = ["dep:thiserror"]
 
 [lints.clippy]
 enum_glob_use = "warn"

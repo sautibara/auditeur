@@ -8,7 +8,7 @@ use auditeur::{
     Error,
 };
 use libloading::Library;
-use std::{path::PathBuf, sync::Arc};
+use std::{fmt::Display, path::PathBuf, sync::Arc};
 use tracing::warn;
 
 pub use auditeur;
@@ -95,6 +95,12 @@ impl LibraryHandle {
     }
 }
 
+impl Display for LibraryHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[cfg_attr(not(feature = "loading"), allow(dead_code))]
 struct LibraryInfo {
     library: Library,
@@ -103,7 +109,13 @@ struct LibraryInfo {
 
 impl Drop for LibraryInfo {
     fn drop(&mut self) {
-        warn!("unloading library at '{}'...", self.path.display());
+        warn!("unloading {self}...");
+    }
+}
+
+impl Display for LibraryInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "library at '{}'", self.path.display())
     }
 }
 
@@ -134,6 +146,13 @@ pub struct PluginComponent {
     id: ComponentIdPath,
     plugin: Plugin,
     context: PluginContext,
+}
+
+impl PluginComponent {
+    #[must_use]
+    pub const fn context(&self) -> &PluginContext {
+        &self.context
+    }
 }
 
 impl Register<PluginComponent> for Plugins {

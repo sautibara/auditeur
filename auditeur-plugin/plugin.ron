@@ -1,5 +1,5 @@
 (
   plugin: (
-    name: "auditeur-plugin",
+    name: "auditeur:plugin",
   ),
 )

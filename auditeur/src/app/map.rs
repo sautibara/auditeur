@@ -584,6 +584,9 @@ impl Map {
                 match change {
                     ComponentStateChange::Remove => {
                         self.components.remove(id);
+                        let _ = channels
+                            .method_sender
+                            .send(super::Method::Flush(id.clone().into_id()));
 
                         // Check if we're removing the app, and if so, exit.
                         if **id == App::component_id() {

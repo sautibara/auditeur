@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
+
+use tokio::sync::broadcast;
 
 use crate::{
     app::map::{DependencyId, ListenerId, Request},
+    component::HeapComponentId,
     prelude::*,
 };
 
@@ -39,6 +42,11 @@ pub enum Event {
     RequestSuccess { request: Request },
     /// The app has exited.
     Exit,
+    /// The app is waiting for all event listeners to finish using an id.
+    #[doc(hidden)]
+    Flush(FlushRequest),
+    /// The app has fully finished using the id `id`, and it can be unloaded.
+    Flushed { id: HeapComponentId },
 }
 
 /// The state of a component in the [`App`].
@@ -64,4 +72,34 @@ pub enum ComponentLifecycle {
 pub enum DependencyLifecycle {
     Add,
     Remove,
+}
+
+#[doc(hidden)]
+#[derive(Clone)]
+#[expect(dead_code)]
+pub struct FlushRequest(Arc<FlushRequestInner>);
+
+impl Debug for FlushRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlushRequest").finish()
+    }
+}
+
+impl FlushRequest {
+    pub(crate) fn new(id: HeapComponentId, event_sender: broadcast::Sender<Event>) -> Self {
+        Self(Arc::new(FlushRequestInner { id, event_sender }))
+    }
+}
+
+struct FlushRequestInner {
+    id: HeapComponentId,
+    event_sender: broadcast::Sender<Event>,
+}
+
+impl Drop for FlushRequestInner {
+    fn drop(&mut self) {
+        let _ = self.event_sender.send(Event::Flushed {
+            id: self.id.clone(),
+        });
+    }
 }

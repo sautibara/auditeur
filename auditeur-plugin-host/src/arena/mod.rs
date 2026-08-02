@@ -5,7 +5,7 @@ use std::{
 
 use auditeur_plugin::{
     Plugins,
-    auditeur::{self, component::resource::listener::Component},
+    auditeur::{self, app::Event, component::resource::listener::Component},
 };
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -159,7 +159,7 @@ enum Action {
 
 #[create(external_input(O))]
 #[resource("plugin_host:arena")]
-#[listener(biased, options, respond, components(MainComponent))]
+#[listener(biased, options, respond, components(MainComponent), listen(Event))]
 #[derive(Serialize)]
 pub struct Arena<O: Opts> {
     source_list: SourceList,
@@ -744,5 +744,12 @@ impl<O: Opts> Component<Arena<O>> for MainComponent {
         }
 
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+impl<O: Opts> Listen<Event> for Arena<O> {
+    async fn on(&mut self, message: Event) -> anyhow::Result<()> {
+        self.loader.on(message);
+        Ok(())
     }
 }

@@ -174,6 +174,10 @@ impl Registrar {
 
         Some(borrowed)
     }
+
+    pub(super) fn remove_unchecked(&mut self, id: &ComponentId) {
+        self.components.remove(id);
+    }
 }
 
 #[must_use = "borrowed component shouldn't ever be dropped"]
