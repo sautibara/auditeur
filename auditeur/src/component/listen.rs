@@ -1,6 +1,90 @@
+//! [`Component`](super::Component)s that provide [broadcast](mod@broadcast)-style message streams
+//! to the app.
+//!
+//! # Examples
+//!
+//! ```
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Error> {
+//! #[listen_message("test:favorite_number")]
+//! #[derive(Clone, PartialEq, Eq, Debug)]
+//! struct FavoriteNumber(usize);
+//!
+//! let mut app = App::builder().with::<FavoriteNumber>(()).spawn();
+//!
+//! // Shouters are the sending halves of listen channels,
+//! let shouter = app.listen_mut().shouter::<FavoriteNumber>().await?;
+//!
+//! // and they could send messages without blocking.
+//! shouter.shout(FavoriteNumber(1));
+//!
+//! // Listeners are the receiving halves of the channel,
+//! // and they can receive messages by waiting with a mutable reference.
+//! let mut listener_1 = app.listen_mut().listener::<FavoriteNumber>().await?;
+//! let mut listener_2 = app.listen_mut().listener::<FavoriteNumber>().await?;
+//!
+//! // They can only receive messages sent after they're obtained,
+//! // so they won't receive the `FavoriteNumber(1)` message.
+//! assert!(listener_1.is_empty() && listener_2.is_empty());
+//!
+//! // But now that they're listening, the shouter only has to send the message once.
+//! shouter.shout(FavoriteNumber(2));
+//!
+//! // And every single listener gets a clone of the message.
+//! assert_eq!(listener_1.listen().await, FavoriteNumber(2));
+//! assert_eq!(listener_2.listen().await, FavoriteNumber(2));
+//!
+//! drop((listener_1, listener_2, shouter));
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+//!
+//! ```
+//! use auditeur::app::event::ComponentLifecycle;
+//! use auditeur::component::bundle::Bundles;
+//!
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Error> {
+//! let mut app = App::builder().spawn();
+//!
+//! // App events are a commonly used listen message sent by the app.
+//! let mut listener = app.listen_mut().listener::<auditeur::app::Event>().await?;
+//!
+//! // They can be used to track the lifecycles of components and dependencies,
+//! // errors occurring in the app, and a few more rare use-cases.
+//!
+//! // Here, we add a new, empty bundle to the app.
+//! app.components_mut()
+//!     .add(Children::new().with::<Bundle>(new_bundle!("test:bundle")))
+//!     .await;
+//!
+//! loop {
+//!     // Then, we start listening to app events.
+//!     let event = listener.listen().await;
+//!
+//!     // And exit once we get the message for when the bundle was added.
+//!     if let auditeur::app::Event::Component { id, lifecycle } = event
+//!         && lifecycle == ComponentLifecycle::Add
+//!         && id == ComponentId::inn::<Bundles>(ident!("test:bundle"))
+//!     {
+//!         break;
+//!     }
+//! }
+//!
+//! drop(listener);
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+
 use std::marker::PhantomData;
 
-use tokio::sync::broadcast;
+use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::{
     any,
@@ -13,20 +97,33 @@ use crate::{
     prelude::*,
 };
 
+/// [`Component`](super::Component)s that provide [broadcast](mod@broadcast)-style message streams
+/// to the app.
+///
+/// This can be automatically implemented using the
+/// [`#[listen_message]`](macro@crate::listen_message) macro.
+///
+/// See the [module documentation](self) for more information.
 pub trait ListenMessage:
     IdentifiedType + Clone + any::AnyConst + Send + Sync + Sized + 'static
 {
 }
 
+/// The sending half of a [`ListenMessage`] channel.
 pub struct Shouter<M: ListenMessage> {
     sender: Dependency<broadcast::Sender<M>>,
 }
 
 impl<M: ListenMessage> Shouter<M> {
+    /// Sends a new message to the channel.
+    ///
+    /// This message will be received by all [`Listener`]s of the channel that have already been
+    /// created.
     pub fn shout(&self, message: M) {
         let _ = self.sender.send(message);
     }
 
+    /// Obtains a [`Listener`] of the same channel, tracking the dependency in `app`.
     pub async fn subscribe(&self, app: &mut App) -> Listener<M> {
         Listener {
             receiver: Dependency::clone_with(&self.sender, app, async |inner, _| inner.subscribe())
@@ -49,15 +146,27 @@ impl<M: ListenMessage> Input for Shouter<M> {
     }
 }
 
+/// The receiving half of a [`ListenMessage`] channel.
 pub struct Listener<M: ListenMessage> {
     pub(crate) receiver: Dependency<broadcast::Receiver<M>>,
 }
 
 impl<M: ListenMessage> Listener<M> {
-    pub async fn listen(&mut self) -> Option<M> {
-        self.receiver.recv().await.ok()
+    /// Waits until a message is sent in the channel and returns it.
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn listen(&mut self) -> M {
+        loop {
+            match self.receiver.recv().await {
+                Ok(val) => return val,
+                Err(RecvError::Closed) => unreachable!(
+                    "channel shouldn't hang up because the loaded always keeps a sender alive"
+                ),
+                Err(RecvError::Lagged(_)) => (),
+            }
+        }
     }
 
+    /// Returns `true` if there are no messages ready in the channel for this listener.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.receiver.is_empty()
@@ -65,6 +174,11 @@ impl<M: ListenMessage> Listener<M> {
 }
 
 impl Listener<Event> {
+    /// Releases this listener's dependency on the [`Event`] message stream.
+    ///
+    /// This is safe because the [`Event`] stream is created by the app and thus its unloading
+    /// doesn't matter. This may be necessary if you want to listen to events while also waiting
+    /// for the app to exit, as keeping the dependency alive would prevent the app from exiting.
     pub fn release_dependency(&mut self) {
         Dependency::release_unsafe(&mut self.receiver);
     }
@@ -87,6 +201,9 @@ impl<M: ListenMessage> Input for Listener<M> {
     }
 }
 
+/// The [`Registry`] for [`ListenMessage`]s.
+///
+/// This is automatically added to every [`App`].
 #[identified("auditeur:listen_messages")]
 pub struct ListenMessages;
 
@@ -153,6 +270,7 @@ impl<M: ListenMessage> IdentifiedComponent for PersistentChannelLoader<M> {
 }
 
 #[derive(Any)]
+#[doc(hidden)]
 pub struct ListenLoaded {
     sender: Box<dyn any::Any + Send + Sync>,
 }
@@ -194,6 +312,7 @@ impl ListenLoaded {
 
 impl Loaded for ListenLoaded {}
 
+/// Methods for [`App`] to manage [`ListenMessage`]s.
 pub struct AppListenMut<'a> {
     app: &'a mut App,
 }
@@ -203,9 +322,11 @@ impl<'a> AppListenMut<'a> {
         Self { app }
     }
 
+    /// Obtains a new [`Listener`] from the app.
+    ///
     /// # Errors
     ///
-    /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
     pub async fn listener<M: ListenMessage>(self) -> Result<Listener<M>, Error> {
         self.app
             .components_mut()
@@ -216,9 +337,11 @@ impl<'a> AppListenMut<'a> {
             .map(|receiver| Listener { receiver })
     }
 
+    /// Obtains a new [`Shouter`] from the app.
+    ///
     /// # Errors
     ///
-    /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
     pub async fn shouter<M: ListenMessage>(self) -> Result<Shouter<M>, Error> {
         self.app
             .components_mut()

@@ -228,7 +228,7 @@ impl Method {
 }
 
 impl AppFnComponentsMut {
-    /// See [`AppRegistriesMut::add`].
+    /// See [`AppComponentsMut::add`].
     #[allow(clippy::should_implement_trait)]
     pub const fn add(self, mut children: Children) -> impl AppMutFnOnce<Output = ()> {
         AppFn::using_handle_mut(move |handle| {
@@ -243,6 +243,7 @@ impl AppFnComponentsMut {
         })
     }
 
+    /// See [`AppComponentsMut::load_lazy`].
     pub const fn load_lazy(
         self,
         id: ComponentId,
@@ -277,7 +278,7 @@ impl<'a> AppComponentsMut<'a> {
     ///
     /// - [`Error::DependencyNotFound`] if the component with the id `id` doesn't exist.
     /// - [`Error::DowncastFailed`] if a [`crate::Any`] downcast fails.
-    /// - Propagated from [`R::Loader::load`].
+    /// - Propagated from [`R::Loader::load`](Loader::load).
     /// - Propagated from `func`.
     pub async fn get<R: Registry, T>(
         self,
@@ -309,7 +310,7 @@ impl<'a> AppComponentsMut<'a> {
     /// # Errors
     ///
     /// - [`Error::DependencyNotFound`] if the component with the id `id` doesn't exist.
-    /// - Propagated from [`R::Loader::load`].
+    /// - Propagated from [`R::Loader::load`](Loader::load).
     pub async fn load(self, id: ComponentId) -> Result<Dependency<()>, Error> {
         self.get_inner(id, async |_, _| Ok(())).await
     }
@@ -358,6 +359,23 @@ impl<'a> AppComponentsMut<'a> {
         Ok(Dependency { value, handle })
     }
 
+    /// Loads a component lazily, ensuring that (if it loads) it will stay loaded as long as the
+    /// returned dependency is kept alive. This will not wait for the component to load, and it
+    /// is not guaranteed that the component will eventually load.
+    ///
+    /// However, this method is generally faster than [`load`](Self::load), and it returns an
+    /// [`AppMutFuture`], so it can be combined with other app futures. It can also be used to
+    /// prevent dependency loops. For example, this is used in [connections](macro@crate::respond)
+    /// to keep the resource loaded without actually loading it and causing a dependency loop.
+    ///
+    /// If this is called when another component has already loaded the dependency with a
+    /// [`get`](Self::get) or [`load`](Self::load), this will keep the component alive. If no other
+    /// component has loaded the dependency yet, this will ensure that [`Loader::on_load`] is
+    /// called on the dependency's loader, which by default loads its component.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DependencyNotFound`] if the component with the id `id` doesn't exist.
     pub fn load_lazy(
         self,
         id: ComponentId,

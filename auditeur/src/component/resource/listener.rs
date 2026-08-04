@@ -20,54 +20,75 @@ use tokio::select;
 
 #[doc = include_str!("listener_docs.md")]
 pub trait Listener: Resource {
-    /// The list of [`Component`]s, starting with either [`Unbiased`] or [`Biased`].
-    type Components: ComponentList<Self>;
+    /// The list of [`Stream`]s, starting with either [`Unbiased`] or [`Biased`].
+    type Streams: StreamList<Self>;
 
-    const OPTIONS: Options = Options::new();
-
+    /// A method that is run after the listener is loaded and before it starts listening.
+    ///
+    /// The default implementation is to do nothing.
     fn init(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 
+    /// A method that is run after it ends listening and before it exits.
+    ///
+    /// The default implementation is to do nothing.
     fn exit(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
         async { Ok(()) }
     }
 
+    /// Provides any children that this listener should be added with.
     #[must_use]
     fn children(children: Children) -> Children {
         children
     }
+
+    /// Options to overlay on the default options.
+    const OPTIONS: Options = Options::new();
 }
 
-pub trait Component<L: Listener>: Input {
+/// A stream of data that a [`Listener`] listens to.
+pub trait Stream<L: Listener>: Input {
+    /// A value that is obtained from the stream and should be [handled](Self::handle).
     type Value: Send;
 
+    /// Wait for the next value to come from the stream.
+    ///
+    /// Returns [`ControlFlow::Continue`] when a value arrives, or [`ControlFlow::Break`] if the
+    /// listener should exit.
     fn wait(
         &mut self,
         listener: &L,
     ) -> impl Future<Output = anyhow::Result<ControlFlow<(), Self::Value>>> + Send;
 
+    /// Handles the value that came from the stream, using the listener.
+    ///
+    /// Returns [`ControlFlow::Continue`] on success, or [`ControlFlow::Break`] if the
+    /// listener should exit.
     fn handle(
         &mut self,
         value: Self::Value,
         listener: &mut L,
     ) -> impl Future<Output = anyhow::Result<ControlFlow<()>>> + Send;
 
+    /// Provides any children that this listener should be added with.
     #[must_use]
     fn children(children: Children) -> Children {
         children
     }
 }
 
+/// A [`Listener`] that wants to [listen](listen::Listener::listen) to messages of type `M`.
 pub trait Listen<M: ListenMessage>: Listener {
     fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-pub struct ListenComponent<M: ListenMessage> {
+/// A [`Stream`] that listens to a [`listen::Listener`] and calls [`Listen::on`] for every message.
+pub struct ListenStream<M: ListenMessage> {
     receiver: listen::Listener<M>,
 }
 
-impl<M: ListenMessage> Input for ListenComponent<M> {
+impl<M: ListenMessage> Input for ListenStream<M> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         Ok(Self {
             receiver: app.listen_mut().listener().await?,
@@ -75,15 +96,11 @@ impl<M: ListenMessage> Input for ListenComponent<M> {
     }
 }
 
-impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<M> {
+impl<L: Listen<M>, M: ListenMessage> Stream<L> for ListenStream<M> {
     type Value = M;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
-        #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
-        match self.receiver.listen().await {
-            Some(message) => Ok(ControlFlow::Continue(message)),
-            None => Ok(ControlFlow::Break(())),
-        }
+        Ok(ControlFlow::Continue(self.receiver.listen().await))
     }
 
     async fn handle(
@@ -96,11 +113,17 @@ impl<L: Listen<M>, M: ListenMessage> Component<L> for ListenComponent<M> {
     }
 }
 
-pub struct TakeComponent<M: TakeMessage> {
+/// A [`Listener`] that wants to [take](Taker::take) messages of type `M`.
+pub trait Take<M: TakeMessage>: Listener {
+    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+/// A [`Stream`] that listens to a [`take::Taker`](Taker) and calls [`Take::on`] for every message.
+pub struct TakeStream<M: TakeMessage> {
     taker: Taker<M>,
 }
 
-impl<M: TakeMessage> Input for TakeComponent<M> {
+impl<M: TakeMessage> Input for TakeStream<M> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         Ok(Self {
             taker: app.take_mut().taker().await?,
@@ -108,19 +131,11 @@ impl<M: TakeMessage> Input for TakeComponent<M> {
     }
 }
 
-pub trait Take<M: TakeMessage>: Listener {
-    fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
-}
-
-impl<R: Take<M>, M: TakeMessage> Component<R> for TakeComponent<M> {
+impl<R: Take<M>, M: TakeMessage> Stream<R> for TakeStream<M> {
     type Value = M;
 
     async fn wait(&mut self, _: &R) -> anyhow::Result<ControlFlow<(), Self::Value>> {
-        #[allow(clippy::option_if_let_else)] // I feel like this is easier to read
-        match self.taker.take().await {
-            Some(message) => Ok(ControlFlow::Continue(message)),
-            None => Ok(ControlFlow::Break(())),
-        }
+        Ok(ControlFlow::Continue(self.taker.take().await))
     }
 
     async fn handle(
@@ -137,12 +152,13 @@ impl<R: Take<M>, M: TakeMessage> Component<R> for TakeComponent<M> {
     }
 }
 
+/// A [`Stream`] that listens to a [`StopListener`] and stops the listener when it says to.
 #[derive(Input)]
-pub struct StopComponent {
+pub struct StopStream {
     stop: StopListener,
 }
 
-impl<L: Listener> Component<L> for StopComponent {
+impl<L: Listener> Stream<L> for StopStream {
     type Value = Infallible;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
@@ -156,17 +172,20 @@ impl<L: Listener> Component<L> for StopComponent {
     }
 }
 
+/// A [`Listener`] that wants to be notified whenever a component is added in the [`Registry`] `R`.
 pub trait OnAddIn<R: Registry>: Listener {
     fn on_add(&mut self, id: ComponentIdPath) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-pub struct OnAddInComponent<R: Registry> {
+/// A [`Stream`] that listens to the [`App`] and calls [`OnAddIn::on_add`] whenever a component is
+/// added in the [`Registry`] `R`.
+pub struct OnAddInStream<R: Registry> {
     listener: listen::Listener<Event>,
     queue: Vec<ComponentIdPath>,
     pd: PhantomData<fn() -> R>,
 }
 
-impl<R: Registry> Input for OnAddInComponent<R> {
+impl<R: Registry> Input for OnAddInStream<R> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         let (map, listener) = (AppFn.map().get().using_mut())
             .then(AppFn.get_event_listener())
@@ -187,7 +206,7 @@ impl<R: Registry> Input for OnAddInComponent<R> {
     }
 }
 
-impl<L: OnAddIn<R>, R: Registry> Component<L> for OnAddInComponent<R> {
+impl<L: OnAddIn<R>, R: Registry> Stream<L> for OnAddInStream<R> {
     type Value = ComponentIdPath;
 
     async fn wait(&mut self, _: &L) -> anyhow::Result<ControlFlow<(), Self::Value>> {
@@ -197,15 +216,12 @@ impl<L: OnAddIn<R>, R: Registry> Component<L> for OnAddInComponent<R> {
 
         loop {
             match self.listener.listen().await {
-                Some(Event::Component { id, lifecycle })
+                Event::Component { id, lifecycle }
                     if id.registry == R::id() && lifecycle == ComponentLifecycle::Add =>
                 {
                     return Ok(ControlFlow::Continue(id.component));
                 }
-                Some(_) => (),
-                None => {
-                    return Ok(ControlFlow::Break(()));
-                }
+                _ => (),
             }
         }
     }
@@ -220,10 +236,12 @@ impl<L: OnAddIn<R>, R: Registry> Component<L> for OnAddInComponent<R> {
     }
 }
 
+/// A [`Listener`] that uses the [`#[respond]`](macro@crate::respond) macro.
 pub trait Respond: Listener {
     type Query: TakeMessage;
 }
 
+/// An [`FnOnce`] that returns a [`Send`] [`Future`].
 // Credit: `https://stackoverflow.com/a/79744535`
 pub trait SendAsyncFnOnce<A, O>: FnOnce(A) -> Self::Fut + Send + 'static {
     type Fut: Future<Output = O> + Send;
@@ -237,16 +255,20 @@ where
     type Fut = Out;
 }
 
+/// A boxed [`SendAsyncFnOnce`] that uses dynamic dispatch to run, used in the
+/// [`#[respond]`](macro@crate::respond) macro.
 #[allow(clippy::type_complexity)] // wi wi wi
 pub struct BoxedTransactionFnOnce<R: Respond>(
     Box<dyn for<'a> FnOnce(&'a mut R) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send>,
 );
 
 impl<R: Respond> BoxedTransactionFnOnce<R> {
+    #[doc(hidden)]
     pub fn new(func: impl for<'a> SendAsyncFnOnce<&'a mut R, ()>) -> Self {
         Self(Box::new(|resource| Box::pin((func)(resource))))
     }
 
+    #[doc(hidden)]
     pub fn new_with_sender<T: Send + 'static>(
         func: impl for<'a> SendAsyncFnOnce<&'a mut R, T>,
         sender: tokio::sync::oneshot::Sender<T>,
@@ -259,39 +281,49 @@ impl<R: Respond> BoxedTransactionFnOnce<R> {
         }))
     }
 
+    #[doc(hidden)]
     pub async fn run(self, resource: &mut R) {
         (self.0)(resource).await;
     }
 }
 
-pub type RespondComponent<L> = TakeComponent<<L as Respond>::Query>;
+/// A [`Stream`] that listens to [`#[respond]`](macro@crate::respond) requests and responds to
+/// them.
+pub type RespondStream<L> = TakeStream<<L as Respond>::Query>;
 
+/// A flag to tell a [`StreamList`] that its [`select!`] should be unbiased.
 #[derive(Input)]
 pub struct Unbiased;
+/// A flag to tell a [`StreamList`] that its [`select!`] should be biased.
 #[derive(Input)]
 pub struct Biased;
 
+/// A list of [`Stream`]s that all listen independently.
+///
+/// This is always a tuple that begins with [`Unbiased`] or [`Biased`] and ends with a variable
+/// amount of [`Stream`]s.
 #[allow(private_bounds)]
-pub trait ComponentList<L: Listener>: Sealed<L> + Input + Send {
+pub trait StreamList<L: Listener>: Sealed<L> + Input + Send {
+    #[doc(hidden)]
     fn run(&mut self, listener: &mut L, app: &mut App) -> impl Future<Output = ()> + Send;
-
+    #[doc(hidden)]
     fn children(children: Children) -> Children;
 }
 
 pub(crate) trait Sealed<L> {}
 
-macro_rules! impl_component_list {
+macro_rules! impl_stream_list {
     ($(($T:tt, $c:tt)),*) => {
-        impl_component_list!((Unbiased) () $(($T, $c)),*);
-        impl_component_list!((Biased) (biased;) $(($T, $c)),*);
+        impl_stream_list!((Unbiased) () $(($T, $c)),*);
+        impl_stream_list!((Biased) (biased;) $(($T, $c)),*);
     };
     (($bias_marker:ident) ($($bias:tt)*) $(($T:tt, $c:tt)),*) => {
         #[allow(unused_parens)]
-        impl<L, $($T,)*> ComponentList<L> for ($bias_marker, $($T),*)
+        impl<L, $($T,)*> StreamList<L> for ($bias_marker, $($T),*)
         where
             Self: Input,
-            $($T: Component<L>,)*
-            L: Listener<Components = Self>,
+            $($T: Stream<L>,)*
+            L: Listener<Streams = Self>,
         {
             async fn run(&mut self, listener: &mut L, app: &mut App) {
                 let (_, $($c),*) = self;
@@ -323,13 +355,13 @@ macro_rules! impl_component_list {
         impl<L, $($T,)*> Sealed<L> for ($bias_marker, $($T),*)
         where
             Self: Input,
-            $($T: Component<L>,)*
-            L: Listener<Components = Self>,
+            $($T: Stream<L>,)*
+            L: Listener<Streams = Self>,
         {}
     };
 }
 
-all_tuples!(impl_component_list, 1, 16, T, c);
+all_tuples!(impl_stream_list, 1, 16, T, c);
 
 /// Used in the [`listener`](macro@crate::listener) attribute macro.
 ///
@@ -351,6 +383,8 @@ pub trait ListenerDerive: Send {
     }
 }
 
+/// A [`GetRunnerWith`](super::GetRunnerWith) [`Method`](super::GetRunnerWith::Method) that uses
+/// [`Listener`] to form its [`Runner`].
 pub struct ListenerMethod;
 impl<L: Listener> ResourceParts<L> for ListenerMethod {
     type Runner = ListenerRunner<L>;
@@ -358,22 +392,22 @@ impl<L: Listener> ResourceParts<L> for ListenerMethod {
     async fn runner(listener: L, app: &mut App) -> Result<Self::Runner, Error> {
         Ok(ListenerRunner {
             listener,
-            components: L::Components::create(app).await?,
+            components: L::Streams::create(app).await?,
         })
     }
 
-    fn children() -> Children {
-        let children = Children::new();
+    fn children(children: Children) -> Children {
         let children = <L as Listener>::children(children);
-        L::Components::children(children)
+        L::Streams::children(children)
     }
 
     const OPTIONS: Options = <L as Listener>::OPTIONS;
 }
 
+/// The [`Runner`] for [`ListenerMethod`].
 pub struct ListenerRunner<L: Listener> {
     listener: L,
-    components: L::Components,
+    components: L::Streams,
 }
 
 impl<L: Listener> Runner for ListenerRunner<L> {

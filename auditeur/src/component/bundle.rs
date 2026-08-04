@@ -1,3 +1,31 @@
+//! A [`Component`](super::Component) that only has [`Children`].
+//!
+//! # Examples
+//!
+//! ```
+//! use auditeur::component::bundle::Bundles;
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main] async fn main() -> Result<(), Error> {
+//! #[resource("test:resource")]
+//! #[create(default)]
+//! #[pure_resource]
+//! struct Resource;
+//!
+//! let app = App::builder()
+//!     .with::<Bundle>(new_bundle!("test:bundle").with::<Resource>(()))
+//!     .spawn();
+//!
+//! let map = app.map().get().await;
+//! let bundle_id = ComponentId::inn::<Bundles>(ident!("test:bundle"));
+//! assert!(map.is_added(&bundle_id));
+//! assert!(map.id_added(&Resource::component_id()));
+//!
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+
 use crate::{
     children::HasChildren,
     component::{
@@ -20,12 +48,18 @@ macro_rules! new_bundle {
     };
 }
 
+/// A [`Component`](super::Component) that only has [`Children`].
+///
+/// See the [module documentation](self) for more information.
 pub struct Bundle {
     id: ComponentIdPath,
     children: Children,
 }
 
 impl Bundle {
+    /// Create a new bundle with the id `id`.
+    ///
+    /// Consider using the macro [`new_bundle`] instead.
     pub fn new(id: impl Into<ComponentIdPath>) -> Self {
         Self {
             id: id.into(),
@@ -55,6 +89,7 @@ impl RegistryOf for Bundle {
     type Registry = Bundles;
 }
 
+/// The [`Registry`] for [`Bundle`]s.
 #[identified("auditeur:bundles")]
 pub struct Bundles;
 

@@ -1,3 +1,41 @@
+//! [`Component`](super::Component)s that provide [mpmc](mod@flume)-style message streams to the
+//! app.
+//!
+//! ```
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Error> {
+//! #[take_message("test:print")]
+//! struct Print(String);
+//!
+//! let mut app = App::builder().with::<Print>(()).spawn();
+//!
+//! // Givers are the sender half of take channels,
+//! let giver = app.take_mut().giver::<Print>().await?;
+//!
+//! // and they can send messages without blocking.
+//! giver.give(Print(String::from("Hello, ")));
+//!
+//! // Takers are the receiving half of take channels.
+//! let mut taker_1 = app.take_mut().taker::<Print>().await?;
+//! let mut taker_2 = app.take_mut().taker::<Print>().await?;
+//!
+//! // They can receive messages sent before they're obtained,
+//! assert_eq!(taker_1.take().await.0, "Hello, ");
+//!
+//! // or after they're obtained.
+//! giver.give(Print(String::from("world!")));
+//! assert_eq!(taker_2.take().await.0, "world!");
+//!
+//! // But each message can only ever be received once, unlike a broadcast channel.
+//! assert!(taker_1.is_empty() && taker_2.is_empty());
+//!
+//! drop((giver, taker_1, taker_2));
+//! auditeur::test::finish(app, false).await
+//! # }
+
 use std::marker::PhantomData;
 
 use crate::{
@@ -11,13 +49,24 @@ use crate::{
     prelude::*,
 };
 
+/// [`Component`](super::Component)s that provide [mpmc](mod@flume)-style message streams to the
+/// app.
+///
+/// This can be automatically implemented using the
+/// [`#[take_message]`](macro@crate::take_message) macro.
+///
+/// See the [module documentation](self) for more information.
 pub trait TakeMessage: IdentifiedType + any::AnyConst + Send + Sized + 'static {}
 
+/// The sending half of a [`TakeMessage`] channel.
 pub struct Giver<M: TakeMessage> {
     sender: Dependency<flume::Sender<M>>,
 }
 
 impl<M: TakeMessage> Giver<M> {
+    /// Sends a new message to the channel.
+    ///
+    /// This will be received by whichever [`Taker`] calls [`Taker::take`] first.
     pub fn give(&self, message: M) {
         let _ = self.sender.send(message);
     }
@@ -37,13 +86,25 @@ impl<M: TakeMessage> Input for Giver<M> {
     }
 }
 
+/// The receiving half of a [`TakeMessage`] channel.
 pub struct Taker<M: TakeMessage> {
     receiver: Dependency<flume::Receiver<M>>,
 }
 
 impl<M: TakeMessage> Taker<M> {
-    pub async fn take(&mut self) -> Option<M> {
-        self.receiver.recv_async().await.ok()
+    /// Waits until a message is sent in the channel and returns it.
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn take(&mut self) -> M {
+        self.receiver
+            .recv_async()
+            .await
+            .expect("channel shouldn't hang up because the loaded keeps a sender alive")
+    }
+
+    /// Returns `true` if there are no messages ready in the channel.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
     }
 }
 
@@ -62,6 +123,9 @@ impl<M: TakeMessage> Input for Taker<M> {
     }
 }
 
+/// The [`Registry`] for [`TakeMessage`]s.
+///
+/// This is automatically added to every [`App`].
 #[identified("auditeur:take_messages")]
 pub struct TakeMessages;
 
@@ -105,6 +169,7 @@ impl<M: TakeMessage> IdentifiedComponent for TakeLoader<M> {
 }
 
 #[derive(Any)]
+#[doc(hidden)]
 pub struct TakeLoaded {
     sender: Box<dyn any::Any + Send + Sync>,
 }
@@ -142,6 +207,7 @@ impl TakeLoaded {
 
 impl Loaded for TakeLoaded {}
 
+/// Methods for [`App`] to manage [`TakeMessage`]s.
 pub struct AppTakeMut<'a> {
     app: &'a mut App,
 }
@@ -151,9 +217,11 @@ impl<'a> AppTakeMut<'a> {
         Self { app }
     }
 
+    /// Obtains a new [`Taker`] from the app.
+    ///
     /// # Errors
     ///
-    /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
     pub async fn taker<M: TakeMessage>(self) -> Result<Taker<M>, Error> {
         self.app
             .components_mut()
@@ -164,9 +232,11 @@ impl<'a> AppTakeMut<'a> {
             .map(|receiver| Taker { receiver })
     }
 
+    /// Obtains a new [`Giver`] from the app.
+    ///
     /// # Errors
     ///
-    /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
     pub async fn giver<M: TakeMessage>(self) -> Result<Giver<M>, Error> {
         self.app
             .components_mut()

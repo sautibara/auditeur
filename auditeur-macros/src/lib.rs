@@ -444,6 +444,35 @@ pub fn listener(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn watcher(attr: TokenStream, item: TokenStream) -> TokenStream {
+    fn watcher_attr(attr: TokenStream, item: TokenStream) -> syn::Result<proc_macro2::TokenStream> {
+        let auditeur = &*crate::AUDITEUR;
+
+        if let Some(token) = attr.into_iter().next() {
+            return Err(syn::Error::new(
+                token.span().into(),
+                "expected attribute to be empty",
+            ));
+        }
+
+        let item: Item = syn::parse(item)?;
+        let (ident, generics, _) = extract_item_values(&item)?;
+
+        Ok(proc_macro_impls::get_runner_with(
+            ident,
+            generics,
+            &quote! {
+                #auditeur::component::resource::watcher::WatcherMethod
+            },
+        ))
+    }
+
+    watcher_attr(attr, item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_attribute]
 pub fn respond(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro_impls::respond_attr(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)

@@ -22,7 +22,7 @@ pub async fn finish(mut app: App, exit: bool) -> Result<(), Error> {
 
     loop {
         select! {
-            Some(event) = event_listener.listen() => {
+            event = event_listener.listen() => {
                 match event {
                     Event::Error(error) => { eprintln!("[error] {error}"); errored = true; },
                     Event::Exit => break,

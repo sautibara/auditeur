@@ -56,7 +56,8 @@ pub enum ComponentLifecycle {
     Add,
     /// The component was loaded in the app, but it hasn't been loaded in its registry yet.
     Load,
-    /// The component was loaded in its registry; [`Loader::load`] was called.
+    /// The component was loaded in its registry;
+    /// [`Loader::load`](crate::component::registry::Loader::load) was called.
     Active,
     /// The component was unloaded in its registry, but it hasn't released its dependencies yet.
     Unloading,

@@ -1,4 +1,25 @@
-//! Items that can be added to an [`App`] and potentially run
+//! [`Component`](super::Component)s that can provide [tasks](Runner) to be run and/or
+//! [handles](Get) to their state.
+//!
+//! [`Resource`]s are [`Identified`] by a specific [`NamespacedId`] that uniquely represents them.
+//! If they are a [`Listener`] or [`Watcher`], they may also run code in the main async loop, and
+//! if they implement [`GetRef`], other resources may obtain synchronized references of them.
+//!
+//! To implement this trait, use [`#[resource]`](macro@crate::resource) and either:
+//! - Call one of the predefined resource macros,
+//!     - [`#[listener]`](macro@crate::listener),
+//!     - [`#[watcher]`](macro@crate::watcher),
+//!     - [`#[pure_resource]`](macro@crate::pure_resource),
+//! - Implement [`GetRunnerWith`] to use a default runner implementation,
+//! - Implement [`ResourceParts`] manually,
+//!
+//! To provide a handle type, implement [`GetRef`] (either manually or through [`respond`]).
+//! Then, [`#[resource]`](macro@crate::resource) will automatically pick this implementation up and
+//! make it accessible through the [`Get`] input.
+//!
+//! # Examples
+//!
+//! See the module documentation of [`listener`](mod@listener).
 
 use crate::{
     any,
@@ -26,13 +47,9 @@ pub mod listener;
 pub mod pure;
 pub mod watcher;
 
-/// An item that can be added to an [`App`]
+/// Components that can provide [tasks](Runner) to be run and/or [handles](Get) to their state.
 ///
-/// Resources are [`Identifiable`] by a specific [`NamespacedId`] that uniquely represents them.
-/// If they are a [`Listener`] or [`Watcher`], they may also run code in the main async loop, and
-/// if they implement [`GetRef`], other resources may obtain synchronized references of them.
-///
-/// To implement this trait, use [`#[resource]`](macro@crate::resource)
+/// See the [module documentation](self) for more information.
 pub trait Resource:
     IdentifiedType + ResourceParts + MaybeGetRef + Create + any::Any + Send + Sync + Sized + 'static
 {
@@ -52,25 +69,52 @@ impl<
 {
 }
 
+/// The implementation-defined parts of the [`Resource`] trait.
+///
+/// The generic parameter `R` is the type of the resource. If implementing this trait manually,
+/// this should be [`Self`] (the default). If creating a [`Method`](GetRunnerWith::Method) for
+/// [`GetRunnerWith`], this should be the resource type.
 pub trait ResourceParts<R: ResourceParts = Self> {
     type Runner: Runner;
 
+    /// Creates the [`Runner`] for this resource, wrapping it up into a task.
     fn runner(
         resource: R,
         app: &mut App,
     ) -> impl Future<Output = Result<Self::Runner, Error>> + Send;
 
+    /// Provides any children that this resource should be added with.
+    ///
+    /// The default implementation adds no children.
+    ///
+    /// This method is run exactly once when the resource is [added](Children::with) to a
+    /// [`Children`] collection.
     #[must_use]
-    fn children() -> Children {
-        Children::new()
+    fn children(children: Children) -> Children {
+        children
     }
 
+    /// Any [`Options`] to adjust the functionality of this resource.
     const OPTIONS: Options = Options::new();
 }
 
+/// Resources that use default implementations for [`ResourceParts`].
 pub trait GetRunnerWith: Send + Sized {
+    /// The default implementation of [`ResourceParts`] to use.
+    ///
+    /// For example,
+    /// - [`listener::ListenerMethod`],
+    /// - [`watcher::WatcherMethod`],
+    /// - [`pure::PureMethod`],
     type Method: ResourceParts<Self>;
 
+    /// Provides any children that this resource should be added with.
+    #[must_use]
+    fn children(children: Children) -> Children {
+        children
+    }
+
+    /// Optional options that overlay on the options obtained from [`Self::Method`].
     const OPTIONS: Options = Options::new();
 }
 
@@ -81,21 +125,32 @@ impl<R: GetRunnerWith> ResourceParts for R {
         <R::Method as ResourceParts<Self>>::runner(resource, app).await
     }
 
-    fn children() -> Children {
-        <R::Method as ResourceParts<Self>>::children()
+    fn children(children: Children) -> Children {
+        let children = <R as GetRunnerWith>::children(children);
+        <R::Method as ResourceParts<Self>>::children(children)
     }
 
     const OPTIONS: Options =
         <R as GetRunnerWith>::OPTIONS.overlay_on(<R::Method as ResourceParts<Self>>::OPTIONS);
 }
 
+/// A task obtained from a [`Resource`] to be run in the async executor.
+///
+/// The resource cannot finish unloading until this task finishes. The task is expected to
+/// automatically stop by listening to a [`StopListener`]. This is done by default for
+/// [`listener`](mod@listener)s, but not [`watcher`](mod@watcher)s.
+///
+/// By default, this also keeps the resource loaded unless it is requested to be stopped. To make
+/// it not keep the resource alive by default, use [`Options::weak`].
 pub trait Runner: Send {
     // NOTE: Why is the runner given an app handle? Well, we have to keep the app alive while the
     // runner is running, so we have to keep around an app handle anyways. Most resources could use
     // that app handle we're keeping around, so we may as well give a reference to it.
+    /// Runs this task to completion, using an app handle if necessary.
     fn run(self, app: &mut App) -> impl Future<Output = ()> + Send;
 }
 
+/// Options that can adjust the functionality of a [`Resource`].
 #[derive(Clone, Copy)]
 pub struct Options {
     weak: Option<bool>,
@@ -108,11 +163,19 @@ impl Default for Options {
 }
 
 impl Options {
+    /// Creates a new options struct that uses default implementations for everything.
     #[must_use]
     pub const fn new() -> Self {
         Self { weak: None }
     }
 
+    /// Sets the `weak` value for these options.
+    ///
+    /// If this is `false`, the resource will automatically be loaded when added to the app, and
+    /// its [`Runner`] will keep it loaded in the app. If this is `true`, neither of these will
+    /// happen.
+    ///
+    /// Default: `false`.
     #[must_use]
     pub const fn weak(self, weak: bool) -> Self {
         Self { weak: Some(weak) }
@@ -127,6 +190,9 @@ impl Options {
         }
     }
 
+    /// Overlays the options of `self` onto the options of `other`.
+    ///
+    /// This is identical to `other.overlay(self)`.
     #[must_use]
     pub const fn overlay_on(self, other: Self) -> Self {
         Self {
@@ -137,8 +203,20 @@ impl Options {
             },
         }
     }
+
+    /// Overlays the options of `other` onto the options of `self`.
+    ///
+    /// Set options are prioritized over unset options. That is, if `other` was obtained using
+    /// only [`Self::new`] (and no options were set), this will do nothing.
+    #[must_use]
+    pub const fn overlay(self, other: Self) -> Self {
+        other.overlay_on(self)
+    }
 }
 
+/// The [`Registry`] for [`Resource`]s.
+///
+/// This is automatically added to every [`App`].
 #[identified("auditeur:resources")]
 pub struct Resources;
 impl Registry for Resources {
@@ -159,7 +237,7 @@ impl<R: Resource> Register<R> for Resources {
     fn register(external_input: Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
         (
             ErasedLoader::new(ResourceLoader::<R> { external_input }),
-            R::children(),
+            R::children(Children::new()),
         )
     }
 }
@@ -221,7 +299,8 @@ impl<R: Resource> Loader<ErasedLoader<ResourcesLoaded>> for ResourceLoader<R> {
                     let info = Dependency::info_of(&listener);
                     let this_id = info.id.clone().into_id();
 
-                    while let Some(event) = listener.listen().await {
+                    loop {
+                        let event = listener.listen().await;
                         if let Event::RequestDependencyRemoval { id } = event
                             && id == this_id
                         {
@@ -277,6 +356,7 @@ impl Loaded for ResourcesLoaded {
 #[listen_message("auditeur:resource_stop")]
 struct Stop(&'static NamespacedIdRef);
 
+/// An [`Input`] that provides a method that can tell when a resource's runner should stop.
 pub struct StopListener {
     stop_receiver: Listener<Stop>,
     id: ComponentIdPath,
@@ -284,12 +364,14 @@ pub struct StopListener {
 }
 
 impl StopListener {
+    /// Waits for the app to tell the runner to stop.
     pub async fn wait(&mut self) {
         if self.stopped {
             return;
         }
 
-        while let Some(Stop(id)) = self.stop_receiver.listen().await {
+        loop {
+            let Stop(id) = self.stop_receiver.listen().await;
             if *self.id == id {
                 break;
             }
@@ -318,9 +400,16 @@ impl Input for StopListener {
     }
 }
 
+/// The return type of [`AppFn::resources_mut`]. See [`AppResourcesMut`].
 #[must_use]
 pub struct AppFnResourcesMut;
 impl AppFnResourcesMut {
+    /// See [`AppResourcesMut::stop`].
+    pub fn stop<R: Resource>(self) -> impl AppMutFnOnce<Output = Waiter> {
+        self.stop_id(ComponentIdPath::Static(R::id()))
+    }
+
+    /// See [`AppResourcesMut::stop_id`].
     pub fn stop_id(self, id: ComponentIdPath) -> impl AppMutFnOnce<Output = Waiter> {
         AppFn
             .components_mut()
@@ -329,12 +418,9 @@ impl AppFnResourcesMut {
                 component: id,
             }))
     }
-
-    pub fn stop<R: Resource>(self) -> impl AppMutFnOnce<Output = Waiter> {
-        self.stop_id(ComponentIdPath::Static(R::id()))
-    }
 }
 
+/// Methods for [`App`] to manage [`Resource`]s.
 pub struct AppResourcesMut<'a> {
     app: &'a mut App,
 }
@@ -344,9 +430,11 @@ impl<'a> AppResourcesMut<'a> {
         Self { app }
     }
 
+    /// Gets the handle of a resource added to the registry that implements [`GetRef`].
+    ///
     /// # Errors
     ///
-    /// - Propagated from [`AppRegistriesMut::get`](crate::app::registry::AppRegistriesMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
     pub async fn get<R: Resource + GetRef>(self) -> Result<Get<R>, Error> {
         let dependency = (self.app.components_mut())
             .get::<Resources, _>(
@@ -367,10 +455,12 @@ impl<'a> AppResourcesMut<'a> {
         Ok(Get::new(dependency))
     }
 
+    /// Requests for the resource `R` to be unloaded, including stopping its runner.
     pub fn stop<R: Resource>(self) -> impl AppMutFuture<'a, Output = Waiter> {
         AppFn.resources_mut().stop::<R>().call(self.app)
     }
 
+    /// Requests for the resource with id `id` to be unloaded, including stopping its runner.
     pub fn stop_id(self, id: ComponentIdPath) -> impl AppMutFuture<'a, Output = Waiter> {
         AppFn.resources_mut().stop_id(id).call(self.app)
     }

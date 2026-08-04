@@ -1,4 +1,5 @@
 use std::{
+    borrow::Borrow,
     collections::HashSet,
     fmt::{Debug, Display},
     hash::Hash,
@@ -656,11 +657,13 @@ impl Map {
             } => {
                 if new_request && **id == App::component_id() {
                     debug!("exiting...");
-                    let sender = channels.method_sender.clone();
-                    tokio::task::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        let _ = sender.send_async(super::Method::CheckForStragglers).await;
-                    });
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        let sender = channels.method_sender.clone();
+                        handle.spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            let _ = sender.send_async(super::Method::CheckForStragglers).await;
+                        });
+                    }
                 }
 
                 self.release_stick(listener, channels);
@@ -822,6 +825,9 @@ impl Map {
 
 // Public-facing API
 impl Map {
+    /// Returns the set of all descendants of the components with ids found from the iterator `id`.
+    /// The returned set will always include the ids in `id`, as well as any children of those
+    /// components, any children of those children, and so on.
     #[must_use]
     pub fn descendants_of(
         &self,
@@ -854,8 +860,34 @@ impl Map {
 
         descendants
     }
+
+    /// Returns `true` if a component with the id `id` was added to the app at the time the map was
+    /// obtained.
+    #[must_use]
+    pub fn is_added(&self, id: &ComponentId) -> bool {
+        self.components.contains_key(id)
+    }
+
+    /// Returns `true` if a component with the id `id` was loaded in the app at the time the map was
+    /// obtained.
+    #[must_use]
+    pub fn is_loaded(&self, id: &ComponentId) -> bool {
+        self.components
+            .get(id)
+            .is_some_and(|component| !component.loads.is_empty())
+    }
+
+    /// Returns `Some(parent)` if there is a component with the id `id` in the map and it has a
+    /// parent, or `None` otherwise.
+    #[must_use]
+    pub fn parent_of(&self, id: &ComponentId) -> Option<&AddedComponentId> {
+        self.components
+            .get(id)
+            .and_then(|component| component.parent.as_ref())
+    }
 }
 
+/// A single event that can be requested or waited for in the app.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum RequestAction {
@@ -874,44 +906,52 @@ impl Display for RequestAction {
     }
 }
 
+/// A set of events that can be requested or waited for in the app.
 #[derive(Clone, Default, Debug)]
 pub struct RequestSet {
     pub set: hashbrown::HashSet<RequestAction>,
 }
 
 impl RequestSet {
+    /// Returns a new, empty set.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Creates a new set that is made up of a single [`RequestAction::RemoveComponent`].
     #[must_use]
     pub fn remove(component: ComponentId) -> Self {
         Self::new().and_remove(component)
     }
 
+    /// Adds a [`RequestAction::RemoveComponent`] to the given set and returns it back.
     #[must_use]
     pub fn and_remove(mut self, component: ComponentId) -> Self {
         self.set.insert(RequestAction::RemoveComponent(component));
         self
     }
 
+    /// Creates a new set that is made up of a single [`RequestAction::UnloadComponent`].
     #[must_use]
     pub fn unload(component: ComponentId) -> Self {
         Self::new().and_unload(component)
     }
 
+    /// Adds a [`RequestAction::UnloadComponent`] to the given set and returns it back.
     #[must_use]
     pub fn and_unload(mut self, component: ComponentId) -> Self {
         self.set.insert(RequestAction::UnloadComponent(component));
         self
     }
 
+    /// Creates a new set that is made up of a single [`RequestAction::RemoveDependency`].
     #[must_use]
     pub fn remove_dependency(dependency: DependencyId) -> Self {
         Self::new().and_remove_dependency(dependency)
     }
 
+    /// Adds a [`RequestAction::RemoveDependency`] to the given set and returns it back.
     #[must_use]
     pub fn and_remove_dependency(mut self, dependency: DependencyId) -> Self {
         self.set.insert(RequestAction::RemoveDependency(dependency));
@@ -1206,6 +1246,12 @@ impl Deref for AddedComponentId {
     }
 }
 
+impl Borrow<ComponentId> for AddedComponentId {
+    fn borrow(&self) -> &ComponentId {
+        &self.0
+    }
+}
+
 impl Display for AddedComponentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -1252,6 +1298,13 @@ impl LoadedComponentId {
 impl Display for LoadedComponentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "'{}' ({})", self.component, self.index)
+    }
+}
+
+impl Deref for LoadedComponentId {
+    type Target = AddedComponentId;
+    fn deref(&self) -> &Self::Target {
+        &self.component
     }
 }
 

@@ -1,65 +1,54 @@
+use auditeur::app::map::RequestSet;
+use auditeur::component::bundle::Bundles;
+
 use auditeur::prelude::*;
-#[allow(clippy::wildcard_imports)]
 use auditeur::*;
 
-// All that needs to be done in the `#[listener]` macro is to pass in a `respond` flag.
-// The macro then pulls the necessary information from the `impl` block for which messages
-// to listen to.
-#[create(default)]
-#[resource("test:counter")]
-#[listener(respond)]
-struct Counter {
-    value: usize,
-    #[create(input)]
-    sender: Shouter<CounterChanged>,
-}
-
-// The macro takes the NamespacedId of the listener as the first argument to fill out the id
-// for the `Query` message (which is automatically generated).
-// The `get_ref` flag makes `Get<Counter>` return the created `CounterConnection` struct.
-// The connection has methods that call the corresponding methods on the actual `Counter`.
-#[respond("test:counter", get_ref)]
-impl Counter {
-    // These methods can have return values, but note that neither the parameters or return
-    // types can hold references (since they're sent using messages). To get around this,
-    // use transactions, clone items, or use `Arc`s.
-    // Thankfully here we don't have to worry about that, since `usize` is copyable.
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn get(&self) -> usize {
-        self.value
-    }
-
-    // If methods are provided that return nothing, when they're called on the connection
-    // and awaited, the future will await until the listener is finished handling the method.
-    // This is used here to allow other resources to wait until the value is fully set.
-    pub fn set(&mut self, value: usize) {
-        self.value = value;
-        self.sender.shout(CounterChanged);
-    }
-}
-
-#[derive(Clone)]
-#[listen_message("test:counter_changed")]
-struct CounterChanged;
-
 #[tokio::main]
-async fn main() -> Result<(), auditeur::Error> {
+async fn main() -> Result<(), Error> {
+    // The loading and unloading of bundles is useless, as their loaded value is empty,
+    // but they can still be used to investigate how loading and unloading work.
+
     let mut app = App::builder()
-        .with::<Counter>(())
-        .with::<CounterChanged>(())
+        .with::<Bundle>(new_bundle!("test:bundle"))
         .spawn();
 
-    let listener = app.listen_mut().listener::<CounterChanged>().await?;
-    let counter = app.resources_mut().get::<Counter>().await?;
+    let bundle_id = ComponentId::inn::<Bundles>(ident!("test:bundle"));
 
-    assert!(listener.is_empty());
-    assert_eq!(counter.get().await, 0);
+    // All components start out unloaded and only get loaded when necessary. (Although, some
+    // registries immediately load their components when they're added, like resources).
+    let map = app.map().get().await;
+    assert!(map.is_added(&bundle_id));
+    assert!(!map.is_loaded(&bundle_id));
 
-    counter.set(5).await;
+    // By using [`AppComponentsMut::load`], we can ensure that a component is loaded.
+    let dependency: Dependency<()> = app.components_mut().load(bundle_id.clone()).await?;
 
-    assert!(!listener.is_empty());
-    assert_eq!(counter.get().await, 5);
+    // [`AppComponentsMut::load`] only returns once the component finishes unloading,
+    // so we can be sure that it's loaded now.
+    let map = app.map().get().await;
+    assert!(map.is_loaded(&bundle_id));
 
-    drop((listener, counter));
-    auditeur::test::finish(app, true).await
+    // Dependencies keep components loaded and provide access to what they're wrapping.
+    // They also hold extra information that can be accessed through [`Dependency::info_of`].
+    let info = Dependency::info_of(&dependency);
+
+    // For example, we could check who the dependent of the dependency is - who is keeping it alive.
+    let dependent = info.id.dependent();
+    // By default, the dependent of the app handle given through [`app::Builder::spawn`] is the app
+    // component, so that should also be the dependent of our dependency.
+    assert_eq!(**dependent, App::component_id());
+
+    // Once all dependencies of a component are dropped, it is automatically unloaded.
+    drop(dependency);
+    let waiter = app
+        .components_mut()
+        .wait_for(RequestSet::unload(bundle_id.clone()))
+        .await;
+    waiter.wait().await;
+
+    let map = app.map().get().await;
+    assert!(!map.is_loaded(&bundle_id));
+
+    auditeur::test::finish(app, false).await
 }

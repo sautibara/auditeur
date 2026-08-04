@@ -1,9 +1,13 @@
+//! A [`Resource`] that runs its own method in the async executor.
+//!
+//! Use [`#[watcher]`](macro@crate::watcher) to create one of these resources.
+
 use crate::{
     component::resource::{Resource, ResourceParts, Runner},
     prelude::*,
 };
 
-/// A [`Resource`] that runs its own method in the main async loop.
+/// A [`Resource`] that runs its own method in the async executor.
 ///
 /// WARNING: There is no custom logic to tell the watcher to stop. Instead, watchers are expected
 /// to carry around a [`StopListener`](super::StopListener) to know when to stop.
@@ -16,6 +20,8 @@ pub trait Watcher: Resource {
     }
 }
 
+/// A [`GetRunnerWith`](super::GetRunnerWith) [`Method`](super::GetRunnerWith::Method) that uses
+/// [`Watcher`] to form its [`Runner`].
 pub struct WatcherMethod;
 impl<W: Watcher> ResourceParts<W> for WatcherMethod {
     type Runner = WatcherRunner<W>;
@@ -25,6 +31,7 @@ impl<W: Watcher> ResourceParts<W> for WatcherMethod {
     }
 }
 
+/// The [`Runner`] for [`WatcherMethod`].
 pub struct WatcherRunner<W: Watcher> {
     watcher: W,
 }

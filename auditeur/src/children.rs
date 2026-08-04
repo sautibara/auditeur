@@ -4,7 +4,7 @@ use crate::{
     prelude::*,
 };
 
-/// A collection of [`Component`]s.
+/// A collection of [`Component`](crate::component::Component)s.
 #[derive(Default, Debug)]
 pub struct Children {
     current_parent: Option<ComponentId>,
@@ -78,7 +78,8 @@ pub trait HasChildren: Sized {
 
     /// Adds a component with a specified registry (see [`RegistryOf`]) to the collection.
     ///
-    /// This is identical to calling [`Self::within`] with the registry [`C::Registry`].
+    /// This is identical to calling [`Self::within`] with the registry
+    /// [`C::Registry`](RegistryOf::Registry).
     #[must_use]
     fn with<C: RegistryOf>(self, input: <C::Registry as Register<C>>::ComponentInput) -> Self {
         self.within::<C::Registry, C>(input)

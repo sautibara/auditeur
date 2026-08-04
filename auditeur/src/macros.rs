@@ -102,7 +102,7 @@ pub use auditeur_macros::take_message;
 ///
 /// ## Options
 ///
-/// This macro is mainly used to fill out the type alias [`Listener::Components`]. If you wish
+/// This macro is mainly used to fill out the type alias [`Listener::Streams`]. If you wish
 /// to overwrite other parts of the trait, add an `options` flag to the macro and implement
 /// [`ListenerDerive`]. The macro will fill out the other parts of the trait based on what is
 /// in the implementation for [`ListenerDerive`].
@@ -119,16 +119,16 @@ pub use auditeur_macros::take_message;
 /// Much like [`Listen`], to take messages with [`Take`], provide the list of
 /// them wrapped by `take(<message>,*)`.
 ///
-/// ## Components
+/// ## Streams
 ///
-/// To use other [`Component`]s, provide a list of component types in a `components` list.
+/// To use other [`Stream`]s, provide a list of stream types in a `streams` list.
 ///
-/// ## Stop Component
+/// ## Stop Stream
 ///
-/// All listeners by default have a [`StopComponent`], which automatically handles exiting when
+/// All listeners by default have a [`StopStream`], which automatically handles exiting when
 /// the app tells it to. Only disable this if you will manually listen for this.
 ///
-/// To disable adding a [`StopComponent`], specify `stop_component = false`.
+/// To disable adding a [`StopStream`], specify `stop_stream = false`.
 ///
 /// ## Bias
 ///
@@ -150,16 +150,18 @@ pub use auditeur_macros::take_message;
 ///   | weak
 ///   | options
 ///   | biased
-///   | stop_component = <boolean>
+///   | stop_stream = <boolean>
 ///   | listen(<type>,*)
 ///   | take(<type>,*)
-///   | components(<type>,*)
+///   | on_add_in(<type>,*)
+///   | streams(<type>,*)
 /// ```
 ///
 /// </details>
 pub use auditeur_macros::listener;
 
 pub use auditeur_macros::pure_resource;
+pub use auditeur_macros::watcher;
 
 // TODO: write documentation!
 pub use auditeur_macros::create;

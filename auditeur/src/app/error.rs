@@ -163,7 +163,7 @@ impl<'a> AppErrorsMut<'a> {
 
     /// Adds a new error to the shared error list.
     ///
-    /// This also sends a [`RegistryEvent::Error`] to all event listeners.
+    /// This also sends an [`Event::Error`] to all event listeners.
     #[allow(clippy::should_implement_trait)]
     pub fn add(self, error: Error) -> impl AppMutFuture<'a, Output = ()> {
         AppFn.errors_mut().add(error).call(self.app)

@@ -1,3 +1,18 @@
+//! Groupings of [`Identified`] values that can be added as [`Component`](super::Component)s to an
+//! [`App`].
+//!
+//! Components are [loaded](Loader::load) on demand when other components
+//! [`get`](crate::app::component::AppComponentsMut::get) them. When all dependents release their
+//! dependencies, the component gets automatically [unloaded](Loaded::unload). The component then
+//! stays added in the app, ready to load again if another component needs it.
+//!
+//! Notable registries include:
+//! - [`Registries`],
+//! - [`Resources`](crate::component::resource::Resources),
+//! - [`Bundles`](crate::component::bundle::Bundles),
+//! - [`TakeMessages`](crate::component::take::TakeMessages),
+//! - [`ListenMessages`](crate::component::listen::ListenMessages),
+
 use std::marker::PhantomData;
 
 use crate::{
@@ -32,35 +47,28 @@ impl<R: Registry> Register<R> for Registries {
     }
 }
 
-/// Represents a grouping of [`Identified`] types that can be added as [`Component`]s to an [`App`].
+/// Groupings of [`Identified`] values that can be added as [`Component`](super::Component)s to an
+/// [`App`].
 ///
-/// Components are [loaded](Loader::load) on demand when other components
-/// [`get`](crate::app::Registries::get) them. When all dependents release their dependency,
-/// they're also automatically [unloaded](Loaded::unload). The component then stays in the app,
-/// ready to load again if another component needs it.
-///
-/// Components are added to an [`App`] as [`Children`] using the
-/// [`add`](crate::app::Registries::load) method. They are only removed from the app if someone
-/// calls [`remove`](crate::app::Registries::remove), which prevents other components from
-/// ever loading the component again.
-///
-/// Notable registries include:
-/// - [`Registries`],
-/// - [`Resources`],
-/// - [`Bundles`],
-/// - [`TakeMessages`],
-/// - [`ListenMessages`],
+/// See the [module documentation](self) for more information.
 pub trait Registry: IdentifiedType + 'static {
     type Loader: Loader<Loaded = Self::Loaded>;
     type Loaded: Loaded;
 
+    /// Provides any children that this registry should be added with.
+    ///
+    /// This could be backend components that are necessary for the registry to work.
     #[must_use]
     fn children(children: Children) -> Children {
         children
     }
 }
 
-/// A value that can load a specific erased [`Component`] on demand.
+/// A value that can load a specific erased [`Component`](super::Component) on demand.
+///
+/// The generic parameter `L` represents the loader of the [`Registry`] this loader is loading
+/// for. It will most likely be [`Self`], but can be [`ErasedLoader`] if they're being used. See
+/// [`ErasedLoader`]'s documentation for more information.
 pub trait Loader<L: Loader<Loaded = Self::Loaded> = Self>:
     IdentifiedComponent + Sized + Send + Sync + 'static
 {
@@ -92,7 +100,8 @@ pub trait Loader<L: Loader<Loaded = Self::Loaded> = Self>:
     }
 }
 
-/// An erased [`Component`] that has been loaded into a [`Registry`].
+/// An erased [`Component`](super::Component) that has been loaded in a [`Registry`], ready
+/// to be used.
 pub trait Loaded: any::Any + Sized + Send + 'static {
     /// Unloads the underlying component using an app handle.
     ///
@@ -103,6 +112,9 @@ pub trait Loaded: any::Any + Sized + Send + 'static {
     }
 }
 
+/// A callback that can be run in response to a specific event occurring in a [`Registry`].
+///
+/// See [`LoaderCallbacks`] for a list of these.
 pub trait LoaderCallback<L: Loader>: Sized + Send + 'static {
     type Output: Send;
 
@@ -113,6 +125,7 @@ pub trait LoaderCallback<L: Loader>: Sized + Send + 'static {
         app: &mut App,
     ) -> impl Future<Output = Result<Self::Output, Error>> + Send;
 
+    /// Map the return value of this callback with a fallible async function.
     fn and_then<T: Send>(
         self,
         func: impl AsyncFnOnce<(Self::Output,), Output = Result<T, Error>, CallOnceFuture: Send>
@@ -150,6 +163,9 @@ pub trait LoaderCallback<L: Loader>: Sized + Send + 'static {
         }
     }
 
+    /// Discard the return value of this callback, making it return `()` instead.
+    ///
+    /// This will not suppress errors.
     fn discard(self) -> impl LoaderCallback<L, Output = ()> {
         struct Discard<C>(C);
         impl<L: Loader, C: LoaderCallback<L>> LoaderCallback<L> for Discard<C> {
@@ -166,13 +182,26 @@ pub trait LoaderCallback<L: Loader>: Sized + Send + 'static {
         Discard(self)
     }
 
+    /// Wrap this callback in a boxed trait object, which uses dynamic dispatch to call.
     fn boxed(self) -> BoxedCallback<L, Self::Output> {
         BoxedCallback::new(self)
     }
+
+    /// Wrap this in an [`EitherCallback`] as the left branch.
+    fn left<T>(self) -> EitherCallback<Self, T> {
+        EitherCallback::Left(self)
+    }
+
+    /// Wrap this in an [`EitherCallback`] as the right branch.
+    fn right<T>(self) -> EitherCallback<T, Self> {
+        EitherCallback::Right(self)
+    }
 }
 
+/// A grouping of pre-defined [`LoaderCallback`]s.
 pub struct LoaderCallbacks;
 impl LoaderCallbacks {
+    /// A callback that does nothing but return `()`.
     #[must_use]
     pub fn none<L: Loader>() -> impl LoaderCallback<L, Output = ()> {
         struct Empty;
@@ -189,6 +218,8 @@ impl LoaderCallbacks {
         Empty
     }
 
+    /// A callback that [`load`](crate::app::component::AppComponentsMut::load)s the component
+    /// held in the loader and returns its [`Dependency`] with a [`DependencyType`] of `ty`.
     #[must_use]
     pub fn load<L: Loader>(ty: DependencyType) -> impl LoaderCallback<L, Output = Dependency<()>> {
         struct Load(DependencyType);
@@ -212,6 +243,9 @@ impl LoaderCallbacks {
         Load(ty)
     }
 
+    /// A callback that [lazily loads](crate::app::component::AppComponentsMut::load_lazy)s the
+    /// component held in the loader and returns its [`Dependency`] with a [`DependencyType`] of
+    /// `ty`.
     #[must_use]
     pub fn load_lazy<L: Loader>(
         ty: DependencyType,
@@ -238,6 +272,8 @@ impl LoaderCallbacks {
         Load(ty)
     }
 
+    /// A callback that [`get`](crate::app::component::AppComponentsMut::get)s the component
+    /// held in the loader and returns its [`Dependency`] with a [`DependencyType`] of `ty`.
     pub fn get<L: Loader, T: Send>(
         ty: DependencyType,
         func: impl for<'a, 'b> AsyncFnOnce<
@@ -285,6 +321,7 @@ impl LoaderCallbacks {
     }
 }
 
+/// A [`LoaderCallback`] that runs one of two different callback variants.
 pub enum EitherCallback<L, R> {
     Left(L),
     Right(R),
@@ -332,6 +369,7 @@ impl<L: Loader, C: LoaderCallback<L>> DynLoaderCallback<L> for C {
     }
 }
 
+/// A [`LoaderCallback`] that uses dynamic dispatch to run.
 pub struct BoxedCallback<L: Loader, O: Send> {
     callback: Box<dyn DynLoaderCallback<L, Output = O>>,
 }
@@ -360,13 +398,14 @@ impl<L: Loader, O: Send + 'static> LoaderCallback<L> for BoxedCallback<L, O> {
     }
 }
 
-/// A loader implementation for marker components.
+/// A ready-to-use [`Loader`] implementation for components with no useful loaded data.
 pub struct MarkerLoader<R: Registry> {
     id: ComponentIdPath,
     pd: PhantomData<fn() -> R>,
 }
 
 impl<R: Registry> MarkerLoader<R> {
+    /// Creates a new loader that uses `id` for its [`ComponentId`].
     #[must_use]
     pub fn new(id: impl Into<ComponentIdPath>) -> Self {
         Self {
@@ -394,7 +433,11 @@ impl<R: Registry> Loader for MarkerLoader<R> {
 
 impl Loaded for () {}
 
-/// A loader implementation that uses trait objects.
+/// A ready-to-use [`Loader`] implementation that uses dynamic dispatch.
+///
+/// Note that loaders to be erased must specifically implement [`Loader<ErasedLoader<_>>`] rather
+/// than the default. This is a workaround to allow [`LoaderCallback`]s to work with erased
+/// loaders.
 pub struct ErasedLoader<D: Loaded> {
     loader: Box<dyn DynLoader<D>>,
 }

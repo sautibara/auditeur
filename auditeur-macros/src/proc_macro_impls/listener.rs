@@ -112,7 +112,7 @@ impl<'a> Config<'a> {
                 for #ident #type_generics
             #where_clause
             {
-                type Components = (#bias, #(#components),*);
+                type Streams = (#bias, #(#components),*);
                 #listener_derives
                 const OPTIONS: #auditeur::component::resource::Options = #options;
             }
@@ -130,7 +130,7 @@ impl<'a> Config<'a> {
     fn stop_component(&self) -> Option<proc_macro2::TokenStream> {
         let auditeur = &*AUDITEUR;
         self.stop_component
-            .then(|| quote! { #auditeur::component::resource::listener::StopComponent })
+            .then(|| quote! { #auditeur::component::resource::listener::StopStream })
     }
 
     fn bias(&self) -> proc_macro2::TokenStream {
@@ -214,7 +214,7 @@ impl Attr {
     fn components(&self) -> impl Iterator<Item = proc_macro2::TokenStream> {
         match self {
             Self::RespondFlag => Either::Left(Either::Right(std::iter::once(simple_component(
-                "RespondComponent",
+                "RespondStream",
             )))),
             Self::Listen(messages) => Either::Right(Either::Left(Either::Left(
                 messages.iter().map(Component::component::<ListenSupplier>),
@@ -278,9 +278,9 @@ impl Parse for Attr {
             field::List::parse_after(ident, input).map(Self::OnAddIn)
         } else if ident == "respond" {
             Ok(Self::RespondFlag)
-        } else if ident == "components" {
+        } else if ident == "streams" {
             field::List::parse_after(ident, input).map(Self::Component)
-        } else if ident == "stop_component" {
+        } else if ident == "stop_stream" {
             field::NameValue::parse_after(ident, input).map(Self::StopComponent)
         } else if ident == "biased" {
             Ok(Self::BiasedFlag)
@@ -290,7 +290,7 @@ impl Parse for Attr {
             Ok(Self::OptionsFlag)
         } else {
             Err(input.error(format!(
-                "expected 'registry_component', 'biased', 'listen', 'take', 'on_add_in', 'stop_component', 'weak', 'options', or 'components', found '{ident}'"
+                "expected 'biased', 'weak', 'options', 'stop_stream', 'listen', 'take', 'on_add_in', or 'streams', found '{ident}'"
             )))
         }
     }
@@ -324,21 +324,21 @@ impl ComponentSupplier for VerbatimSupplier {
 struct ListenSupplier;
 impl ComponentSupplier for ListenSupplier {
     fn supply_component(ty: &syn::Type) -> proc_macro2::TokenStream {
-        default_component("ListenComponent", ty)
+        default_component("ListenStream", ty)
     }
 }
 
 struct TakeSupplier;
 impl ComponentSupplier for TakeSupplier {
     fn supply_component(ty: &syn::Type) -> proc_macro2::TokenStream {
-        default_component("TakeComponent", ty)
+        default_component("TakeStream", ty)
     }
 }
 
 struct OnAddInSupplier;
 impl ComponentSupplier for OnAddInSupplier {
     fn supply_component(ty: &syn::Type) -> proc_macro2::TokenStream {
-        default_component("OnAddInComponent", ty)
+        default_component("OnAddInStream", ty)
     }
 }
 

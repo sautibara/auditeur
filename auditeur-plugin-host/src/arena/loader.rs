@@ -68,8 +68,8 @@ impl Loader {
 
             let our_request = waiter.request().clone();
 
-            while let Some(event) = events.listen().await {
-                match event {
+            loop {
+                match events.listen().await {
                     Event::RequestSuccess { request } if request == our_request => {
                         break;
                     }

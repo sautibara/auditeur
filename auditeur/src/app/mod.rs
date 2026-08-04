@@ -189,10 +189,16 @@ pub use registrar::ErasedComponent;
 ///
 /// This contains:
 /// - A shared errors list, accessible through [`Self::errors`] and [`Self::errors_mut`],
-/// - [Registries](registry::Registry), containing all added
-///   [components](crate::component::Component), accessible through [`Self::registries_mut`].
+/// - [Registries](crate::component::registry::Registry), containing all added
+///   [components](crate::component::Component), accessible through [`Self::components_mut`].
 /// - A map of the relationships and dependencies between components,
 ///   accessible through [`Self::map`].
+///
+/// The [`App`] component manages the lifecycle of the app. Every [`App`] handle holds a dependency
+/// on the component, so keeping a handle alive will keep the app alive. If all handles are dropped,
+/// the app will automatically attempt to exit by requesting its removal. This will unload all
+/// components in the app (since the app component is the parent of all other components), and
+/// finally report a successful exit once all unloads are finished.
 #[identified("auditeur:app")]
 #[derive(Debug)]
 pub struct App {
@@ -260,7 +266,10 @@ impl App {
     }
 }
 
-/// Methods relating to builtin components: [`Resource`]s, [`ListenMessage`]s, and [`TakeMessage`]s.
+/// Methods relating to builtin components:
+/// [`Resource`](crate::component::resource::Resource)s,
+/// [`ListenMessage`](crate::component::listen::ListenMessage)s, and
+/// [`TakeMessage`](crate::component::take::TakeMessage)s.
 impl App {
     #[must_use]
     pub const fn resources_mut(&mut self) -> AppResourcesMut<'_> {
@@ -292,8 +301,8 @@ impl App {
     }
 }
 
-/// Methods that access the main internals of the app: the [registries](registry), the [map] of the
-/// added components, and the [error list](error).
+/// Methods that access the main internals of the app: the [registries](component), the [map] of
+/// added components, and the [error list](mod@error).
 impl App {
     #[must_use]
     pub const fn components_mut(&mut self) -> AppComponentsMut<'_> {
