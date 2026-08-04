@@ -34,5 +34,3 @@ unused_async_trait_impl = "allow"
 
 [features]
 path-any = ["auditeur-macros/path-any"]
-resource-map = []
-runtime-loading = ["resource-map", "auditeur-macros/runtime-loading"]

@@ -60,11 +60,11 @@ pub mod prelude {
         component::bundle::Bundle,
         component::listen::Shouter,
         component::resource::{
+            get::Get,
             listener::{Listen, Listener, ListenerDerive, OnAddIn, Take},
             watcher::Watcher,
         },
         component::take::Giver,
-        input::get::Get,
         input::{Create, CreateDerive, Input},
         macros::{
             CloneIn, GetRef, Input, create, identified, listen_message, listener, pure_resource,

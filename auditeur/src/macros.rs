@@ -177,7 +177,6 @@ pub use auditeur_macros::GetRef;
 /// derivatives.
 ///
 /// See [`MaybeGetRef`](crate::input::get::MaybeGetRef) for more information on why this is necessary
-#[cfg(feature = "runtime-loading")]
 pub use auditeur_macros::MaybeGetRef;
 
 /// Automatically provides an implementation of [`CloneIn`](crate::input::CloneIn).

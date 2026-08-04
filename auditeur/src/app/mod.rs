@@ -200,7 +200,7 @@ pub use registrar::ErasedComponent;
 /// components in the app (since the app component is the parent of all other components), and
 /// finally report a successful exit once all unloads are finished.
 #[identified("auditeur:app")]
-#[derive(Debug)]
+#[derive(Debug, crate::Any)]
 pub struct App {
     variant: Inner,
     handle: HandleData,

@@ -321,7 +321,6 @@ pub fn get_ref(item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(MaybeGetRef)]
-#[cfg(feature = "runtime-loading")]
 pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
 

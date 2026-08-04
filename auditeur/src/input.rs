@@ -7,8 +7,6 @@ use futures::Future;
 
 use crate::prelude::*;
 
-pub mod get;
-
 /// Values that can be obtained from an [`App`] using no external data.
 ///
 /// # Dependencies

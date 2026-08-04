@@ -35,14 +35,15 @@ use crate::{
             EitherCallback, ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks,
             Registries, Registry,
         },
+        resource::get::{DynGetRefLoader, Get, GetRef, MaybeGetRef},
     },
-    input::get::{DynGetRefLoader, Get, GetRef, MaybeGetRef},
     prelude::*,
 };
 
 use anyhow::{Context, Result, anyhow};
 use tracing::{Instrument, debug};
 
+pub mod get;
 pub mod listener;
 pub mod pure;
 pub mod watcher;

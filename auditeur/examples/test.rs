@@ -1,54 +1,54 @@
-use auditeur::app::map::RequestSet;
-use auditeur::component::bundle::Bundles;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use auditeur::component::resource::get::{GetCreate, GetRefWith};
 use auditeur::prelude::*;
 use auditeur::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // The loading and unloading of bundles is useless, as their loaded value is empty,
-    // but they can still be used to investigate how loading and unloading work.
+    #[resource("test:resource")]
+    #[pure_resource]
+    #[create(default)]
+    struct Resource {
+        number: Arc<AtomicUsize>,
+    }
 
-    let mut app = App::builder()
-        .with::<Bundle>(new_bundle!("test:bundle"))
-        .spawn();
+    #[create(external_input(Resource), derive_for_plain(Clone))]
+    #[derive(auditeur::Any)]
+    struct Ref {
+        // The handle can have both values from the original resource,
+        number: Arc<AtomicUsize>,
 
-    let bundle_id = ComponentId::inn::<Bundles>(ident!("test:bundle"));
+        // and extra values obtained through the app.
+        #[create(input)]
+        app: App,
+    }
 
-    // All components start out unloaded and only get loaded when necessary. (Although, some
-    // registries immediately load their components when they're added, like resources).
-    let map = app.map().get().await;
-    assert!(map.is_added(&bundle_id));
-    assert!(!map.is_loaded(&bundle_id));
+    impl CreateDerive for Ref {
+        async fn create(resource: &Resource, _: &mut App) -> Result<Self::Plain, Error> {
+            Ok(Self::Plain {
+                // To obtain values from the resource, use the external input.
+                number: resource.number.clone(),
+            })
+        }
+    }
 
-    // By using [`AppComponentsMut::load`], we can ensure that a component is loaded.
-    let dependency: Dependency<()> = app.components_mut().load(bundle_id.clone()).await?;
+    impl GetRefWith for Resource {
+        type Method = GetCreate<Ref>;
+    }
 
-    // [`AppComponentsMut::load`] only returns once the component finishes unloading,
-    // so we can be sure that it's loaded now.
-    let map = app.map().get().await;
-    assert!(map.is_loaded(&bundle_id));
+    let mut app = App::builder().with::<Resource>(()).spawn();
 
-    // Dependencies keep components loaded and provide access to what they're wrapping.
-    // They also hold extra information that can be accessed through [`Dependency::info_of`].
-    let info = Dependency::info_of(&dependency);
+    let resource = app.resources_mut().get::<Resource>().await?;
 
-    // For example, we could check who the dependent of the dependency is - who is keeping it alive.
-    let dependent = info.id.dependent();
-    // By default, the dependent of the app handle given through [`app::Builder::spawn`] is the app
-    // component, so that should also be the dependent of our dependency.
-    assert_eq!(**dependent, App::component_id());
+    // Now we can use both the values from the original resource,
+    assert_eq!(resource.number.load(Ordering::Relaxed), 0);
 
-    // Once all dependencies of a component are dropped, it is automatically unloaded.
-    drop(dependency);
-    let waiter = app
-        .components_mut()
-        .wait_for(RequestSet::unload(bundle_id.clone()))
-        .await;
-    waiter.wait().await;
+    // and the values obtained through the app.
+    let map = resource.app.map().get().await;
+    assert!(map.is_added(&Resource::component_id()));
 
-    let map = app.map().get().await;
-    assert!(!map.is_loaded(&bundle_id));
-
+    drop(resource);
     auditeur::test::finish(app, false).await
 }

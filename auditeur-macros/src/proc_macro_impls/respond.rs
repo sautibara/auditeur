@@ -541,10 +541,10 @@ impl Config<'_> {
 
         let auditeur = &*crate::AUDITEUR;
         tokens.extend(quote! {
-            impl #impl_generics #auditeur::input::get::GetRefWith for #self_ty
+            impl #impl_generics #auditeur::component::resource::get::GetRefWith for #self_ty
             #where_clause
             {
-                type Method = #auditeur::input::get::GetInput<#connection_ident>;
+                type Method = #auditeur::component::resource::get::GetInput<#connection_ident>;
             }
         });
     }

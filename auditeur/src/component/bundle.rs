@@ -20,7 +20,7 @@
 //! let map = app.map().get().await;
 //! let bundle_id = ComponentId::inn::<Bundles>(ident!("test:bundle"));
 //! assert!(map.is_added(&bundle_id));
-//! assert!(map.id_added(&Resource::component_id()));
+//! assert!(map.is_added(&Resource::component_id()));
 //!
 //! auditeur::test::finish(app, false).await
 //! # }
