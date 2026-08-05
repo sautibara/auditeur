@@ -166,9 +166,8 @@ use crate::{
         map::{AddedComponentId, AppMap, Dependency, DependencyPart, DependencyType, Map, Waiter},
         registrar::Registrar,
     },
-    children::HasChildren,
     component::{
-        RegistryOf,
+        HasChildren, RegistryOf,
         listen::{self, AppListenMut, ListenMessages, Listener},
         registry::{ErasedLoader, Loaded, Loader, LoaderCallbacks, Registries, Registry},
         resource::{AppResourcesMut, Resources},

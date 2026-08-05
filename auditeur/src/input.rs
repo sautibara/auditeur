@@ -4,7 +4,7 @@
 //! Meanwhile, values that have some runtime data associated with them should implement [`Create`].
 //!
 //! As such, [`Create`] is used in situations like [`Resource`](mod@crate::component::resource)'s
-//! [`Register`](crate::component::registry::Register) implementation, where it is used to allow
+//! [`Register`](crate::component::Register) implementation, where it is used to allow
 //! them to be initialized with some external input. On the other hand, [`Input`] is mainly used in
 //! the [`#[create]`](macro@crate::create) macro.
 

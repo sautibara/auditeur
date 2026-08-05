@@ -1,8 +1,8 @@
 #![feature(unboxed_closures, async_fn_traits)]
+#![cfg_attr(doc, feature(doc_notable_trait))]
 #![recursion_limit = "512"]
 
 pub mod app;
-pub mod children;
 pub mod component;
 pub mod input;
 #[cfg(feature = "path-any")]
@@ -50,28 +50,28 @@ pub use futures::try_join;
 pub use tokio;
 
 pub mod prelude {
-    pub use crate::children::HasChildren as _;
+    pub use crate::component::HasChildren as _;
     pub use crate::component::IdentifiedComponentType as _;
     pub use crate::component::IdentifiedType as _;
     pub use crate::{
         app::{App, map::Dependency},
-        children::Children,
-        component::ComponentId,
-        component::bundle::Bundle,
-        component::listen::Shouter,
-        component::resource::{
-            get::Get,
-            listener::{Listen, Listener, ListenerDerive, OnAddIn, Take},
-            watcher::Watcher,
+        component::{
+            Children, ComponentId,
+            bundle::Bundle,
+            listen::Shouter,
+            resource::{
+                get::Get,
+                listener::{Listen, Listener, ListenerDerive, OnAddIn, Take},
+                watcher::Watcher,
+            },
+            take::Giver,
         },
-        component::take::Giver,
         input::{Create, CreateDerive, Input},
         macros::{
             CloneIn, GetRef, Input, create, identified, listen_message, listener, pure_resource,
             resource, respond, take_message,
         },
         namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},
-        // this is a #[macro_export] macro so it can't be in macros
         new_bundle,
     };
 

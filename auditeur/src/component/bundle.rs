@@ -27,9 +27,8 @@
 //! ```
 
 use crate::{
-    children::HasChildren,
     component::{
-        ComponentIdPath, Register, RegistryOf,
+        ComponentIdPath, HasChildren, Register, RegistryOf,
         registry::{MarkerLoader, Registries, Registry},
     },
     prelude::*,

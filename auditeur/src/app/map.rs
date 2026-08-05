@@ -19,8 +19,7 @@ use crate::{
         event::{DependencyLifecycle, Event},
         registrar::ErasedComponent,
     },
-    children::Child,
-    component::{ComponentIdPath, IdentifiedComponentType, registry::Registries},
+    component::{Child, ComponentIdPath, IdentifiedComponentType, registry::Registries},
     input::CloneIn,
     prelude::*,
 };
@@ -2120,16 +2119,11 @@ impl Debug for Request {
 #[cfg(test)]
 mod test {
     use crate::{
-        Error,
-        app::{
-            self, Channels, Owned,
-            event::Event,
-            map::{self, Dependency},
-            registrar,
-        },
-        children::Children,
-        component::IdentifiedComponentType,
+        app::{self, Event, Owned, map, registrar},
+        prelude::*,
     };
+
+    use super::Channels;
 
     struct Check {
         checker: fn(&app::Method) -> bool,

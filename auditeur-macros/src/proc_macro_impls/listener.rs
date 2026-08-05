@@ -99,8 +99,8 @@ impl<'a> Config<'a> {
                     #this::exit(self).await
                 }
 
-                fn children(children: #auditeur::children::Children)
-                    -> #auditeur::children::Children
+                fn children(children: #auditeur::component::Children)
+                    -> #auditeur::component::Children
                 {
                     #this::children(children)
                 }
