@@ -1,151 +1,12 @@
 #![allow(private_interfaces, private_bounds)]
-
-macro_rules! app_future_def {
-    // Mutable components.
-    ( @ true (@($when_false:tt, $when_true:tt) $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* $when_true ) $($rest)* );
-    };
-    ( @ false (@($when_false:tt, $when_true:tt) $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* $when_false ) $($rest)* );
-    };
-    ( @ true (@mut $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* mut ) $($rest)* );
-    };
-    ( @ false (@mut $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* ) $($rest)* );
-    };
-    ( @ true (@AppFnOnce $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* AppMutFnOnce ) $($rest)* );
-    };
-    ( @ false (@AppFnOnce $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* AppFnOnce ) $($rest)* );
-    };
-    ( @ true (@AppFuture $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* AppMutFuture ) $($rest)* );
-    };
-    ( @ false (@AppFuture $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* AppFuture ) $($rest)* );
-    };
-    ( @ true (@AppFnOnceInner $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* AppMutFnOnceInner ) $($rest)* );
-    };
-    ( @ false (@AppFnOnceInner $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* AppFnOnceInner ) $($rest)* );
-    };
-    ( @ true (@AppFnOnceImpl $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* AppMutFnOnceImpl ) $($rest)* );
-    };
-    ( @ false (@AppFnOnceImpl $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* AppFnOnceImpl ) $($rest)* );
-    };
-    ( @ true (@AppFutureImpl $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ true ($($in)*) ( $($out)* AppMutFutureImpl ) $($rest)* );
-    };
-    ( @ false (@AppFutureImpl $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ false ($($in)*) ( $($out)* AppFutureImpl ) $($rest)* );
-    };
-    // Big components.
-    ( @ $mut:tt (@fields $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in)*) ( $($out)*
-            source: Source,
-            handle_fn: HandleFn,
-            owned_fn: OwnedFn
-        ) $($rest)* );
-    };
-    ( @ $mut:tt (@generics_bounded $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut (
-            Source: @AppFnOnce<Output = Output>,
-            Output: Send + 'static,
-            HandleFn: FnOnce(Source, &'a HandleData) -> (Method, HandleFut)
-                + Send + 'static,
-            HandleFut: Future<Output = Output> + Send + 'a,
-            OwnedFn: FnOnce(Source, &'a @mut Owned, &'a HandleData) -> Output
-                + Send + 'static,
-        $($in)*) ( $($out)* ) $($rest)*);
-    };
-    ( @ $mut:tt (@generics_unbounded $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in)*) ( $($out)*
-            Source,
-            Output,
-            HandleFn,
-            HandleFut,
-            OwnedFn,
-        ) $($rest)* );
-    };
-    ( @ $mut:tt (@type_defs $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut (
-            type Source: @AppFnOnce<Output = Self::Output>;
-            type Output: Send + 'static;
-            type HandleFn: FnOnce(Self::Source, &'a HandleData) -> (Method, Self::HandleFut)
-                + Send + 'static;
-            type HandleFut: Future<Output = Self::Output> + Send + 'a;
-            type OwnedFn: FnOnce(Self::Source, &'a @mut Owned, &'a HandleData)
-                -> Self::Output
-                + Send + 'static
-        $($in)*) ($($out)*) $($rest)*);
-    };
-    ( @ $mut:tt (@type_impls $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in)*) ( $($out)*
-            type Source = Source;
-            type Output = Output;
-            type HandleFn = HandleFn;
-            type HandleFut = HandleFut;
-            type OwnedFn = OwnedFn
-        ) $($rest)*);
-    };
-    ( @ $mut:tt (@generics_from_types $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in)*) ( $($out)*
-            Self::Source,
-            Self::Output,
-            Self::HandleFn,
-            Self::HandleFut,
-            Self::OwnedFn
-        ) $($rest)*);
-    };
-    // Pushing a delimiter onto the delimiter stack.
-    ( @ $mut:tt (($($next:tt)*) $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($next)*) () paren ($($in)*) ($($out)*) $($rest)*);
-    };
-    ( @ $mut:tt ({$($next:tt)*} $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($next)*) () curly ($($in)*) ($($out)*) $($rest)*);
-    };
-    ( @ $mut:tt ([$($next:tt)*] $($in:tt)*) ($($out:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($next)*) () square ($($in)*) ($($out)*) $($rest)*);
-    };
-    // Pushing a default token.
-    ( @ $mut:tt ($next:tt $($in:tt)*) ($($out:tt)*) $($rest:tt)* ) => {
-        app_future_def!( @ $mut ($($in)*) ($($out)* $next) $($rest)* );
-    };
-    // Popping a delimiter off the delimiter stack.
-    ( @ $mut:tt () ($($out:tt)*) paren ($($in_next:tt)*) ($($out_next:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in_next)*) ($($out_next)* ($($out)*)) $($rest)* );
-    };
-    ( @ $mut:tt () ($($out:tt)*) curly ($($in_next:tt)*) ($($out_next:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in_next)*) ($($out_next)* {$($out)*}) $($rest)* );
-    };
-    ( @ $mut:tt () ($($out:tt)*) square ($($in_next:tt)*) ($($out_next:tt)*) $($rest:tt)*) => {
-        app_future_def!( @ $mut ($($in_next)*) ($($out_next)* [$($out)*]) $($rest)* );
-    };
-    // Base case.
-    ( @ $mut:tt () ($($out:tt)*) ) => {
-        $($out)*
-    };
-    // Initial entrance.
-    ( mut: $mut:tt; $($in:tt)* ) => {
-        app_future_def!( @ $mut ($($in)*) () );
-    };
-    ( $($in:tt)* ) => {
-        app_future_def!( @ false ($($in)*) () );
-        app_future_def!( @ true ($($in)*) () );
-    };
-}
+//! The backend of the library; the way that components actually interact.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
 use futures::FutureExt;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 use tracing::debug;
 
 use crate::app::component::{AppComponentsMut, AppFnComponentsMut};
@@ -180,6 +41,9 @@ pub mod error;
 pub mod event;
 pub mod map;
 pub(crate) mod registrar;
+
+mod future;
+pub use future::*;
 
 pub use event::Event;
 pub use registrar::ErasedComponent;
@@ -362,273 +226,6 @@ impl CloneIn for App {
     }
 }
 
-struct OneshotSender<T>(oneshot::Sender<T>);
-
-impl<T> OneshotSender<T> {
-    pub fn send(self, value: T) {
-        let _ = self.0.send(value);
-    }
-}
-
-impl<T> Debug for OneshotSender<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "oneshot::Sender(...)")
-    }
-}
-
-/// A message from a handle to run a method in the app.
-#[derive(Debug)]
-enum Method {
-    Registries(registrar::Method),
-    Errors(error::Method),
-    Map(map::Method),
-
-    Exit,
-    ReleaseEventListener,
-
-    GetEventListener {
-        dependent: LoadedComponentId,
-        ty: DependencyType,
-        sender: OneshotSender<Result<Listener<Event>, Error>>,
-    },
-    Then {
-        before: Box<Self>,
-        after: Box<Self>,
-    },
-
-    CheckForStragglers,
-    Flush(ComponentId),
-}
-
-impl Method {
-    #[expect(clippy::manual_async_fn)] // doesn't work with boxed() for some reason
-    fn run(self, app: &mut App) -> impl Future<Output = ()> + Send {
-        async {
-            match self {
-                Self::Registries(method) => method.run(app).await,
-                Self::Errors(method) => method.run(app).await,
-                Self::Map(method) => method.run(app).await,
-                // caller is expected to check for it
-                Self::Exit => (),
-                Self::ReleaseEventListener => app.release_event_listener().await,
-                Self::Then {
-                    before: first,
-                    after,
-                } => {
-                    first.run(app).boxed().await;
-                    after.run(app).boxed().await;
-                }
-                Self::GetEventListener {
-                    dependent,
-                    ty,
-                    sender,
-                } => {
-                    let listener = app.get_event_listener_as(dependent, ty).await;
-                    sender.send(listener);
-                }
-                Self::CheckForStragglers => {
-                    let map = app.map().get().await;
-                    warn!("app is taking a long time to exit...");
-                    debug!("current state of map: {map:#?}");
-                }
-                Self::Flush(id) => {
-                    AppFn::spawn_mut(
-                        id,
-                        |id, _| Self::Flush(id),
-                        |id, owned, _| {
-                            owned.registrar.remove_unchecked(&id);
-
-                            let id = id.into();
-                            let event_sender = owned.event_sender.clone();
-                            let request = FlushRequest::new(id, event_sender);
-                            let _ = owned.event_sender.send(Event::Flush(request));
-                        },
-                    )
-                    .call(app)
-                    .await;
-                }
-            }
-        }
-    }
-
-    /// Returns `true` if the method is [`Exit`].
-    ///
-    /// [`Exit`]: Method::Exit
-    #[must_use]
-    const fn is_exit(&self) -> bool {
-        matches!(self, Self::Exit)
-    }
-}
-
-struct AppRunner {
-    app: App,
-    method_receiver: flume::Receiver<Method>,
-}
-
-impl AppRunner {
-    async fn run(mut self) {
-        while let Ok(method) = self.method_receiver.recv_async().await
-            && !method.is_exit()
-        {
-            method.run(&mut self.app).await;
-        }
-    }
-}
-
-#[must_use = "builder does nothing unless it is run"]
-pub struct Builder {
-    children: Children,
-}
-
-impl Default for Owned {
-    fn default() -> Self {
-        Self {
-            registrar: Registrar::default(),
-            errors: Errors::default(),
-            map: Map::default(),
-            event_sender: broadcast::Sender::new(1024),
-            event_sender_dependency: None,
-        }
-    }
-}
-
-impl Owned {
-    fn initialize(
-        &mut self,
-        children: Children,
-        sender: &flume::Sender<Method>,
-    ) -> Result<LoadedComponentId, Error> {
-        // The three common ancestors (registries, app registry, app).
-        let (registries, _) = ErasedComponent::new::<Registries, Registries>(());
-        let registries_id = self.add_child_validated(registries, None, sender)?;
-
-        let (app_registry, _) = ErasedComponent::new::<Registries, App>(());
-        let app_registry_id =
-            self.add_child_validated(app_registry, Some(registries_id), sender)?;
-
-        let (app_component, _) = ErasedComponent::new::<App, App>(());
-        let app_id = self.add_child_validated(app_component, Some(app_registry_id), sender)?;
-
-        // The main registries.
-        let registries = Children::new()
-            .with::<Resources>(())
-            .with::<ListenMessages>(())
-            .with::<TakeMessages>(())
-            .with::<Bundles>(());
-        self.add_children(registries, sender);
-        assert!(
-            self.errors.is_empty(),
-            "adding main registries shouldn't fail"
-        );
-
-        let app_loaded_id = self.map.load_component(
-            app_id.clone(),
-            Channels {
-                event_sender: &self.event_sender,
-                method_sender: sender,
-            },
-        );
-
-        // The event sender dependency.
-        let event_channel = ErasedComponent::from_loader::<ListenMessages>(ErasedLoader::new(
-            listen::PersistentChannelLoader::new(self.event_sender.clone()),
-        ));
-        let event_id = self.add_child_validated(event_channel, Some(app_id.clone()), sender)?;
-        let event_loaded_id = self.map.load_component(
-            event_id,
-            Channels {
-                event_sender: &self.event_sender,
-                method_sender: sender,
-            },
-        );
-        let event_dependency = self.increment_dependency(
-            DependencyPart {
-                id: LoadedDependencyId::new(app_loaded_id.clone(), event_loaded_id),
-                ty: DependencyType::Unremovable,
-            },
-            sender,
-        );
-        self.event_sender_dependency = Some(event_dependency);
-
-        // Then add the rest of the children.
-        let children = children.adopted_by(app_id.deref().clone());
-        self.add_children(children, sender);
-
-        Ok(app_loaded_id)
-    }
-}
-
-// Returns a 2-tuple of the owned app and handle app.
-
-impl Builder {
-    fn new() -> Self {
-        Self {
-            children: Children::new(),
-        }
-    }
-
-    #[expect(clippy::missing_panics_doc)]
-    #[allow(clippy::must_use_candidate)] // no?
-    pub fn spawn(self) -> App {
-        let mut owned = Owned::default();
-        let (method_sender, method_receiver) = flume::unbounded();
-        let app_loaded_id = owned
-            .initialize(self.children, &method_sender)
-            .expect("app shouldn't fail to initialize");
-
-        // Construct the handle dependency first to keep the app alive.
-        let handle_dependency = DependencyPart {
-            id: LoadedDependencyId::new(app_loaded_id.clone(), app_loaded_id),
-            // Transient b/c main thread is expected to drop the handle.
-            ty: DependencyType::Transient,
-        };
-
-        let handle_app = App {
-            handle: HandleData {
-                method_sender: method_sender.clone(),
-                dependency: owned.increment_dependency(handle_dependency, &method_sender),
-                new_dependency_type: DependencyType::Transient,
-            },
-            variant: Inner::Handle,
-        };
-
-        // Then the owned dependency now that the app is being kept alive.
-        let dependency = Dependency {
-            value: (),
-            handle: DependencyHandle::empty_unsafe(),
-        };
-
-        let owned_app = App {
-            handle: HandleData {
-                method_sender,
-                dependency,
-                new_dependency_type: DependencyType::Unremovable,
-            },
-            variant: Inner::Owned(Box::new(owned)),
-        };
-
-        // And start the owned app running in the background.
-        let runner = AppRunner {
-            app: owned_app,
-            method_receiver,
-        };
-        tokio::task::spawn(runner.run());
-
-        handle_app
-    }
-
-    pub async fn run(self) {
-        self.spawn().wait_for_exit().await;
-    }
-}
-
-impl HasChildren for Builder {
-    fn with_erased(mut self, component: ErasedComponent, children: Children) -> Self {
-        self.children = self.children.with_erased(component, children);
-        self
-    }
-}
-
 pub struct Dependent<'a> {
     app: &'a App,
 }
@@ -775,43 +372,78 @@ impl<D, T> DerefMut for DependentMut<'_, D, T> {
     }
 }
 
-impl Registry for App {
-    type Loader = AppLoader;
-    type Loaded = AppLoaded;
+#[must_use = "an app builder does nothing unless it is run"]
+pub struct Builder {
+    children: Children,
 }
 
-impl Register<Self> for App {
-    type ComponentInput = ();
-    fn register((): Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
-        (AppLoader(()), Children::new())
+impl Builder {
+    fn new() -> Self {
+        Self {
+            children: Children::new(),
+        }
+    }
+
+    #[expect(clippy::missing_panics_doc)]
+    #[allow(clippy::must_use_candidate)] // no?
+    pub fn spawn(self) -> App {
+        let mut owned = Owned::default();
+        let (method_sender, method_receiver) = flume::unbounded();
+        let app_loaded_id = owned
+            .initialize(self.children, &method_sender)
+            .expect("app shouldn't fail to initialize");
+
+        // Construct the handle dependency first to keep the app alive.
+        let handle_dependency = DependencyPart {
+            id: LoadedDependencyId::new(app_loaded_id.clone(), app_loaded_id),
+            // Transient b/c main thread is expected to drop the handle.
+            ty: DependencyType::Transient,
+        };
+
+        let handle_app = App {
+            handle: HandleData {
+                method_sender: method_sender.clone(),
+                dependency: owned.increment_dependency(handle_dependency, &method_sender),
+                new_dependency_type: DependencyType::Transient,
+            },
+            variant: Inner::Handle,
+        };
+
+        // Then the owned dependency now that the app is being kept alive.
+        let dependency = Dependency {
+            value: (),
+            handle: DependencyHandle::empty_unsafe(),
+        };
+
+        let owned_app = App {
+            handle: HandleData {
+                method_sender,
+                dependency,
+                new_dependency_type: DependencyType::Unremovable,
+            },
+            variant: Inner::Owned(Box::new(owned)),
+        };
+
+        // And start the owned app running in the background.
+        let runner = AppRunner {
+            app: owned_app,
+            method_receiver,
+        };
+        tokio::task::spawn(runner.run());
+
+        handle_app
+    }
+
+    pub async fn run(self) {
+        self.spawn().wait_for_exit().await;
     }
 }
 
-pub struct AppLoader(());
-impl Loader for AppLoader {
-    type Loaded = AppLoaded;
-    async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
-        Ok(AppLoaded(()))
+impl HasChildren for Builder {
+    fn with_erased(mut self, component: ErasedComponent, children: Children) -> Self {
+        self.children = self.children.with_erased(component, children);
+        self
     }
-
-    fn on_load(&self) -> impl LoaderCallback<Self, Output = ()> {
-        // app has custom load / unload logic in the map
-        LoaderCallbacks::none()
-    }
-}
-
-impl IdentifiedComponent for AppLoader {
-    fn component_id_dyn(&self) -> ComponentId {
-        App::component_id()
-    }
-}
-
-#[derive(Any)]
-pub struct AppLoaded(());
-impl Loaded for AppLoaded {}
-
-impl RegistryOf for App {
-    type Registry = Self;
 }
 
 pub struct AppFn;
@@ -862,23 +494,6 @@ impl AppFn {
             Self.components_mut()
                 .request(RequestSet::remove(App::component_id()))
         })
-    }
-}
-
-impl HandleData {
-    const fn into_handle(self) -> App {
-        App {
-            variant: Inner::Handle,
-            handle: self,
-        }
-    }
-
-    fn clone_in_owned(&self, owned: &mut Owned) -> Self {
-        Self {
-            method_sender: self.method_sender.clone(),
-            dependency: Dependency::clone_in_owned(&self.dependency, owned, &self.method_sender),
-            new_dependency_type: self.new_dependency_type,
-        }
     }
 }
 
@@ -950,410 +565,235 @@ impl AppFn {
     }
 }
 
-#[allow(dead_code)] // some immutable functions aren't used
-impl AppFn {
-    app_future_def! {
-        const fn @(spawn, spawn_mut)<I: Send + 'static>(
-            input: I,
-            method: impl FnOnce(I, &HandleData) -> Method + Send + 'static,
-            owned: impl FnOnce(I, &@mut Owned, &HandleData)
-                + Send
-                + 'static,
-        ) -> impl @AppFnOnce<Output = ()> {
-            struct Spawn<I, M, O> {
-                input: I,
-                method: M,
-                owned: O,
-            }
+struct AppRunner {
+    app: App,
+    method_receiver: flume::Receiver<Method>,
+}
 
-            impl<
-                I: Send + 'static,
-                M: FnOnce(I, &HandleData) -> Method + Send + 'static,
-                O: FnOnce(I, &@mut Owned, &HandleData)
-                    + Send
-                    + 'static,
-            > @AppFnOnce for Spawn<I, M, O>
-            {
-                type Output = ();
-                fn into_inner<'a>(self) -> impl @AppFnOnceInner<'a, Output = Self::Output> {
-                    @AppFnOnceImpl {
-                        pd: PhantomData,
-                        source: self,
-                        handle_fn: |this, handle| ((this.method)(this.input, handle), async {}),
-                        owned_fn: |this, owned, handle| (this.owned)(this.input, owned, handle),
-                    }
-                }
-            }
-
-            Spawn {
-                input,
-                method,
-                owned,
-            }
+impl AppRunner {
+    async fn run(mut self) {
+        while let Ok(method) = self.method_receiver.recv_async().await
+            && !method.is_exit()
+        {
+            method.run(&mut self.app).await;
         }
     }
+}
 
-    app_future_def! {
-        const fn @(oneshot, oneshot_mut)<I: Send + 'static, O: Send + 'static>(
-            input: I,
-            method: impl FnOnce(I, OneshotSender<O>, &HandleData)
-                -> Method + Send + 'static,
-            owned: impl FnOnce(I, &@mut Owned, & HandleData) -> O + Send + 'static,
-        ) -> impl @AppFnOnce<Output = O> {
-            struct Oneshot<I, M, O> {
-                input: I,
-                method: M,
-                owned: O,
-            }
+/// A message from a handle to run a method in the app.
+#[derive(Debug)]
+enum Method {
+    Registries(registrar::Method),
+    Errors(error::Method),
+    Map(map::Method),
 
-            impl<
-                I: Send + 'static,
-                Out: Send + 'static,
-                M: FnOnce(I, OneshotSender<Out>, &HandleData) -> Method + Send + 'static,
-                O: FnOnce(I, &@mut Owned, &HandleData) -> Out
-                    + Send
-                    + 'static,
-            > @AppFnOnce for Oneshot<I, M, O>
-            {
-                type Output = Out;
-                fn into_inner<'a>(self) -> impl @AppFnOnceInner<'a, Output = Self::Output> {
-                    @AppFnOnceImpl {
-                        pd: PhantomData,
-                        source: self,
-                        handle_fn: |this, handle| {
-                            let (sender, receiver) = oneshot::channel();
-                            let sender = OneshotSender(sender);
-                            ((this.method)(this.input, sender, handle), async {
-                                receiver.await.expect("app shouldn't drop our message")
-                            })
+    Exit,
+    ReleaseEventListener,
+
+    GetEventListener {
+        dependent: LoadedComponentId,
+        ty: DependencyType,
+        sender: OneshotSender<Result<Listener<Event>, Error>>,
+    },
+    Then {
+        before: Box<Self>,
+        after: Box<Self>,
+    },
+
+    CheckForStragglers,
+    Flush(ComponentId),
+}
+
+impl Method {
+    #[expect(clippy::manual_async_fn)] // doesn't work with boxed() for some reason
+    fn run(self, app: &mut App) -> impl Future<Output = ()> + Send {
+        async {
+            match self {
+                Self::Registries(method) => method.run(app).await,
+                Self::Errors(method) => method.run(app).await,
+                Self::Map(method) => method.run(app).await,
+                // caller is expected to check for it
+                Self::Exit => (),
+                Self::ReleaseEventListener => app.release_event_listener().await,
+                Self::Then {
+                    before: first,
+                    after,
+                } => {
+                    first.run(app).boxed().await;
+                    after.run(app).boxed().await;
+                }
+                Self::GetEventListener {
+                    dependent,
+                    ty,
+                    sender,
+                } => {
+                    let listener = app.get_event_listener_as(dependent, ty).await;
+                    sender.send(listener);
+                }
+                Self::CheckForStragglers => {
+                    let map = app.map().get().await;
+                    warn!("app is taking a long time to exit...");
+                    debug!("current state of map: {map:#?}");
+                }
+                Self::Flush(id) => {
+                    AppFn::spawn_mut(
+                        id,
+                        |id, _| Self::Flush(id),
+                        |id, owned, _| {
+                            owned.registrar.remove_unchecked(&id);
+
+                            let id = id.into();
+                            let event_sender = owned.event_sender.clone();
+                            let request = FlushRequest::new(id, event_sender);
+                            let _ = owned.event_sender.send(Event::Flush(request));
                         },
-                        owned_fn: |this, owned, handle| (this.owned)(this.input, owned, handle),
-                    }
-                }
-            }
-
-            Oneshot {
-                input,
-                method,
-                owned,
-            }
-        }
-    }
-
-    app_future_def! {
-        const fn @(using_handle, using_handle_mut)<
-            O: Send + 'static,
-            F: @AppFnOnce<Output = O>
-        >(
-            mapping: impl FnOnce(&HandleData) -> F + Send + 'static,
-        ) -> impl @AppFnOnce<Output = O> {
-            struct UsingHandle<M> {
-                mapping: M,
-            }
-
-            impl<
-                M: FnOnce(&HandleData) -> F + Send + 'static,
-                F: @AppFnOnce<Output = O>,
-                O: Send + 'static,
-            > @AppFnOnce for UsingHandle<M>
-            {
-                type Output = O;
-
-                fn into_inner<'a>(self) -> impl @AppFnOnceInner<'a, Output = Self::Output> {
-                    @AppFnOnceImpl {
-                        pd: PhantomData,
-                        source: self,
-                        handle_fn: |this, handle| {
-                            let fn_once: F = (this.mapping)(handle);
-                            let inner: @AppFnOnceImpl<_, _, _, _, _>
-                                = fn_once.into_inner().into();
-                            (inner.handle_fn)(inner.source, handle)
-                        },
-                        owned_fn: |this, owned, handle| {
-                            let fn_once: F = (this.mapping)(handle);
-                            let inner: @AppFnOnceImpl<_, _, _, _, _>
-                                = fn_once.into_inner().into();
-                            (inner.owned_fn)(inner.source, owned, handle)
-                        },
-                    }
-                }
-            }
-
-            UsingHandle { mapping }
-        }
-    }
-}
-
-// TODO: ability to turn an AppFnOnceInner back into an AppFnOnce
-// this should be easy if we replace Input with what should be Self
-// That is, Input will implement AppFnOnce, so converting would be as simple as dropping the
-// functions
-
-#[must_use]
-pub trait AppFuture<'a>: IntoFuture<IntoFuture: Send, Output: Send> + Send + Sized {
-    fn into_parts(self) -> (&'a App, impl AppFnOnce<Output = Self::Output>);
-
-    fn into_fn_once(self) -> impl AppFnOnce<Output = Self::Output> {
-        let (_, fn_once) = self.into_parts();
-        fn_once
-    }
-}
-
-#[must_use]
-pub trait AppMutFuture<'a>: IntoFuture<IntoFuture: Send, Output: Send> + Send + Sized {
-    fn into_parts(self) -> (&'a mut App, impl AppMutFnOnce<Output = Self::Output>);
-
-    fn into_fn_once(self) -> impl AppMutFnOnce<Output = Self::Output> {
-        let (_, fn_once) = self.into_parts();
-        fn_once
-    }
-
-    fn with_event_listener(
-        self,
-    ) -> impl AppMutFuture<'a, Output = (Self::Output, Result<Listener<Event>, Error>)> {
-        let (app, fn_once) = self.into_parts();
-        let fn_once = fn_once.then(AppFn.get_event_listener());
-        fn_once.call(app)
-    }
-}
-
-app_future_def! {
-    struct @AppFutureImpl<'a, F: @AppFnOnceInner<'a>> {
-        app: &'a @mut App,
-        func: F,
-    }
-
-    impl<'a, F: @AppFnOnceInner<'a>> IntoFuture for @AppFutureImpl<'a, F> {
-        type Output = F::Output;
-        type IntoFuture = futures::future::Either<F::HandleFut, futures::future::Ready<F::Output>>;
-
-        fn into_future(self) -> Self::IntoFuture {
-            let func: @AppFnOnceImpl<_, _, _, _, _> = self.func.into();
-            match & @mut self.app.variant {
-                Inner::Handle => {
-                    let (method, future) = (func.handle_fn)(func.source, &self.app.handle);
-                    let _ = self.app.handle.method_sender.send(method);
-                    futures::future::Either::Left(future)
-                }
-                Inner::Owned(owned) => {
-                    futures::future::Either::Right(futures::future::ready(
-                        (func.owned_fn)(func.source, owned, &self.app.handle)
-                    ))
-                }
-            }
-        }
-    }
-
-    impl<'a, F: @AppFnOnceInner<'a>> @AppFuture<'a> for @AppFutureImpl<'a, F> {
-        fn into_parts(self) -> (&'a @mut App, impl @AppFnOnce<Output = Self::Output>) {
-            (self.app, self.func.into().source)
-        }
-    }
-}
-
-#[must_use]
-pub trait AppFnOnce: Send + Sized + 'static {
-    type Output: Send + 'static;
-
-    #[doc(hidden)]
-    fn into_inner<'a>(self) -> impl AppFnOnceInner<'a, Output = Self::Output>;
-
-    fn call(self, app: &App) -> impl AppFuture<'_, Output = Self::Output> {
-        AppFutureImpl {
-            app,
-            func: self.into_inner(),
-        }
-    }
-
-    fn using_mut(self) -> impl AppMutFnOnce<Output = Self::Output> {
-        struct UsingMut<A: AppFnOnce>(A);
-
-        impl<A: AppFnOnce> AppMutFnOnce for UsingMut<A> {
-            type Output = A::Output;
-            fn into_inner<'a>(self) -> impl AppMutFnOnceInner<'a, Output = Self::Output> {
-                AppMutFnOnceImpl {
-                    pd: PhantomData,
-                    source: self,
-                    handle_fn: |this, handle| {
-                        let this: AppFnOnceImpl<_, _, _, _, _> = this.0.into_inner().into();
-                        (this.handle_fn)(this.source, handle)
-                    },
-                    owned_fn: move |this, owned, handle| {
-                        let this: AppFnOnceImpl<_, _, _, _, _> = this.0.into_inner().into();
-                        (this.owned_fn)(this.source, owned, handle)
-                    },
-                }
-            }
-        }
-
-        UsingMut::<Self>(self)
-    }
-
-    fn then<U: Send + 'static>(
-        self,
-        other: impl AppFnOnce<Output = U>,
-    ) -> impl AppFnOnce<Output = (Self::Output, U)> {
-        Then {
-            before: self,
-            after: other,
-        }
-    }
-
-    fn map<U: Send + 'static>(
-        self,
-        mapping: impl FnOnce(Self::Output) -> U + Send + 'static,
-    ) -> impl AppFnOnce<Output = U> {
-        AppFnMapping {
-            inner: self,
-            mapping,
-        }
-    }
-}
-
-#[must_use]
-pub trait AppMutFnOnce: Send + Sized + 'static {
-    type Output: Send + 'static;
-
-    #[doc(hidden)]
-    fn into_inner<'a>(self) -> impl AppMutFnOnceInner<'a, Output = Self::Output>;
-
-    fn call(self, app: &mut App) -> impl AppMutFuture<'_, Output = Self::Output> {
-        AppMutFutureImpl {
-            app,
-            func: self.into_inner(),
-        }
-    }
-
-    fn then<U: Send + 'static>(
-        self,
-        other: impl AppMutFnOnce<Output = U>,
-    ) -> impl AppMutFnOnce<Output = (Self::Output, U)> {
-        Then {
-            before: self,
-            after: other,
-        }
-    }
-
-    fn map<U: Send + 'static>(
-        self,
-        mapping: impl FnOnce(Self::Output) -> U + Send + 'static,
-    ) -> impl AppMutFnOnce<Output = U> {
-        AppFnMapping {
-            inner: self,
-            mapping,
-        }
-    }
-}
-
-struct Then<B, A> {
-    before: B,
-    after: A,
-}
-
-app_future_def! {
-    impl<
-        BO: Send + 'static,
-        AO: Send + 'static,
-        B: @AppFnOnce<Output = BO>,
-        A: @AppFnOnce<Output = AO>,
-    > @AppFnOnce for Then<B, A>
-    {
-        type Output = (BO, AO);
-        fn into_inner<'a>(self) -> impl @AppFnOnceInner<'a, Output = Self::Output> {
-            @AppFnOnceImpl {
-                pd: PhantomData,
-                source: self,
-                handle_fn: move |this, handle| {
-                    let before_inner: @AppFnOnceImpl<_, _, _, _, _> =
-                        this.before.into_inner().into();
-                    let after_inner: @AppFnOnceImpl<_, _, _, _, _> =
-                        this.after.into_inner().into();
-
-                    let (before_method, before_fut) =
-                        (before_inner.handle_fn)(before_inner.source, handle);
-                    let (after_method, after_fut) =
-                        (after_inner.handle_fn)(after_inner.source, handle);
-
-                    let joined_fut = futures::FutureExt::then(
-                        before_fut,
-                        |before_val| futures::FutureExt::map(
-                            after_fut,
-                            |after_val| (before_val, after_val)
-                        )
-                    );
-
-                    (
-                        Method::Then {
-                            before: Box::new(before_method),
-                            after: Box::new(after_method),
-                        },
-                        joined_fut,
                     )
-                },
-                owned_fn: |this, owned, handle| {
-                    let Then { before, after } = this;
-
-                    let before: @AppFnOnceImpl<_, _, _, _, _> = before.into_inner().into();
-                    let before_val = (before.owned_fn)(before.source, owned, handle);
-
-                    let after: @AppFnOnceImpl<_, _, _, _, _> = after.into_inner().into();
-                    let after_val = (after.owned_fn)(after.source, owned, handle);
-
-                    (before_val, after_val)
-                },
+                    .call(app)
+                    .await;
+                }
             }
+        }
+    }
+
+    /// Returns `true` if the method is [`Exit`].
+    ///
+    /// [`Exit`]: Method::Exit
+    #[must_use]
+    const fn is_exit(&self) -> bool {
+        matches!(self, Self::Exit)
+    }
+}
+
+impl Default for Owned {
+    fn default() -> Self {
+        Self {
+            registrar: Registrar::default(),
+            errors: Errors::default(),
+            map: Map::default(),
+            event_sender: broadcast::Sender::new(1024),
+            event_sender_dependency: None,
         }
     }
 }
 
-struct AppFnMapping<A, M> {
-    inner: A,
-    mapping: M,
+impl Owned {
+    fn initialize(
+        &mut self,
+        children: Children,
+        sender: &flume::Sender<Method>,
+    ) -> Result<LoadedComponentId, Error> {
+        // The three common ancestors (registries, app registry, app).
+        let (registries, _) = ErasedComponent::new::<Registries, Registries>(());
+        let registries_id = self.add_child_validated(registries, None, sender)?;
+
+        let (app_registry, _) = ErasedComponent::new::<Registries, App>(());
+        let app_registry_id =
+            self.add_child_validated(app_registry, Some(registries_id), sender)?;
+
+        let (app_component, _) = ErasedComponent::new::<App, App>(());
+        let app_id = self.add_child_validated(app_component, Some(app_registry_id), sender)?;
+
+        // The main registries.
+        let registries = Children::new()
+            .with::<Resources>(())
+            .with::<ListenMessages>(())
+            .with::<TakeMessages>(())
+            .with::<Bundles>(());
+        self.add_children(registries, sender);
+        assert!(
+            self.errors.is_empty(),
+            "adding main registries shouldn't fail"
+        );
+
+        let app_loaded_id = self.map.load_component(
+            app_id.clone(),
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+
+        // The event sender dependency.
+        let event_channel = ErasedComponent::from_loader::<ListenMessages>(ErasedLoader::new(
+            listen::PersistentChannelLoader::new(self.event_sender.clone()),
+        ));
+        let event_id = self.add_child_validated(event_channel, Some(app_id.clone()), sender)?;
+        let event_loaded_id = self.map.load_component(
+            event_id,
+            Channels {
+                event_sender: &self.event_sender,
+                method_sender: sender,
+            },
+        );
+        let event_dependency = self.increment_dependency(
+            DependencyPart {
+                id: LoadedDependencyId::new(app_loaded_id.clone(), event_loaded_id),
+                ty: DependencyType::Unremovable,
+            },
+            sender,
+        );
+        self.event_sender_dependency = Some(event_dependency);
+
+        // Then add the rest of the children.
+        let children = children.adopted_by(app_id.deref().clone());
+        self.add_children(children, sender);
+
+        Ok(app_loaded_id)
+    }
 }
 
-app_future_def! {
-    impl<
-        A: @AppFnOnce<Output = O>,
-        O: Send + 'static,
-        U: Send + 'static,
-        M: FnOnce(O) -> U + Send + 'static,
-    > @AppFnOnce for AppFnMapping<A, M>
-    {
-        type Output = U;
-        fn into_inner<'a>(self) -> impl @AppFnOnceInner<'a, Output = Self::Output> {
-            @AppFnOnceImpl {
-                pd: PhantomData,
-                source: self,
-                handle_fn: move |this, handle| {
-                    let inner: @AppFnOnceImpl<_, _, _, _, _> = this.inner.into_inner().into();
-                    let (method, fut) = (inner.handle_fn)(inner.source, handle);
-                    // WARN: doing this map manually (through an await or something)
-                    // causes an ICE for some reason...
-                    let fut = futures::future::FutureExt::map(fut, this.mapping);
-                    (method, fut)
-                },
-                owned_fn: |this, owned, handle| {
-                    let inner: @AppFnOnceImpl<_, _, _, _, _> = this.inner.into_inner().into();
-                    let val = (inner.owned_fn)(inner.source, owned, handle);
-                    (this.mapping)(val)
-                },
-            }
+impl Registry for App {
+    type Loader = AppLoader;
+    type Loaded = AppLoaded;
+}
+
+impl Register<Self> for App {
+    type ComponentInput = ();
+    fn register((): Self::ComponentInput) -> (<Self as Registry>::Loader, Children) {
+        (AppLoader(()), Children::new())
+    }
+}
+
+pub struct AppLoader(());
+impl Loader for AppLoader {
+    type Loaded = AppLoaded;
+    async fn load(&self, _: &mut App) -> Result<Self::Loaded, Error> {
+        Ok(AppLoaded(()))
+    }
+
+    fn on_load(&self) -> impl LoaderCallback<Self, Output = ()> {
+        // app has custom load / unload logic in the map
+        LoaderCallbacks::none()
+    }
+}
+
+impl IdentifiedComponent for AppLoader {
+    fn component_id_dyn(&self) -> ComponentId {
+        App::component_id()
+    }
+}
+
+#[derive(Any)]
+pub struct AppLoaded(());
+impl Loaded for AppLoaded {}
+
+impl RegistryOf for App {
+    type Registry = Self;
+}
+
+impl HandleData {
+    const fn into_handle(self) -> App {
+        App {
+            variant: Inner::Handle,
+            handle: self,
         }
     }
-}
 
-app_future_def! {
-    #[doc(hidden)]
-    pub trait @AppFnOnceInner<'a>: Into<@AppFnOnceImpl<'a, @generics_from_types>> + Send {
-        @type_defs;
-    }
-
-    struct @AppFnOnceImpl<'a, @generics_bounded> {
-        pd: PhantomData<fn(&'a ())>,
-        @fields,
-    }
-
-    impl<'a, @generics_bounded> @AppFnOnceInner<'a> for @AppFnOnceImpl<'a, @generics_unbounded> {
-        @type_impls;
+    fn clone_in_owned(&self, owned: &mut Owned) -> Self {
+        Self {
+            method_sender: self.method_sender.clone(),
+            dependency: Dependency::clone_in_owned(&self.dependency, owned, &self.method_sender),
+            new_dependency_type: self.new_dependency_type,
+        }
     }
 }
