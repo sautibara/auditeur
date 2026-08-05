@@ -492,7 +492,6 @@ impl HasChildren for Children {
 /// A value that has some [`Children`] [`Component`]s.
 ///
 /// This provides default methods for all values that have [`Children`].
-#[doc(notable_trait)]
 pub trait HasChildren: Sized {
     /// Adds an erased component and its children to the collection.
     ///

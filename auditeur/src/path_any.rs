@@ -7,11 +7,11 @@
 //! which are based on the module path of a type. This doesn't change between compilations, but it
 //! does incite other problems.
 //!
-//! The tradeoff is twofold. For one, since this allows separate compilations to match the same
+//! For one, since this allows separate compilations to match the same
 //! [`PathId`], it could lead to an object expecting one structure of a type (its specific fields,
 //! methods, etc) to be given a different structure - code can be changed between compilations. In
 //! `auditeur-plugin-host`, this is protected against by compiling all plugins at the same time.
-//! Another issue is that, since it rests on information that isn't readily available for every
+//! Additionally, since it rests on information that isn't readily available for every
 //! type (its module path), the [`PathAny`] trait must be derived separately for every type that
 //! wants to implement it - it can't be automatically implemented for all types as
 //! [`Any`](std::any::Any) is.
@@ -271,43 +271,48 @@ macro_rules! impl_any {
 
 all_tuples!(impl_any, 0, 15, T);
 
-mod tokio_sync_broadcast {
+#[cfg(feature = "path-any")]
+mod externals {
     use super::PathAnyConst;
-    use auditeur_macros::implement_path_any_external;
-    use tokio::sync::broadcast::Sender;
 
-    implement_path_any_external!(Sender, <T: 'static + PathAnyConst>);
-}
+    mod tokio_sync_broadcast {
+        use super::PathAnyConst;
+        use auditeur_macros::implement_path_any_external;
+        use tokio::sync::broadcast::Sender;
 
-mod tokio_sync_mpsc {
-    use super::PathAnyConst;
-    use auditeur_macros::implement_path_any_external;
-    use tokio::sync::mpsc::Receiver;
-    use tokio::sync::mpsc::Sender;
+        implement_path_any_external!(Sender, <T: 'static + PathAnyConst>);
+    }
 
-    implement_path_any_external!(Sender, <T: 'static + PathAnyConst>);
-    implement_path_any_external!(Receiver, <T: 'static + PathAnyConst>);
-}
+    mod tokio_sync_mpsc {
+        use super::PathAnyConst;
+        use auditeur_macros::implement_path_any_external;
+        use tokio::sync::mpsc::Receiver;
+        use tokio::sync::mpsc::Sender;
 
-mod std_sync {
-    use super::PathAnyConst;
-    use auditeur_macros::implement_path_any_external;
-    use std::sync::Arc;
+        implement_path_any_external!(Sender, <T: 'static + PathAnyConst>);
+        implement_path_any_external!(Receiver, <T: 'static + PathAnyConst>);
+    }
 
-    implement_path_any_external!(Arc, <T: 'static + PathAnyConst>);
-}
+    mod std_sync {
+        use super::PathAnyConst;
+        use auditeur_macros::implement_path_any_external;
+        use std::sync::Arc;
 
-mod tokio_sync_mutex {
-    use super::PathAnyConst;
-    use auditeur_macros::implement_path_any_external;
-    use tokio::sync::Mutex;
+        implement_path_any_external!(Arc, <T: 'static + PathAnyConst>);
+    }
 
-    implement_path_any_external!(Mutex, <T: 'static + PathAnyConst>);
-}
+    mod tokio_sync_mutex {
+        use super::PathAnyConst;
+        use auditeur_macros::implement_path_any_external;
+        use tokio::sync::Mutex;
 
-mod std_option {
-    use super::PathAnyConst;
-    use auditeur_macros::implement_path_any_external;
+        implement_path_any_external!(Mutex, <T: 'static + PathAnyConst>);
+    }
 
-    implement_path_any_external!(Option, <T: 'static + PathAnyConst>);
+    mod std_option {
+        use super::PathAnyConst;
+        use auditeur_macros::implement_path_any_external;
+
+        implement_path_any_external!(Option, <T: 'static + PathAnyConst>);
+    }
 }

@@ -1,4 +1,5 @@
 #![allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
+//! Utilities for writing tests for [`auditeur`](crate)-based projects.
 
 use std::time::Duration;
 
@@ -7,6 +8,32 @@ use tokio::{pin, select};
 
 use crate::{app::event::Event, prelude::*};
 
+/// Waits for `app` to exit within a reasonable amount of time.
+///
+/// This will also print any errors that occur in the app before it exits, and panic if any were
+/// encountered.
+///
+/// If `exit` is specified, the app will be manually exited.
+///
+/// # Errors
+///
+/// - If an event listener couldn't be obtained from the app.
+///
+/// # Examples
+///
+/// ```should_panic
+/// use auditeur::prelude::*;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), auditeur::Error> {
+/// let mut app = App::builder().spawn();
+///
+/// let handle = app.handle().await;
+///
+/// // This should panic, since we're still holding a handle onto the app.
+/// auditeur::test::finish(app, false).await
+/// # }
+/// ```
 pub async fn finish(mut app: App, exit: bool) -> Result<(), Error> {
     let mut errored = false;
 
@@ -17,8 +44,10 @@ pub async fn finish(mut app: App, exit: bool) -> Result<(), Error> {
         app.exit().await;
     }
 
-    let exit_releaser = tokio::time::timeout(Duration::from_secs(2), app.wait_for_exit().fuse());
-    pin!(exit_releaser);
+    drop(app);
+
+    let timeout = tokio::time::sleep(Duration::from_secs(2)).fuse();
+    pin!(timeout);
 
     loop {
         select! {
@@ -29,11 +58,9 @@ pub async fn finish(mut app: App, exit: bool) -> Result<(), Error> {
                     _ => (),
                 }
             }
-            res = &mut exit_releaser => {
-                if res.is_err() {
-                    eprintln!("[error] app didn't exit in time");
-                    errored = true;
-                }
+            () = &mut timeout => {
+                eprintln!("[error] app didn't exit in time");
+                errored = true;
                 break;
             },
         }

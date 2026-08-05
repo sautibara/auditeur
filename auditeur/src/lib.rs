@@ -1,20 +1,20 @@
 #![feature(unboxed_closures, async_fn_traits)]
-#![cfg_attr(doc, feature(doc_notable_trait))]
 #![recursion_limit = "512"]
 
 pub mod app;
 pub mod component;
 pub mod input;
-#[cfg(feature = "path-any")]
+#[cfg(any(doc, feature = "path-any"))]
 pub mod path_any;
 
 pub mod test;
 
-pub use ::namespaced_id;
+pub use namespaced_id;
 
 mod macros;
 pub use macros::*;
 
+/// The form of [`Any`] that follows the current value of the `path-any` feature.
 pub mod any {
     #[cfg(feature = "path-any")]
     pub use crate::path_any::PathAny as Any;
@@ -26,7 +26,7 @@ pub mod any {
     #[cfg(not(feature = "path-any"))]
     pub use std::any::Any as AnyConst;
 
-    /// Attempt to downcast the box to a concrete type.
+    /// Attempts to downcast a box to a concrete type.
     ///
     /// # Errors
     ///
@@ -49,6 +49,7 @@ pub use futures::try_join;
 #[doc(hidden)]
 pub use tokio;
 
+/// Items that are commonly imported in auditeur-using code.
 pub mod prelude {
     pub use crate::component::HasChildren as _;
     pub use crate::component::IdentifiedComponentType as _;
