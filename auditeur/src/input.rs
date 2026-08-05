@@ -1,25 +1,31 @@
+//! Values that can be created using an [`App`].
+//!
+//! Generally, values that are simple resources obtained from the app should implement [`Input`].
+//! Meanwhile, values that have some runtime data associated with them should implement [`Create`].
+//!
+//! As such, [`Create`] is used in situations like [`Resource`](mod@crate::component::resource)'s
+//! [`Register`](crate::component::registry::Register) implementation, where it is used to allow
+//! them to be initialized with some external input. On the other hand, [`Input`] is mainly used in
+//! the [`#[create]`](macro@crate::create) macro.
+
 use std::marker::PhantomData;
 
 use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 
-// TODO: implement Input for NamespacedId, make it the resource's id
-
 use crate::prelude::*;
 
-/// Values that can be obtained from an [`App`] using no external data.
+/// Values that can be obtained from an [`App`] using no external input.
 ///
-/// # Dependencies
+/// This trait can be implemented using the [`Input`](macro@crate::Input) derive macro.
 ///
-/// These must hold [`dependency::Handle`]s for all dependencies that these inputs contain. If this
-/// is derived, then it is already handled for you. But if it's done manually, then please make
-/// sure that this is the case.
+/// See the [module documentation](self) for more information.
 pub trait Input: Sized + Send + 'static {
-    /// Create `Self` using the given [`Registry`] and id `as_resource`
+    /// Obtains `Self` from the given [`App`].
     ///
     /// # Errors
     ///
-    /// - If the input failed to gather the resources necessary
+    /// - If any dependencies fail to be obtained.
     fn create(app: &mut App) -> impl Future<Output = Result<Self, Error>> + Send;
 }
 
@@ -48,10 +54,19 @@ macro_rules! impl_input {
 
 all_tuples!(impl_input, 0, 15, T);
 
+/// Values that can be created in an [`App`] using external input.
+///
+/// This trait can be implemented using the [`#[create]`](macro@crate::create) attribute macro.
+///
+/// See the [module documentation](self) for more information.
 pub trait Create: Sized + Send {
     type ExternalInput: Send + Sync;
 
-    // TODO: accept a Result
+    /// Creates `Self` in the given [`App`], using the external input.
+    ///
+    /// # Errors
+    ///
+    /// - If any dependencies fail to be obtained.
     #[allow(opaque_hidden_inferred_bound)] // false positive?
     fn create(
         external: &Self::ExternalInput,
@@ -68,25 +83,37 @@ impl<T: CreateDerive> Create for T {
     }
 }
 
+/// The parts of the [`#[create]`](macro@crate::create) macro that are automatically generated.
 pub trait CreateDeriveTypes: Sized + Send {
+    /// The [`ExternalInput`](Create::ExternalInput) of the resulting [`Create`] implementation.
     type External: Send + Sync;
+    /// The parts of the resulting type that aren't gathered from the [`App`].
     type Plain: Send;
 
+    /// Finishes the rest of the value by adding in the values that can be gathered from the
+    /// [`App`].
     fn finish(
         plain: Self::Plain,
         app: &mut App,
     ) -> impl Future<Output = Result<Self, Error>> + Send;
 }
 
+/// The parts of the [`#[create]`](macro@crate::create) macro that are manually implemented.
 pub trait CreateDerive: CreateDeriveTypes {
+    /// Create the parts of the resulting type that aren't gathered from the [`App`].
+    ///
+    /// # Errors
+    ///
+    /// - If any parts of the type can't be created.
     fn create(
         _: &Self::External,
         _: &mut App,
     ) -> impl Future<Output = Result<Self::Plain, Error>> + Send;
 }
 
-// TODO: docs
+/// Values that can be cloned using an [`App`] handle.
 pub trait CloneIn: Send + Sync + Sized {
+    /// Creates a clone of `self` using the app handle `app`.
     #[must_use]
     fn clone_in(&self, app: &mut App) -> impl Future<Output = Self> + Send;
 }
