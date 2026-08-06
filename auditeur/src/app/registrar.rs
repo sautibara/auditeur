@@ -18,6 +18,10 @@ use crate::{
     prelude::*,
 };
 
+/// A [`Component`](crate::component::Component) that is erased into a trait object.
+///
+/// This is an implementation detail that is public due to its use in
+/// [`HasChildren`](crate::component::HasChildren).
 pub struct ErasedComponent {
     pub(crate) object: Box<dyn DynComponent>,
 }

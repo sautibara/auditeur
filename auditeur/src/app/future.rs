@@ -149,25 +149,44 @@ use crate::{
     prelude::*,
 };
 
+/// A [`Future`] extension returned by an immutable method on [`App`].
+///
+/// See the [module documentation](super#app-functions--futures) for more information.
 #[must_use]
 pub trait AppFuture<'a>: IntoFuture<IntoFuture: Send, Output: Send> + Send + Sized {
+    /// Converts this future back into the [`AppFnOnce`] that it was created with, alongside
+    /// the app reference that was used.
     fn into_parts(self) -> (&'a App, impl AppFnOnce<Output = Self::Output>);
 
+    /// Converts this future back into the [`AppFnOnce`] that it was created with, discarding
+    /// the reference.
     fn into_fn_once(self) -> impl AppFnOnce<Output = Self::Output> {
         let (_, fn_once) = self.into_parts();
         fn_once
     }
 }
 
+/// A [`Future`] extension returned by a mutable method on [`App`].
+///
+/// See the [module documentation](super#app-functions--futures) for more information.
 #[must_use]
 pub trait AppMutFuture<'a>: IntoFuture<IntoFuture: Send, Output: Send> + Send + Sized {
+    /// Converts this future back into the [`AppMutFnOnce`] that it was created with, alongside
+    /// the app reference that was used.
     fn into_parts(self) -> (&'a mut App, impl AppMutFnOnce<Output = Self::Output>);
 
+    /// Converts this future back into the [`AppMutFnOnce`] that it was created with, discarding
+    /// the reference.
     fn into_fn_once(self) -> impl AppMutFnOnce<Output = Self::Output> {
         let (_, fn_once) = self.into_parts();
         fn_once
     }
 
+    /// Converts this future into one that also obtains an [event listener](App::get_event_listener)
+    /// from the [`App`].
+    ///
+    /// This is not supported for [`AppFuture`], since getting an event listener requires a mutable
+    /// reference. Instead, do the same thing using [`AppMutFnOnce`]s.
     fn with_event_listener(
         self,
     ) -> impl AppMutFuture<'a, Output = (Self::Output, Result<Listener<Event>, Error>)> {
@@ -211,6 +230,9 @@ app_future_def! {
     }
 }
 
+/// An immutable method for an [`App`] that has not been given a handle yet.
+///
+/// See the [module documentation](super#app-functions--futures) for more information.
 #[must_use]
 pub trait AppFnOnce: Send + Sized + 'static {
     type Output: Send + 'static;
@@ -218,6 +240,7 @@ pub trait AppFnOnce: Send + Sized + 'static {
     #[doc(hidden)]
     fn into_inner<'a>(self) -> impl AppFnOnceInner<'a, Output = Self::Output>;
 
+    /// Call this method by providing an app handle.
     fn call(self, app: &App) -> impl AppFuture<'_, Output = Self::Output> {
         AppFutureImpl {
             app,
@@ -225,6 +248,9 @@ pub trait AppFnOnce: Send + Sized + 'static {
         }
     }
 
+    /// Create an [`AppMutFnOnce`] that calls this method.
+    ///
+    /// Think of this as calling an immutable method with a mutable reference.
     fn using_mut(self) -> impl AppMutFnOnce<Output = Self::Output> {
         struct UsingMut<A: AppFnOnce>(A);
 
@@ -249,6 +275,8 @@ pub trait AppFnOnce: Send + Sized + 'static {
         UsingMut::<Self>(self)
     }
 
+    /// Creates a new [`AppFnOnce`] that performs this action first, performs the `other` action
+    /// right after, and wraps their outputs in a tuple.
     fn then<U: Send + 'static>(
         self,
         other: impl AppFnOnce<Output = U>,
@@ -259,6 +287,8 @@ pub trait AppFnOnce: Send + Sized + 'static {
         }
     }
 
+    /// Creates a new [`AppFnOnce`] that performs this action and maps its output using the
+    /// `mapping`.
     fn map<U: Send + 'static>(
         self,
         mapping: impl FnOnce(Self::Output) -> U + Send + 'static,
@@ -270,6 +300,9 @@ pub trait AppFnOnce: Send + Sized + 'static {
     }
 }
 
+/// A mutable method for an [`App`] that has not been given a handle yet.
+///
+/// See the [module documentation](super#app-functions--futures) for more information.
 #[must_use]
 pub trait AppMutFnOnce: Send + Sized + 'static {
     type Output: Send + 'static;
@@ -277,6 +310,7 @@ pub trait AppMutFnOnce: Send + Sized + 'static {
     #[doc(hidden)]
     fn into_inner<'a>(self) -> impl AppMutFnOnceInner<'a, Output = Self::Output>;
 
+    /// Call this method by providing an app handle.
     fn call(self, app: &mut App) -> impl AppMutFuture<'_, Output = Self::Output> {
         AppMutFutureImpl {
             app,
@@ -284,6 +318,8 @@ pub trait AppMutFnOnce: Send + Sized + 'static {
         }
     }
 
+    /// Creates a new [`AppMutFnOnce`] that performs this action first, performs the `other` action
+    /// right after, and wraps their outputs in a tuple.
     fn then<U: Send + 'static>(
         self,
         other: impl AppMutFnOnce<Output = U>,
@@ -294,6 +330,8 @@ pub trait AppMutFnOnce: Send + Sized + 'static {
         }
     }
 
+    /// Creates a new [`AppMutFnOnce`] that performs this action and maps its output using the
+    /// `mapping`.
     fn map<U: Send + 'static>(
         self,
         mapping: impl FnOnce(Self::Output) -> U + Send + 'static,

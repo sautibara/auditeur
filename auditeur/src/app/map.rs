@@ -67,42 +67,48 @@ pub enum ListenerId {
 }
 
 impl ListenerId {
-    fn deactivate_component(id: LoadedComponentId) -> Self {
+    #[must_use]
+    pub fn deactivate_component(id: LoadedComponentId) -> Self {
         Self::Component {
             id: id.component,
             change: ComponentStateChange::Deactivate(id.index),
         }
     }
 
-    fn unload_component(id: LoadedComponentId) -> Self {
+    #[must_use]
+    pub fn unload_component(id: LoadedComponentId) -> Self {
         Self::Component {
             id: id.component,
             change: ComponentStateChange::Unload(id.index),
         }
     }
 
-    const fn remove_component(id: AddedComponentId) -> Self {
+    #[must_use]
+    pub fn remove_component(id: impl Into<AddedComponentId>) -> Self {
         Self::Component {
-            id,
+            id: id.into(),
             change: ComponentStateChange::Remove,
         }
     }
 
-    const fn weaken_dependency(id: LoadedDependencyId) -> Self {
+    #[must_use]
+    pub const fn weaken_dependency(id: LoadedDependencyId) -> Self {
         Self::Dependency {
             id,
             change: DependencyStateChange::Weaken,
         }
     }
 
-    const fn remove_dependency(id: LoadedDependencyId) -> Self {
+    #[must_use]
+    pub const fn remove_dependency(id: LoadedDependencyId) -> Self {
         Self::Dependency {
             id,
             change: DependencyStateChange::Remove,
         }
     }
 
-    const fn remove_registry(id: LoadedRegistryId) -> Self {
+    #[must_use]
+    pub const fn remove_registry(id: LoadedRegistryId) -> Self {
         Self::Registry {
             id,
             change: RegistryStateChange::Remove,
@@ -1209,7 +1215,7 @@ impl Owned {
 // WARN: Users of the library should not be able to give these to prove that a component is added
 // - it should only be used as a guarantee within the library.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
-pub struct AddedComponentId(ComponentId);
+pub struct AddedComponentId(pub ComponentId);
 
 impl AddedComponentId {
     pub(crate) const fn new_inner(id: ComponentId) -> Self {
@@ -1257,10 +1263,16 @@ impl Display for AddedComponentId {
     }
 }
 
+impl From<ComponentId> for AddedComponentId {
+    fn from(value: ComponentId) -> Self {
+        Self(value)
+    }
+}
+
 type RegistryId = &'static NamespacedIdRef;
 
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
-pub struct LoadedRegistryId(RegistryId);
+pub struct LoadedRegistryId(pub RegistryId);
 
 impl LoadedRegistryId {
     fn component_id(&self) -> AddedComponentId {
@@ -1406,11 +1418,14 @@ pub struct DependencyPart {
 /// A value that determines if a [`Dependency`] can be removed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DependencyType {
-    /// The dependency cannot be removed.
+    /// The dependency cannot be removed. If this dependency is requested to be removed, the request
+    /// will propagate to the dependent.
     Unremovable,
-    /// The dependency can be removed, but the app has to ask.
+    /// The dependency can be removed, but the app has to ask. The request will not propagate to
+    /// the dependent, and instead an [`Event::RequestDependencyRemoval`] will be sent.
     Removable,
-    /// The dependency is short-lived and will be removed automatically without the app asking.
+    /// The dependency is short-lived and will be removed automatically without the app asking. The
+    /// request will not propagate to the dependent.
     Transient,
     /// The dependency should not keep the depended-on component alive. Instead, this dependency
     /// is expected to automatically be removed when the **depended-on component** is unloaded.

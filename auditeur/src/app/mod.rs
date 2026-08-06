@@ -195,7 +195,7 @@
 //! // would've been missed completely.
 //! //
 //! // Instead, since we got the map and event listener in the same request, there's no way that
-//! // a bundle could've been added in between the two actions, and there was no risk of a race
+//! // a bundle could've been added in between the two actions, so there was no risk of a race
 //! // condition.
 //!
 //! drop(event_listener);
@@ -429,6 +429,9 @@ impl CloneIn for App {
     }
 }
 
+/// Access the [dependent](self#dependents) of an [`App`] handle.
+///
+/// See [`DependentMut`] for mutable methods.
 pub struct Dependent<'a> {
     app: &'a App,
 }
@@ -455,7 +458,7 @@ impl<'a> Dependent<'a> {
         self.app.handle.dependent_id()
     }
 
-    /// Returns the id of the app component.
+    /// Returns the id of the app component, which this app handle is keeping alive.
     #[must_use]
     pub fn app_id(self) -> LoadedComponentId {
         self.app.handle.app_id()
@@ -472,12 +475,18 @@ impl<'a> Dependent<'a> {
 #[doc(hidden)]
 pub struct Present;
 
+/// Modify the [dependent](self#dependents) of an [`App`] handle.
+///
+/// This type implements [`Deref`] and [`DerefMut`] to the underlying [`App`], so it can be used as
+/// one.
+///
+/// See [`Dependent`] for immutable methods.
 pub struct DependentMut<'a, D, T> {
     inner: DependentMutInner<'a>,
     pd: PhantomData<(D, T)>,
 }
 
-pub struct DependentMutInner<'a> {
+struct DependentMutInner<'a> {
     app: &'a mut App,
     dependency: Option<Dependency<()>>,
     ty: Option<DependencyType>,
@@ -497,6 +506,45 @@ impl<'a> DependentMut<'a, (), ()> {
 }
 
 impl<'a, T> DependentMut<'a, (), T> {
+    /// Temporarily changes the dependent of this [`App`] handle to the component depended on in
+    /// `dependency`.
+    ///
+    /// This cannot be called multiple times. If you want to change the dependent again, call
+    /// [`App::dependent_mut`] another time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use auditeur::prelude::*;
+    /// # use auditeur::*;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), auditeur::Error> {
+    /// #[resource("test:resource")]
+    /// #[pure_resource]
+    /// #[create(default)]
+    /// struct Resource;
+    ///
+    /// let mut app = App::builder().with::<Resource>(()).spawn();
+    ///
+    /// // If we get a dependency to the added [`Resource`],
+    /// let dependency = app.components_mut().load(Resource::component_id()).await?;
+    ///
+    /// // we could use it as the dependent in our handle.
+    /// let with_dependent = app.dependent_mut().with_dependent(&dependency).await;
+    ///
+    /// // Now, since [`DependentMut`] can be used as a normal app handle,
+    /// // we can verify that the dependent is the added [`Resource`].
+    /// assert_eq!(
+    ///     **with_dependent.dependent().dependent_id(),
+    ///     Resource::component_id()
+    /// );
+    ///
+    /// // [`DependentMut`] holds a mutable reference onto the handle, so we have to drop it.
+    /// drop((dependency, with_dependent));
+    /// auditeur::test::finish(app, false).await
+    /// # }
+    /// ```
     pub async fn with_dependent<D: Send + Sync>(
         self,
         dependency: &Dependency<D>,
@@ -536,6 +584,60 @@ impl<'a, T> DependentMut<'a, (), T> {
 }
 
 impl<'a, D> DependentMut<'a, D, ()> {
+    /// Temporarily changes the dependency type of this [`App`] handle to `ty`.
+    ///
+    /// This cannot be called multiple times. If you want to change the dependent again, call
+    /// [`App::dependent_mut`] another time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use auditeur::app::map::{DependencyType, ListenerId, RequestSet};
+    ///
+    /// use auditeur::prelude::*;
+    /// # use auditeur::*;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), auditeur::Error> {
+    /// #[resource("test:resource")]
+    /// #[pure_resource]
+    /// #[create(default)]
+    /// struct Resource;
+    ///
+    /// let mut app = App::builder().with::<Resource>(()).spawn();
+    ///
+    /// // App handles' default dependency type is usually [`DependencyType::Unremovable`],
+    /// // but [`AppBuilder::spawn`]'s default is [`DependencyType::Transient`].
+    /// assert_eq!(app.dependent().dependency_type(), DependencyType::Transient);
+    ///
+    /// // Using [`AppDependentMut`], we could change the dependency type.
+    /// let mut with_dependent = app.dependent_mut().with_ty(DependencyType::Unremovable);
+    ///
+    /// // Now, if we get a dependency to [`Resource`],
+    /// let dependency = with_dependent
+    ///     .components_mut()
+    ///     .load(Resource::component_id())
+    ///     .await?;
+    /// // its dependency type will be [`DependencyType::Unremovable`].
+    /// assert_eq!(dependency.info().ty, DependencyType::Unremovable);
+    ///
+    /// // And if we request [`Resource`]'s removal,
+    /// drop(with_dependent);
+    /// app.components_mut()
+    ///     .request(RequestSet::remove(Resource::component_id()))
+    ///     .await;
+    /// // the request will propagate to the app, since it's `dependency`'s dependent.
+    /// let map = app.map().get().await;
+    /// assert!(
+    ///     !map.listeners[&ListenerId::deactivate_component(app.dependent().app_id())]
+    ///         .requests
+    ///         .is_empty()
+    /// );
+    ///
+    /// drop(dependency);
+    /// auditeur::test::finish(app, false).await
+    /// # }
+    /// ```
     #[must_use]
     pub fn with_ty(mut self, ty: DependencyType) -> DependentMut<'a, D, Present> {
         self.inner.ty = Some(std::mem::replace(
@@ -575,6 +677,12 @@ impl<D, T> DerefMut for DependentMut<'_, D, T> {
     }
 }
 
+/// A way to spawn or run an [`App`].
+///
+/// Use the [`HasChildren`] trait, which this implements, to add children to the app before running
+/// it.
+///
+/// Create one of these using [`App::builder`].
 #[must_use = "an app builder does nothing unless it is run"]
 pub struct Builder {
     children: Children,
@@ -587,6 +695,14 @@ impl Builder {
         }
     }
 
+    /// Starts running the [`App`] as a [`tokio::task`] and returns an app handle.
+    ///
+    /// This app handle is what initially keeps the app alive. If dropped, the app will
+    /// automatically exit unless other handles, such as those created in
+    /// [`on_add`](crate::component::registry::Loader::on_add) hooks, are keeping the app alive.
+    ///
+    /// The [`Dependent`] of the returned handle will be the [`App`] component, and its
+    /// [`DependencyType`] will default to [`DependencyType::Transient`].
     #[expect(clippy::missing_panics_doc)]
     #[allow(clippy::must_use_candidate)] // no?
     pub fn spawn(self) -> App {
@@ -637,6 +753,9 @@ impl Builder {
         handle_app
     }
 
+    /// Starts running the [`App`] as a [`tokio::task`] and waits for it to exit.
+    ///
+    /// This is identical to `self.spawn().wait_for_exit().await`.
     pub async fn run(self) {
         self.spawn().wait_for_exit().await;
     }
