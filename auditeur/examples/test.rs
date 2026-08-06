@@ -1,63 +1,72 @@
-use auditeur::app::event::ComponentLifecycle;
-use auditeur::component::bundle::Bundles;
-
 use auditeur::prelude::*;
 use auditeur::*;
 
 #[tokio::main]
-#[allow(clippy::items_after_statements)]
 async fn main() -> Result<(), auditeur::Error> {
-    // Since the app is communicated to with messages, we have to be weary of race conditions.
+    // Here's an example of a typical [`Create`] implementation.
+    #[create]
+    struct Foo {
+        // [`Vec`] doesn't implement [`Input`] or [`Create`], so we'll initialize it manually.
+        // Usually, fields without attributes are put above fields with them.
+        list: Vec<()>,
 
-    // Let's imagine we want to listen to when bundles are added to the app.
+        // Since `input` is an [`App`], we could automatically obtain it using [`Input`].
+        #[create(input)]
+        app: App,
 
-    let mut app = App::builder()
-        // Here's a bundle added before we start listening.
-        .with::<Bundle>(new_bundle!("test:bundle_1"))
-        .spawn();
+        // [`Bar`] and [`Baz`], on the other hand, implement [`Create`], so we use that instead.
+        #[create(create)]
+        bar: Bar,
+        #[create(create)]
+        baz: Baz,
+    }
 
-    // Now, to start listening, we get a map and event listener from the app.
-    // For this, we use [`AppFn`], which mirrors [`App`]'s api without accessing a handle.
-    let (map, event_listener) = (AppFn.map().get().using_mut())
-        .then(AppFn.get_event_listener())
-        // Only once we finish building up our request do we have to use our app handle,
-        .call(&mut app)
-        // allowing us to complete the request all at once.
-        .await;
-    let mut event_listener = event_listener?;
+    impl CreateDerive for Foo {
+        async fn create((): &Self::External, _: &mut App) -> Result<Self::Plain, Error> {
+            Ok(Self::Plain {
+                // `list` didn't have any attributes, so we initialize it here.
+                list: Vec::new(),
 
-    // Through the map, we could find the bundle added before we started listening.
-    assert!(map.is_added(&ComponentId::inn::<Bundles>(ident!("test:bundle_1"))));
+                // `input` is initialized using [`Input`], so we omit it.
 
-    // And if we add a bundle after we start listening,
-    app.components_mut()
-        .add(Children::new().with::<Bundle>(new_bundle!("test:bundle_2")))
-        .await;
-
-    // we can find it using the event listener.
-    loop {
-        if let auditeur::app::Event::Component { id, lifecycle } = event_listener.listen().await
-            && lifecycle == ComponentLifecycle::Add
-            && id == ComponentId::inn::<Bundles>(ident!("test:bundle_2"))
-        {
-            break;
+                // `bar` and `baz` are initialized using [`Create`],
+                // so we give them their external input.
+                bar: true,
+                baz: (),
+            })
         }
     }
 
-    // If we didn't use the [`AppFn`] api imagine if we (or another thread):
-    // - gets a map,
-    // - adds a bundle now, and
-    // - gets an event listener after.
-    //
-    // Since the bundle was added after the map was obtained, there's no way that it could've been
-    // included in the map. Similarly, since event listeners only return events from after they're
-    // obtained, there's no way it would show the event. Because of these reasons, the bundle added
-    // would've been missed completely.
-    //
-    // Instead, since we got the map and event listener in the same request, there's no way that
-    // a bundle could've been added in between the two actions, and there was no risk of a race
-    // condition.
+    // Custom external input can be specified with `external_input`.
+    #[create(external_input(bool))]
+    struct Bar {
+        boolean: bool,
+    }
 
-    drop(event_listener);
-    auditeur::test::finish(app, false).await
+    impl CreateDerive for Bar {
+        // Since we specified the external input, it appears here,
+        async fn create(boolean: &bool, _: &mut App) -> Result<Self::Plain, Error> {
+            // and we could use it to initialize the type.
+            Ok(Self::Plain { boolean: *boolean })
+        }
+    }
+
+    // If all fields implement [`Default`], we could use `default` to initialize them instead.
+    #[create(default)]
+    struct Baz {
+        number: usize,
+    }
+
+    let mut app = App::builder().spawn();
+
+    // Now, when we create [`Foo`],
+    let foo = <Foo as Create>::create(&(), &mut app).await?;
+
+    // We could access all the fields however we want.
+    assert!(foo.list.is_empty());
+    let _ = foo.app.map().get().await;
+    assert_eq!(foo.bar.boolean, true);
+    assert_eq!(foo.baz.number, 0);
+
+    Ok(())
 }

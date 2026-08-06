@@ -73,8 +73,8 @@ pub mod prelude {
         },
         input::{Create, CreateDerive, Input},
         macros::{
-            CloneIn, GetRef, Input, create, identified, listen_message, listener, pure_resource,
-            resource, respond, take_message,
+            CloneIn, Input, create, identified, listen_message, listener, pure_resource, resource,
+            respond, take_message,
         },
         namespaced_id::{self, NamespacedId, NamespacedIdRef, ident},
         new_bundle,

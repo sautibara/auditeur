@@ -3,10 +3,8 @@ use std::sync::LazyLock;
 use namespaced_id::NamespacedId;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::{ToTokens, quote, quote_spanned};
-use syn::{
-    Ident, Item, ItemStruct, ItemTrait, Token, TypeParamBound, parse_macro_input, spanned::Spanned,
-};
+use quote::{ToTokens, quote};
+use syn::{Ident, Item, ItemStruct, ItemTrait, Token, TypeParamBound, parse_macro_input};
 
 use crate::proc_macro_impls::AllCombinations;
 
@@ -279,47 +277,6 @@ pub fn derive_input(item: TokenStream) -> TokenStream {
     proc_macro_impls::derive_input(&strct).into()
 }
 
-#[proc_macro_derive(GetRef)]
-pub fn get_ref(item: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(item as Item);
-
-    let (clone_as, ident) = match item {
-        Item::Struct(strct) => (
-            proc_macro_impls::clone_as_struct(
-                &strct.ident,
-                strct.fields.iter().filter_map(|field| field.ident.as_ref()),
-                &strct.generics,
-            ),
-            strct.ident,
-        ),
-        Item::Enum(enm) => (proc_macro_impls::clone_as_enum(&enm), enm.ident),
-        _ => {
-            return quote_spanned! {
-                item.span() => compile_error!("item must be a struct or enum"),
-            }
-            .into();
-        }
-    };
-
-    let auditeur = &*AUDITEUR;
-
-    quote! {
-        #clone_as
-
-        impl #auditeur::input::get::GetRef for #ident {
-            type Ref = Self;
-            async fn get_ref(
-                &self,
-                _: &#auditeur::app::Registry,
-                dependent: #auditeur::app::ComponentIdRef<'_>,
-            ) -> Result<Self, #auditeur::Error> {
-                Ok(<Self as #auditeur::input::CloneAs>::clone_as(self, dependent))
-            }
-        }
-    }
-    .into()
-}
-
 #[proc_macro_derive(MaybeGetRef)]
 pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as Item);
@@ -334,12 +291,20 @@ pub fn maybe_get_ref(item: TokenStream) -> TokenStream {
 
 #[proc_macro_derive(CloneIn)]
 pub fn clone_in(item: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(item as ItemStruct);
+    let item = parse_macro_input!(item as Item);
 
-    let fields = item.fields.iter().filter_map(|field| field.ident.as_ref());
-    let generics = &item.generics;
+    match item {
+        Item::Struct(item) => {
+            let fields = item.fields.iter().filter_map(|field| field.ident.as_ref());
+            let generics = &item.generics;
 
-    proc_macro_impls::clone_as_struct(&item.ident, fields, generics).into()
+            proc_macro_impls::clone_as_struct(&item.ident, fields, generics).into()
+        }
+        Item::Enum(item) => proc_macro_impls::clone_as_enum(&item).into(),
+        _ => syn::Error::new_spanned(item, "expected a struct or enum")
+            .into_compile_error()
+            .into(),
+    }
 }
 
 #[proc_macro_derive(Any)]
