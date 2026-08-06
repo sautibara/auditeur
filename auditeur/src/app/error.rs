@@ -4,8 +4,9 @@ use thiserror::Error;
 
 use crate::{
     app::{
-        AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, HandleData, OneshotSender, Owned,
-        event::Event, map::RequestAction,
+        AppErrors, AppErrorsMut, AppFn, AppFnErrors, AppFnErrorsMut, AppFnOnce, AppFuture,
+        AppMutFnOnce, AppMutFuture, HandleData, OneshotSender, Owned, event::Event,
+        map::RequestAction,
     },
     prelude::*,
 };
@@ -86,9 +87,6 @@ impl Method {
     }
 }
 
-/// Return type of [`AppFn::errors`], see [`AppErrors`].
-#[must_use]
-pub struct AppFnErrors;
 impl AppFnErrors {
     /// See [`AppErrors::get`].
     pub const fn get(self) -> impl AppFnOnce<Output = Errors> {
@@ -100,18 +98,13 @@ impl AppFnErrors {
     }
 }
 
-/// Return type of [`App::errors()`].
-pub struct AppErrors<'a> {
-    app: &'a App,
-}
-
 impl<'a> AppErrors<'a> {
     pub(super) const fn new(app: &'a App) -> Self {
         Self { app }
     }
 
     /// Wraps an [`anyhow::Error`] into a [`crate::Error`] using the current
-    /// [dependent](super::Dependent) as the source component.
+    /// [dependent](super#dependents) as the source component.
     #[must_use]
     pub fn wrap(self, error: impl Into<anyhow::Error>) -> Error {
         self.app.handle.wrap_error(error.into())
@@ -124,9 +117,6 @@ impl<'a> AppErrors<'a> {
     }
 }
 
-/// Return type of [`AppFn::errors_mut`], see [`AppErrorsMut`].
-#[must_use]
-pub struct AppFnErrorsMut;
 impl AppFnErrorsMut {
     #[expect(clippy::unused_self)]
     const fn add_shared(self, error: Arc<Error>) -> impl AppMutFnOnce<Output = ()> {
@@ -149,11 +139,6 @@ impl AppFnErrorsMut {
             AppFn.errors_mut().add(error)
         })
     }
-}
-
-/// Return type of [`App::errors_mut()`].
-pub struct AppErrorsMut<'a> {
-    app: &'a mut App,
 }
 
 impl<'a> AppErrorsMut<'a> {
@@ -223,8 +208,6 @@ pub enum Error {
     ResourceNoGetRef { id: NamespacedId },
     #[error("attempted to get '{id}' from the app, but the downcast failed")]
     DowncastFailed { id: ComponentId },
-    #[error("attempted to get '{id}' as a dependent, but it doesn't exist in the app")]
-    AppDependentNotFound { id: ComponentId },
     #[error("attempted to add '{child}' to the app, but its parent '{parent}' was not found")]
     ParentNotFound {
         child: ComponentId,

@@ -326,7 +326,7 @@ impl<'a> AppListenMut<'a> {
     ///
     /// # Errors
     ///
-    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::AppComponentsMut::get)
     pub async fn listener<M: ListenMessage>(self) -> Result<Listener<M>, Error> {
         self.app
             .components_mut()
@@ -341,7 +341,7 @@ impl<'a> AppListenMut<'a> {
     ///
     /// # Errors
     ///
-    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::AppComponentsMut::get)
     pub async fn shouter<M: ListenMessage>(self) -> Result<Shouter<M>, Error> {
         self.app
             .components_mut()

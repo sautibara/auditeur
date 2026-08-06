@@ -221,7 +221,7 @@ impl<'a> AppTakeMut<'a> {
     ///
     /// # Errors
     ///
-    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::AppComponentsMut::get)
     pub async fn taker<M: TakeMessage>(self) -> Result<Taker<M>, Error> {
         self.app
             .components_mut()
@@ -236,7 +236,7 @@ impl<'a> AppTakeMut<'a> {
     ///
     /// # Errors
     ///
-    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::AppComponentsMut::get)
     pub async fn giver<M: TakeMessage>(self) -> Result<Giver<M>, Error> {
         self.app
             .components_mut()

@@ -435,7 +435,7 @@ impl<'a> AppResourcesMut<'a> {
     ///
     /// # Errors
     ///
-    /// - Propagated from [`AppComponentsMut::get`](crate::app::component::AppComponentsMut::get)
+    /// - Propagated from [`AppComponentsMut::get`](crate::app::AppComponentsMut::get)
     pub async fn get<R: Resource + GetRef>(self) -> Result<Get<R>, Error> {
         let dependency = (self.app.components_mut())
             .get::<Resources, _>(

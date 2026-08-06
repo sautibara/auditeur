@@ -7,11 +7,11 @@
 //! be loaded and unloaded.
 //!
 //! Components are added either before the app is run in [`app::Builder`](crate::app::Builder) or
-//! at runtime using [`AppComponentsMut::add`](crate::app::component::AppComponentsMut::add). They
+//! at runtime using [`AppComponentsMut::add`](crate::app::AppComponentsMut::add). They
 //! may also get added with [`Children`] of their own as defined by the [`Register`] trait. Most
 //! components have a way of specifying children that should be added whenever the parent component
 //! is added. They will only be removed if their removal is
-//! [requested](crate::app::component::AppComponentsMut::request).
+//! [requested](crate::app::AppComponentsMut::request).
 //!
 //! Each component belongs to a specific [`Registry`], which groups together components by use and
 //! determines how they load and unload. Useful registries include:

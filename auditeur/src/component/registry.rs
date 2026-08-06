@@ -2,7 +2,7 @@
 //! [`App`].
 //!
 //! Components are [loaded](Loader::load) on demand when other components
-//! [`get`](crate::app::component::AppComponentsMut::get) them. When all dependents release their
+//! [`get`](crate::app::AppComponentsMut::get) them. When all dependents release their
 //! dependencies, the component gets automatically [unloaded](Loaded::unload). The component then
 //! stays added in the app, ready to load again if another component needs it.
 //!
@@ -218,7 +218,7 @@ impl LoaderCallbacks {
         Empty
     }
 
-    /// A callback that [`load`](crate::app::component::AppComponentsMut::load)s the component
+    /// A callback that [`load`](crate::app::AppComponentsMut::load)s the component
     /// held in the loader and returns its [`Dependency`] with a [`DependencyType`] of `ty`.
     #[must_use]
     pub fn load<L: Loader>(ty: DependencyType) -> impl LoaderCallback<L, Output = Dependency<()>> {
@@ -243,7 +243,7 @@ impl LoaderCallbacks {
         Load(ty)
     }
 
-    /// A callback that [lazily loads](crate::app::component::AppComponentsMut::load_lazy)s the
+    /// A callback that [lazily loads](crate::app::AppComponentsMut::load_lazy)s the
     /// component held in the loader and returns its [`Dependency`] with a [`DependencyType`] of
     /// `ty`.
     #[must_use]
@@ -272,7 +272,7 @@ impl LoaderCallbacks {
         Load(ty)
     }
 
-    /// A callback that [`get`](crate::app::component::AppComponentsMut::get)s the component
+    /// A callback that [`get`](crate::app::AppComponentsMut::get)s the component
     /// held in the loader and returns its [`Dependency`] with a [`DependencyType`] of `ty`.
     pub fn get<L: Loader, T: Send>(
         ty: DependencyType,

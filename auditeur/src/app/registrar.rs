@@ -7,8 +7,8 @@ use tracing::{Instrument, debug};
 use crate::{
     any,
     app::{
-        AddedComponentId, AppFn, AppMutFnOnce, AppMutFuture, OneshotSender,
-        component::{AppComponentsMut, AppFnComponentsMut},
+        AddedComponentId, AppComponentsMut, AppFn, AppFnComponentsMut, AppMutFnOnce, AppMutFuture,
+        OneshotSender,
         map::{Dependency, LoadedComponentId},
     },
     component::{

@@ -14,8 +14,8 @@ use tracing::debug;
 
 use crate::{
     app::{
-        AppFn, AppFnOnce, AppFuture, AppMutFnOnce, AppMutFuture, OneshotSender, Owned,
-        component::{AppComponentsMut, AppFnComponentsMut},
+        AppComponentsMut, AppFn, AppFnComponentsMut, AppFnMap, AppFnOnce, AppFuture, AppMap,
+        AppMutFnOnce, AppMutFuture, OneshotSender, Owned,
         event::{DependencyLifecycle, Event},
         registrar::ErasedComponent,
     },
@@ -1808,15 +1808,6 @@ impl Method {
             }
         }
     }
-}
-
-/// Return type of [`AppFn::map()`], see [`AppMap`].
-#[must_use]
-pub struct AppFnMap;
-
-/// Return type of [`App::map()`].
-pub struct AppMap<'a> {
-    app: &'a App,
 }
 
 impl AppFnMap {

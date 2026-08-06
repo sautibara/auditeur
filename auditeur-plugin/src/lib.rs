@@ -1,8 +1,7 @@
 use auditeur::{
-    children::HasChildren,
     component::{
         registry::{Loaded, Loader, Registries, Registry},
-        ComponentIdPath, IdentifiedComponent, Register, RegistryOf,
+        ComponentIdPath, HasChildren, IdentifiedComponent, Register, RegistryOf,
     },
     prelude::{anyhow::anyhow, *},
     Error,

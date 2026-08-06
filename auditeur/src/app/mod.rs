@@ -213,13 +213,11 @@ use tracing::debug;
 
 use crate::{
     app::{
-        component::{AppComponentsMut, AppFnComponentsMut},
-        error::{AppErrors, AppErrorsMut, AppFnErrors, AppFnErrorsMut, Errors},
+        error::Errors,
         event::FlushRequest,
         map::{
-            AddedComponentId, AppFnMap, AppMap, Channels, Dependency, DependencyHandle,
-            DependencyPart, DependencyType, LoadedComponentId, LoadedDependencyId, Map, RequestSet,
-            Waiter,
+            AddedComponentId, Channels, Dependency, DependencyHandle, DependencyPart,
+            DependencyType, LoadedComponentId, LoadedDependencyId, Map, RequestSet, Waiter,
         },
         registrar::Registrar,
     },
@@ -237,7 +235,6 @@ use crate::{
     prelude::*,
 };
 
-pub mod component;
 pub mod error;
 pub mod event;
 pub mod map;
@@ -351,22 +348,22 @@ impl App {
     }
 }
 
-/// Methods relating to this handle's current [`Dependent`]: the component that will keep alive all
-/// dependencies returned by this app handle.
+/// Methods relating to this handle's current [dependent](self#dependents): the component that will
+/// keep alive all dependencies returned by this app handle.
 impl App {
     #[must_use]
-    pub const fn dependent(&self) -> Dependent<'_> {
-        Dependent::new(self)
+    pub const fn dependent(&self) -> AppDependent<'_> {
+        AppDependent::new(self)
     }
 
     #[must_use]
-    pub const fn dependent_mut(&mut self) -> DependentMut<'_, (), ()> {
-        DependentMut::new(self)
+    pub const fn dependent_mut(&mut self) -> AppDependentMut<'_, (), ()> {
+        AppDependentMut::new(self)
     }
 }
 
-/// Methods that access the main internals of the app: the [components](component), the [map] of
-/// added components, and the [error list](mod@error).
+/// Methods that access the main internals of the app: the [components](AppComponentsMut), the
+/// [map] of added components, and the [error list](mod@error).
 impl App {
     #[must_use]
     pub const fn components_mut(&mut self) -> AppComponentsMut<'_> {
@@ -429,10 +426,60 @@ impl CloneIn for App {
     }
 }
 
+/// Return type of [`AppFn::components_mut`](AppFn::components_mut), see [`AppComponentsMut`].
+#[must_use]
+pub struct AppFnComponentsMut;
+
+/// Modify data related to [components](crate::component) in an [`App`] handle.
+pub struct AppComponentsMut<'a> {
+    app: &'a mut App,
+}
+
+impl<'a> AppComponentsMut<'a> {
+    const fn new(app: &'a mut App) -> Self {
+        Self { app }
+    }
+}
+
+/// Return type of [`AppFn::errors`], see [`AppErrors`].
+///
+/// See [`AppFnErrorsMut`] for mutable methods.
+#[must_use]
+pub struct AppFnErrors;
+
+/// Access data related to [errors](mod@error) in an [`App`] handle.
+///
+/// See [`AppErrorsMut`] for mutable methods.
+pub struct AppErrors<'a> {
+    app: &'a App,
+}
+
+/// Return type of [`AppFn::errors_mut`], see [`AppErrorsMut`].
+///
+/// See [`AppFnErrors`] for immutable methods.
+#[must_use]
+pub struct AppFnErrorsMut;
+
+/// Modify data related to [errors](mod@error) in an [`App`] handle.
+///
+/// See [`AppErrors`] for immutable methods.
+pub struct AppErrorsMut<'a> {
+    app: &'a mut App,
+}
+
+/// Return type of [`AppFn::map`], see [`AppMap`].
+#[must_use]
+pub struct AppFnMap;
+
+/// Access the [map](mod@map) in an [`App`] handle.
+pub struct AppMap<'a> {
+    app: &'a App,
+}
+
 /// Access the [dependent](self#dependents) of an [`App`] handle.
 ///
-/// See [`DependentMut`] for mutable methods.
-pub struct Dependent<'a> {
+/// See [`AppDependentMut`] for mutable methods.
+pub struct AppDependent<'a> {
     app: &'a App,
 }
 
@@ -446,7 +493,7 @@ impl HandleData {
     }
 }
 
-impl<'a> Dependent<'a> {
+impl<'a> AppDependent<'a> {
     const fn new(app: &'a App) -> Self {
         Self { app }
     }
@@ -480,8 +527,8 @@ pub struct Present;
 /// This type implements [`Deref`] and [`DerefMut`] to the underlying [`App`], so it can be used as
 /// one.
 ///
-/// See [`Dependent`] for immutable methods.
-pub struct DependentMut<'a, D, T> {
+/// See [`AppDependent`] for immutable methods.
+pub struct AppDependentMut<'a, D, T> {
     inner: DependentMutInner<'a>,
     pd: PhantomData<(D, T)>,
 }
@@ -492,7 +539,7 @@ struct DependentMutInner<'a> {
     ty: Option<DependencyType>,
 }
 
-impl<'a> DependentMut<'a, (), ()> {
+impl<'a> AppDependentMut<'a, (), ()> {
     const fn new(app: &'a mut App) -> Self {
         Self {
             inner: DependentMutInner {
@@ -505,7 +552,7 @@ impl<'a> DependentMut<'a, (), ()> {
     }
 }
 
-impl<'a, T> DependentMut<'a, (), T> {
+impl<'a, T> AppDependentMut<'a, (), T> {
     /// Temporarily changes the dependent of this [`App`] handle to the component depended on in
     /// `dependency`.
     ///
@@ -548,7 +595,7 @@ impl<'a, T> DependentMut<'a, (), T> {
     pub async fn with_dependent<D: Send + Sync>(
         self,
         dependency: &Dependency<D>,
-    ) -> DependentMut<'a, Present, T> {
+    ) -> AppDependentMut<'a, Present, T> {
         let dependent = Dependency::info_of(dependency).id.dependency();
         self.with_dependent_inner(dependent).await
     }
@@ -556,7 +603,7 @@ impl<'a, T> DependentMut<'a, (), T> {
     async fn with_dependent_inner(
         self,
         dependent: LoadedComponentId,
-    ) -> DependentMut<'a, Present, T> {
+    ) -> AppDependentMut<'a, Present, T> {
         let dependency = self.inner.app.handle.app_id();
         let part = DependencyPart {
             id: LoadedDependencyId::new(dependent, dependency),
@@ -570,20 +617,20 @@ impl<'a, T> DependentMut<'a, (), T> {
         self.with_dependency(dependency)
     }
 
-    fn with_dependency(mut self, dependency: Dependency<()>) -> DependentMut<'a, Present, T> {
+    fn with_dependency(mut self, dependency: Dependency<()>) -> AppDependentMut<'a, Present, T> {
         self.inner.dependency = Some(std::mem::replace(
             &mut self.inner.app.handle.dependency,
             dependency,
         ));
 
-        DependentMut {
+        AppDependentMut {
             inner: self.inner,
             pd: PhantomData,
         }
     }
 }
 
-impl<'a, D> DependentMut<'a, D, ()> {
+impl<'a, D> AppDependentMut<'a, D, ()> {
     /// Temporarily changes the dependency type of this [`App`] handle to `ty`.
     ///
     /// This cannot be called multiple times. If you want to change the dependent again, call
@@ -639,13 +686,13 @@ impl<'a, D> DependentMut<'a, D, ()> {
     /// # }
     /// ```
     #[must_use]
-    pub fn with_ty(mut self, ty: DependencyType) -> DependentMut<'a, D, Present> {
+    pub fn with_ty(mut self, ty: DependencyType) -> AppDependentMut<'a, D, Present> {
         self.inner.ty = Some(std::mem::replace(
             &mut self.inner.app.handle.new_dependency_type,
             ty,
         ));
 
-        DependentMut {
+        AppDependentMut {
             inner: self.inner,
             pd: PhantomData,
         }
@@ -664,14 +711,14 @@ impl Drop for DependentMutInner<'_> {
     }
 }
 
-impl<D, T> Deref for DependentMut<'_, D, T> {
+impl<D, T> Deref for AppDependentMut<'_, D, T> {
     type Target = App;
     fn deref(&self) -> &Self::Target {
         self.inner.app
     }
 }
 
-impl<D, T> DerefMut for DependentMut<'_, D, T> {
+impl<D, T> DerefMut for AppDependentMut<'_, D, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.inner.app
     }
@@ -701,8 +748,8 @@ impl Builder {
     /// automatically exit unless other handles, such as those created in
     /// [`on_add`](crate::component::registry::Loader::on_add) hooks, are keeping the app alive.
     ///
-    /// The [`Dependent`] of the returned handle will be the [`App`] component, and its
-    /// [`DependencyType`] will default to [`DependencyType::Transient`].
+    /// The [dependent](self#dependents) of the returned handle will be the [`App`] component, and
+    /// its [`DependencyType`] will default to [`DependencyType::Transient`].
     #[expect(clippy::missing_panics_doc)]
     #[allow(clippy::must_use_candidate)] // no?
     pub fn spawn(self) -> App {
