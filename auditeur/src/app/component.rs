@@ -1,5 +1,7 @@
 use crate::prelude::*;
 
+/// Return type of [`AppFn::components_mut`](super::AppFn::components_mut),
+/// see [`AppComponentsMut`].
 #[must_use]
 pub struct AppFnComponentsMut;
 

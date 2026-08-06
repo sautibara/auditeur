@@ -1880,6 +1880,7 @@ impl AppFnComponentsMut {
         )
     }
 
+    /// See [`AppComponentsMut::request`].
     pub const fn request(self, request: RequestSet) -> impl AppMutFnOnce<Output = Waiter> {
         AppFn::oneshot_mut(
             request,
@@ -1896,6 +1897,7 @@ impl AppFnComponentsMut {
         )
     }
 
+    /// See [`AppComponentsMut::wait_for`].
     pub const fn wait_for(self, request: RequestSet) -> impl AppMutFnOnce<Output = Waiter> {
         AppFn::oneshot_mut(
             request,

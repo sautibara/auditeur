@@ -51,11 +51,15 @@ pub use tokio;
 
 /// Items that are commonly imported in auditeur-using code.
 pub mod prelude {
+    pub use crate::app::AppFnOnce as _;
+    pub use crate::app::AppFuture as _;
+    pub use crate::app::AppMutFnOnce as _;
+    pub use crate::app::AppMutFuture as _;
     pub use crate::component::HasChildren as _;
     pub use crate::component::IdentifiedComponentType as _;
     pub use crate::component::IdentifiedType as _;
     pub use crate::{
-        app::{App, map::Dependency},
+        app::{App, AppFn, map::Dependency},
         component::{
             Children, ComponentId,
             bundle::Bundle,

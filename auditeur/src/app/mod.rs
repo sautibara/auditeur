@@ -1,5 +1,207 @@
 #![allow(private_interfaces, private_bounds)]
-//! The backend of the library; the way that components actually interact.
+//! The backend of the library; the way that components interact.
+//!
+//! All interactions between [`Component`](crate::component::Component)s start with an [`App`]
+//! handle. With one, one could:
+//! - add, load, and remove components using [`App::components_mut`],
+//! - access the current state of the app using  [`App::map`],
+//! - wholly exit the app using [`App::exit`],
+//! - access the global error list using [`App::errors`] and [`App::errors_mut`],
+//!
+//! Many [registries](crate::component) also provide extensions onto [`App`] to manage components
+//! within their registry, such as:
+//! - [`App::resources_mut`],
+//! - [`App::listen_mut`],
+//! - [`App::take_mut`],
+//!
+//! Every component is given access to an app handle when loading, allowing them to access app
+//! state if necessary. This is how components are allowed to recursively depend on each other, as
+//! one component loading could load many more components down the line. Handles can also be
+//! duplicated using [`App::handle`], so components can also access app state while they're already
+//! running. In all, using app handles is made to be as flexible as possible.
+//!
+//! ### Examples
+//!
+//! ```
+//! use auditeur::component::bundle::Bundles;
+//! use auditeur::component::registry::Registries;
+//!
+//! use auditeur::prelude::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! let app = App::builder().spawn();
+//!
+//! // We could query the current state of the app using its map.
+//! // [`AppMap::get`] gets a clone of the state, which we could then access ourselves.
+//! // It's an async method, since it sends a message to the app and waits for its response.
+//! let map = app.map().get().await;
+//!
+//! // The [`Registries`] registry should be loaded, since it's used to hold itself.
+//! assert!(map.is_loaded(&Registries::component_id()));
+//!
+//! // The [`App`] component should also be loaded, since we have an app handle.
+//! assert!(map.is_loaded(&App::component_id()));
+//!
+//! // The [`Bundles`] registry should be added but not loaded, since nothing is in it.
+//! assert!(map.is_added(&Bundles::component_id()));
+//! assert!(!map.is_loaded(&Bundles::component_id()));
+//!
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+//!
+//! ## Dependents
+//!
+//! Every app handle has a set dependent component, accessed through [`App::dependent`] and
+//! [`App::dependent_mut`]. This is the component that will be used as the dependent when
+//! dependencies are created from the handle. That is, the app will treat the component as the one
+//! keeping the dependencies alive. This means that if the dependency is requested to be removed,
+//! the dependent may also be requested to be removed (depending on the [`DependencyType`]).
+//!
+//! In a sense, the dependent component is always meant to be the "current" component - the
+//! component that is currently accessing the state of the app. When a component is loaded, the
+//! dependent is set to the component being loaded. When a handle is obtained, the dependent is
+//! copied over. When components are added using a handle, their parent will be the current
+//! dependent.
+//!
+//! ### Examples
+//!
+//! ```
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # #[allow(clippy::items_after_statements)]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! let mut app = App::builder().spawn();
+//!
+//! // The dependent of the app handle obtained from [`AppBuilder::spawn`] is always the [`App`]
+//! // component, so dependencies obtained here are responsibilities of the whole app.
+//! assert_eq!(**app.dependent().dependent_id(), App::component_id());
+//!
+//! // Meanwhile, resources are created using the app handle of the loader,
+//! #[resource("test:resource")]
+//! #[listener(weak, options)]
+//! #[create(default)]
+//! struct Resource {
+//!     // and app handles copy over the dependent from their source,
+//!     #[create(input)]
+//!     app: App,
+//! }
+//!
+//! impl ListenerDerive for Resource {
+//!     async fn init(&mut self) -> anyhow::Result<()> {
+//!         // so we know that the handle's dependent should be the current resource.
+//!         assert_eq!(**self.app.dependent().dependent_id(), Self::component_id());
+//!         Ok(())
+//!     }
+//! }
+//!
+//! // Now, after adding the component, we could see that
+//! app.components_mut()
+//!     .add(Children::new().with::<Resource>(()))
+//!     .await;
+//!
+//! // [`AppComponentsMut::load`] uses the current dependent for its returned dependency,
+//! let dependency = app.components_mut().load(Resource::component_id()).await?;
+//! assert_eq!(
+//!     **Dependency::info_of(&dependency).id.dependent(),
+//!     App::component_id()
+//! );
+//!
+//! // and [`AppComponentsMut::add`] uses the current dependent as the parent of added components.
+//! let map = app.map().get().await;
+//! assert_eq!(
+//!     map.parent_of(&Resource::component_id()).map(|id| &**id),
+//!     Some(&App::component_id())
+//! );
+//!
+//! drop(dependency);
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+//!
+//! ## App Functions / Futures
+//!
+//! All methods that can be completed by accessing the app once return [`AppFuture`]s. Effectively,
+//! this means all methods except the ones that load components like [`AppComponentsMut::get`].
+//! These futures have the advantage that they can be combined together to get all the data
+//! necessary in one go, avoiding race conditions if the state changes in between accesses
+//! to the app.
+//!
+//! This module provides the [`AppFnOnce`] and [`AppMutFnOnce`] traits that act as app methods
+//! without the given app reference. Once given a reference, they turn into [`AppFuture`]s or
+//! [`AppMutFuture`]s respectively. As `FnOnce`s, they can be combined using [`AppFnOnce::then`] or
+//! [`AppMutFnOnce::then`]. See [`AppFn`] for the `FnOnce`s available.
+//!
+//! ### Examples
+//!
+//! ```
+//! use auditeur::app::event::ComponentLifecycle;
+//! use auditeur::component::bundle::Bundles;
+//!
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # #[allow(clippy::items_after_statements)]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! // Since the app can be accessed from multiple threads, we have to be weary of race conditions.
+//!
+//! // Let's imagine we want to listen to when bundles are added to the app.
+//!
+//! let mut app = App::builder()
+//!     // Here's a bundle added before we start listening.
+//!     .with::<Bundle>(new_bundle!("test:bundle_1"))
+//!     .spawn();
+//!
+//! // Now, to start listening, we get a map and event listener from the app.
+//! // For this, we use [`AppFn`], which mirrors [`App`]'s api without accessing a handle.
+//! let (map, event_listener) = (AppFn.map().get().using_mut())
+//!     .then(AppFn.get_event_listener())
+//!     // Only once we finish building up our request do we have to use our app handle,
+//!     .call(&mut app)
+//!     // allowing us to complete the request all at once.
+//!     .await;
+//! let mut event_listener = event_listener?;
+//!
+//! // Through the map, we could find the bundle added before we started listening.
+//! assert!(map.is_added(&ComponentId::inn::<Bundles>(ident!("test:bundle_1"))));
+//!
+//! // And if we add a bundle after we start listening,
+//! app.components_mut()
+//!     .add(Children::new().with::<Bundle>(new_bundle!("test:bundle_2")))
+//!     .await;
+//!
+//! // we can find it using the event listener.
+//! loop {
+//!     if let auditeur::app::Event::Component { id, lifecycle } = event_listener.listen().await
+//!         && lifecycle == ComponentLifecycle::Add
+//!         && id == ComponentId::inn::<Bundles>(ident!("test:bundle_2"))
+//!     {
+//!         break;
+//!     }
+//! }
+//!
+//! // If we didn't use the [`AppFn`] api imagine if we (or another thread):
+//! // - got a map,
+//! // - added a bundle now, and
+//! // - got an event listener after.
+//! //
+//! // Since the bundle was added after the map was obtained, there's no way that it could've been
+//! // included in the map. Similarly, since event listeners only return events from after they're
+//! // obtained, there's no way it would show the event. Because of these reasons, the bundle added
+//! // would've been missed completely.
+//! //
+//! // Instead, since we got the map and event listener in the same request, there's no way that
+//! // a bundle could've been added in between the two actions, and there was no risk of a race
+//! // condition.
+//!
+//! drop(event_listener);
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -9,31 +211,30 @@ use futures::FutureExt;
 use tokio::sync::broadcast;
 use tracing::debug;
 
-use crate::app::component::{AppComponentsMut, AppFnComponentsMut};
-use crate::app::error::{AppFnErrors, AppFnErrorsMut};
-use crate::app::event::FlushRequest;
-use crate::app::map::{
-    AppFnMap, Channels, DependencyHandle, LoadedComponentId, LoadedDependencyId, RequestSet,
-};
-use crate::component::bundle::Bundles;
-use crate::component::registry::LoaderCallback;
-use crate::component::resource::AppFnResourcesMut;
-use crate::component::{IdentifiedComponent, IdentifiedComponentType, Register};
-use crate::input::CloneIn;
-use crate::prelude::*;
 use crate::{
     app::{
-        error::{AppErrors, AppErrorsMut, Errors},
-        map::{AddedComponentId, AppMap, Dependency, DependencyPart, DependencyType, Map, Waiter},
+        component::{AppComponentsMut, AppFnComponentsMut},
+        error::{AppErrors, AppErrorsMut, AppFnErrors, AppFnErrorsMut, Errors},
+        event::FlushRequest,
+        map::{
+            AddedComponentId, AppFnMap, AppMap, Channels, Dependency, DependencyHandle,
+            DependencyPart, DependencyType, LoadedComponentId, LoadedDependencyId, Map, RequestSet,
+            Waiter,
+        },
         registrar::Registrar,
     },
     component::{
-        HasChildren, RegistryOf,
+        HasChildren, IdentifiedComponent, IdentifiedComponentType, Register, RegistryOf,
+        bundle::Bundles,
         listen::{self, AppListenMut, ListenMessages, Listener},
-        registry::{ErasedLoader, Loaded, Loader, LoaderCallbacks, Registries, Registry},
-        resource::{AppResourcesMut, Resources},
+        registry::{
+            ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks, Registries, Registry,
+        },
+        resource::{AppFnResourcesMut, AppResourcesMut, Resources},
         take::{AppTakeMut, TakeMessages},
     },
+    input::CloneIn,
+    prelude::*,
 };
 
 pub mod component;
@@ -94,17 +295,17 @@ struct Owned {
 }
 
 impl App {
-    /// Start building a new app.
+    /// Starts building a new app.
     pub fn builder() -> Builder {
         Builder::new()
     }
 
-    /// Get a new handle to the app.
+    /// Gets a new handle to the app.
     pub fn handle(&mut self) -> impl AppMutFuture<'_, Output = Self> {
         AppFn.handle().call(self)
     }
 
-    /// Tell the app to exit.
+    /// Tells the app to exit.
     ///
     /// This unloads and removes all components in the app, leading it to exit. Once that succeeds,
     /// the [`Waiter`] returned will be released.
@@ -164,12 +365,17 @@ impl App {
     }
 }
 
-/// Methods that access the main internals of the app: the [registries](component), the [map] of
+/// Methods that access the main internals of the app: the [components](component), the [map] of
 /// added components, and the [error list](mod@error).
 impl App {
     #[must_use]
     pub const fn components_mut(&mut self) -> AppComponentsMut<'_> {
         AppComponentsMut::new(self)
+    }
+
+    #[must_use]
+    pub const fn map(&self) -> AppMap<'_> {
+        AppMap::new(self)
     }
 
     #[must_use]
@@ -181,12 +387,9 @@ impl App {
     pub const fn errors_mut(&mut self) -> AppErrorsMut<'_> {
         AppErrorsMut::new(self)
     }
+}
 
-    #[must_use]
-    pub const fn map(&self) -> AppMap<'_> {
-        AppMap::new(self)
-    }
-
+impl App {
     /// Gets an event listener from the app.
     ///
     /// This is identical to [`AppListenMut::listener`], except that this returns an
@@ -446,30 +649,39 @@ impl HasChildren for Builder {
     }
 }
 
+/// Provides implementations of [`AppFnOnce`] and [`AppMutFnOnce`] for [`App`] methods.
 pub struct AppFn;
 impl AppFn {
+    /// See [`App::components_mut`].
     pub const fn components_mut(self) -> AppFnComponentsMut {
         AppFnComponentsMut
     }
 
+    /// See [`App::map`].
     pub const fn map(self) -> AppFnMap {
         AppFnMap
     }
 
+    /// See [`App::errors`].
     pub const fn errors(self) -> AppFnErrors {
         AppFnErrors
     }
 
+    /// See [`App::errors_mut`].
     pub const fn errors_mut(self) -> AppFnErrorsMut {
         AppFnErrorsMut
     }
+}
 
+impl AppFn {
+    /// See [`App::resources_mut`].
     pub const fn resources_mut(self) -> AppFnResourcesMut {
         AppFnResourcesMut
     }
 }
 
 impl AppFn {
+    /// See [`App::handle`].
     pub const fn handle(self) -> impl AppMutFnOnce<Output = App> {
         Self::using_handle_mut(|handle| {
             let method_sender = handle.method_sender.clone();
@@ -489,6 +701,7 @@ impl AppFn {
         })
     }
 
+    /// See [`App::exit`].
     pub const fn exit(self) -> impl AppMutFnOnce<Output = Waiter> {
         Self::using_handle_mut(|_| {
             Self.components_mut()
@@ -754,6 +967,7 @@ impl Register<Self> for App {
     }
 }
 
+#[doc(hidden)]
 pub struct AppLoader(());
 impl Loader for AppLoader {
     type Loaded = AppLoaded;
@@ -774,6 +988,7 @@ impl IdentifiedComponent for AppLoader {
 }
 
 #[derive(Any)]
+#[doc(hidden)]
 pub struct AppLoaded(());
 impl Loaded for AppLoaded {}
 

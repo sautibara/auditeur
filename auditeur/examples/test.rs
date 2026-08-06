@@ -1,54 +1,63 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use auditeur::app::event::ComponentLifecycle;
+use auditeur::component::bundle::Bundles;
 
-use auditeur::component::resource::get::{GetCreate, GetRefWith};
 use auditeur::prelude::*;
 use auditeur::*;
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
-    #[resource("test:resource")]
-    #[pure_resource]
-    #[create(default)]
-    struct Resource {
-        number: Arc<AtomicUsize>,
-    }
+#[allow(clippy::items_after_statements)]
+async fn main() -> Result<(), auditeur::Error> {
+    // Since the app is communicated to with messages, we have to be weary of race conditions.
 
-    #[create(external_input(Resource), derive_for_plain(Clone))]
-    #[derive(auditeur::Any)]
-    struct Ref {
-        // The handle can have both values from the original resource,
-        number: Arc<AtomicUsize>,
+    // Let's imagine we want to listen to when bundles are added to the app.
 
-        // and extra values obtained through the app.
-        #[create(input)]
-        app: App,
-    }
+    let mut app = App::builder()
+        // Here's a bundle added before we start listening.
+        .with::<Bundle>(new_bundle!("test:bundle_1"))
+        .spawn();
 
-    impl CreateDerive for Ref {
-        async fn create(resource: &Resource, _: &mut App) -> Result<Self::Plain, Error> {
-            Ok(Self::Plain {
-                // To obtain values from the resource, use the external input.
-                number: resource.number.clone(),
-            })
+    // Now, to start listening, we get a map and event listener from the app.
+    // For this, we use [`AppFn`], which mirrors [`App`]'s api without accessing a handle.
+    let (map, event_listener) = (AppFn.map().get().using_mut())
+        .then(AppFn.get_event_listener())
+        // Only once we finish building up our request do we have to use our app handle,
+        .call(&mut app)
+        // allowing us to complete the request all at once.
+        .await;
+    let mut event_listener = event_listener?;
+
+    // Through the map, we could find the bundle added before we started listening.
+    assert!(map.is_added(&ComponentId::inn::<Bundles>(ident!("test:bundle_1"))));
+
+    // And if we add a bundle after we start listening,
+    app.components_mut()
+        .add(Children::new().with::<Bundle>(new_bundle!("test:bundle_2")))
+        .await;
+
+    // we can find it using the event listener.
+    loop {
+        if let auditeur::app::Event::Component { id, lifecycle } = event_listener.listen().await
+            && lifecycle == ComponentLifecycle::Add
+            && id == ComponentId::inn::<Bundles>(ident!("test:bundle_2"))
+        {
+            break;
         }
     }
 
-    impl GetRefWith for Resource {
-        type Method = GetCreate<Ref>;
-    }
+    // If we didn't use the [`AppFn`] api imagine if we (or another thread):
+    // - gets a map,
+    // - adds a bundle now, and
+    // - gets an event listener after.
+    //
+    // Since the bundle was added after the map was obtained, there's no way that it could've been
+    // included in the map. Similarly, since event listeners only return events from after they're
+    // obtained, there's no way it would show the event. Because of these reasons, the bundle added
+    // would've been missed completely.
+    //
+    // Instead, since we got the map and event listener in the same request, there's no way that
+    // a bundle could've been added in between the two actions, and there was no risk of a race
+    // condition.
 
-    let mut app = App::builder().with::<Resource>(()).spawn();
-
-    let resource = app.resources_mut().get::<Resource>().await?;
-
-    // Now we can use both the values from the original resource,
-    assert_eq!(resource.number.load(Ordering::Relaxed), 0);
-
-    // and the values obtained through the app.
-    let map = resource.app.map().get().await;
-    assert!(map.is_added(&Resource::component_id()));
-
-    drop(resource);
+    drop(event_listener);
     auditeur::test::finish(app, false).await
 }
