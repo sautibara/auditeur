@@ -61,7 +61,7 @@ use crate::{
 /// was taken. To take a new snapshot, call [`AppErrors::get`].
 #[derive(Default, Clone, Debug)]
 pub struct Errors {
-    errors: im::Vector<Arc<Error>>,
+    errors: imbl::Vector<Arc<Error>>,
 }
 
 impl Errors {

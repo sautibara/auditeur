@@ -32,35 +32,35 @@ use super::event::ComponentLifecycle;
 
 /// A snapshot of the current state of the [`App`].
 ///
-/// These values are cheaply cloneable due to the use of [immutable collections](im).
+/// These values are cheaply cloneable due to the use of [immutable collections](imbl).
 ///
 /// See the [module documentation](self) for more information.
 #[derive(Default, Clone, Debug)]
 pub struct Map {
-    pub components: im::HashMap<AddedComponentId, MapComponent>,
-    pub dependencies: im::HashMap<AddedDependencyId, MapDependency>,
+    pub components: imbl::HashMap<AddedComponentId, MapComponent>,
+    pub dependencies: imbl::HashMap<AddedDependencyId, MapDependency>,
 
-    pub listeners: im::HashMap<ListenerId, Listener>,
+    pub listeners: imbl::HashMap<ListenerId, Listener>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct MapComponent {
     pub parent: Option<AddedComponentId>,
-    pub loads: im::HashSet<LoadIndex>,
+    pub loads: imbl::HashSet<LoadIndex>,
     pub load_index: LoadIndex,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct MapDependency {
-    pub loads: im::HashMap<DependencyLoads, DependencyTypeCounts>,
+    pub loads: imbl::HashMap<DependencyLoads, DependencyTypeCounts>,
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct Listener {
-    pub blocking: im::HashSet<ListenerId>,
-    pub blocked_on: im::HashSet<ListenerId>,
+    pub blocking: imbl::HashSet<ListenerId>,
+    pub blocked_on: imbl::HashSet<ListenerId>,
 
-    pub requests: im::HashSet<Request>,
+    pub requests: imbl::HashSet<Request>,
     pub sticky: bool,
 }
 
@@ -261,7 +261,7 @@ impl Map {
         let id = AddedComponentId(id);
 
         let entry = self.components.entry(id.clone());
-        let im::hashmap::Entry::Vacant(entry) = entry else {
+        let imbl::hashmap::Entry::Vacant(entry) = entry else {
             return Err(Error::NameCollision { id: id.into_id() });
         };
 
@@ -668,7 +668,7 @@ impl Map {
 
                 if matches!(change, DependencyStateChange::Remove) {
                     let entry = self.dependencies.entry(id.id.clone());
-                    let im::hashmap::Entry::Occupied(mut entry) = entry else {
+                    let imbl::hashmap::Entry::Occupied(mut entry) = entry else {
                         panic!("dependency should exist in map since we have its loaded id");
                     };
 
@@ -697,7 +697,7 @@ impl Map {
         &mut self,
         listener: &ListenerId,
         releaser: &Request,
-        blocked_on: &im::HashSet<ListenerId>,
+        blocked_on: &imbl::HashSet<ListenerId>,
         new_request: bool,
         channels: Channels<'_>,
     ) {
@@ -779,7 +779,7 @@ impl Map {
     }
 
     fn add_listener(&mut self, listener: &ListenerId, channels: Channels<'_>) -> bool {
-        let im::hashmap::Entry::Vacant(entry) = self.listeners.entry(listener.clone()) else {
+        let imbl::hashmap::Entry::Vacant(entry) = self.listeners.entry(listener.clone()) else {
             return false;
         };
 
@@ -799,7 +799,7 @@ impl Map {
     }
 
     fn check_removal(&mut self, listener: &ListenerId, channels: Channels<'_>) {
-        let im::hashmap::Entry::Occupied(entry) = self.listeners.entry(listener.clone()) else {
+        let imbl::hashmap::Entry::Occupied(entry) = self.listeners.entry(listener.clone()) else {
             return;
         };
 
@@ -852,7 +852,7 @@ impl Map {
         let blocked_on_info = &mut self.listeners[&blocked_on];
         blocked_on_info.blocking.insert(blocked.clone());
 
-        let set = im::HashSet::from_iter([blocked_on]);
+        let set = imbl::HashSet::from_iter([blocked_on]);
         for releaser in requests {
             self.on_request(&blocked, &releaser, &set, false, channels);
         }

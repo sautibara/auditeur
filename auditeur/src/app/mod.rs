@@ -638,7 +638,7 @@ impl<'a, D> AppDependentMut<'a, D, ()> {
     /// # Examples
     ///
     /// ```
-    /// use auditeur::app::map::{DependencyType, ListenerId, RequestSet};
+    /// use auditeur::app::map::{ListenerId, RequestSet};
     ///
     /// use auditeur::prelude::*;
     /// # use auditeur::*;
