@@ -64,7 +64,7 @@ use async_trait::async_trait;
 
 use crate::any;
 use crate::input::{CloneIn, CreateDeriveTypes};
-use crate::{app::map::Dependency, component::resource::Resource, prelude::*};
+use crate::{component::resource::Resource, prelude::*};
 
 /// An [`Input`] that uses [`GetRef`] to obtain a handle to another component.
 ///

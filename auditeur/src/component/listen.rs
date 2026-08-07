@@ -88,7 +88,7 @@ use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::{
     any,
-    app::{event::Event, map::Dependency},
+    app::event::Event,
     component::{
         ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},

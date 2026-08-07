@@ -26,7 +26,7 @@ use crate::{
     app::{
         AppFn, AppMutFnOnce, AppMutFuture,
         event::Event,
-        map::{Dependency, DependencyType, RequestSet, Waiter},
+        map::{RequestSet, Waiter},
     },
     component::{
         ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf,
@@ -37,6 +37,7 @@ use crate::{
         },
         resource::get::{DynGetRefLoader, Get, GetRef, MaybeGetRef},
     },
+    dependency::{Dependency, DependencyType},
     prelude::*,
 };
 

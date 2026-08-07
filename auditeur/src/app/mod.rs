@@ -215,10 +215,7 @@ use crate::{
     app::{
         error::Errors,
         event::FlushRequest,
-        map::{
-            AddedComponentId, Channels, Dependency, DependencyHandle, DependencyPart,
-            DependencyType, LoadedComponentId, LoadedDependencyId, Map, RequestSet, Waiter,
-        },
+        map::{Channels, Map, RequestSet, Waiter},
         registrar::Registrar,
     },
     component::{
@@ -230,6 +227,10 @@ use crate::{
         },
         resource::{AppFnResourcesMut, AppResourcesMut, Resources},
         take::{AppTakeMut, TakeMessages},
+    },
+    dependency::{
+        AddedComponentId, Dependency, DependencyHandle, DependencyPart, DependencyType,
+        LoadedComponentId, LoadedDependencyId,
     },
     input::CloneIn,
     prelude::*,
@@ -264,14 +265,14 @@ pub use registrar::ErasedComponent;
 #[derive(Debug, crate::Any)]
 pub struct App {
     variant: Inner,
-    handle: HandleData,
+    pub(crate) handle: HandleData,
 }
 
 #[derive(Debug)]
-struct HandleData {
-    method_sender: flume::Sender<Method>,
-    dependency: Dependency<()>,
-    new_dependency_type: DependencyType,
+pub(crate) struct HandleData {
+    pub(crate) method_sender: flume::Sender<Method>,
+    pub(crate) dependency: Dependency<()>,
+    pub(crate) new_dependency_type: DependencyType,
 }
 
 #[derive(Debug)]
@@ -282,7 +283,7 @@ enum Inner {
 
 /// The actual shared state of the app.
 #[derive(Debug)]
-struct Owned {
+pub(crate) struct Owned {
     registrar: Registrar,
     errors: Errors,
     map: Map,
@@ -961,7 +962,7 @@ impl AppRunner {
 
 /// A message from a handle to run a method in the app.
 #[derive(Debug)]
-enum Method {
+pub(crate) enum Method {
     Registries(registrar::Method),
     Errors(error::Method),
     Map(map::Method),

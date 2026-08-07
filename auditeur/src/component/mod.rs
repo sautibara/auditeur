@@ -1,10 +1,10 @@
 //! Items that can be added, loaded, unloaded, and removed from an [`App`].
 //!
 //! [`Component`]s are the building blocks of an app. When loaded, they can access and load other
-//! components, obtaining [dependencies](crate::app::map::Dependency) on them. When all dependencies
-//! on a specific component are released (dropped), that component is then automatically unloaded.
-//! The app automatically does all the bookkeeping necessary to figure out when components should
-//! be loaded and unloaded.
+//! components, obtaining [dependencies](crate::dependency::Dependency) on them. When all
+//! dependencies on a specific component are released (dropped), that component is then
+//! automatically unloaded. The app automatically does all the bookkeeping necessary to figure out
+//! when components should be loaded and unloaded.
 //!
 //! Components are added either before the app is run in [`app::Builder`](crate::app::Builder) or
 //! at runtime using [`AppComponentsMut::add`](crate::app::AppComponentsMut::add). They

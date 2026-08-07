@@ -9,9 +9,10 @@ use auditeur_plugin::{
         app::{
             AppFn, AppFnOnce, AppMutFnOnce,
             event::Event,
-            map::{ComponentStateChange, DependencyType, ListenerId, RequestAction, RequestSet},
+            map::{ComponentStateChange, ListenerId, RequestAction, RequestSet},
         },
         component::ComponentIdPath,
+        dependency::DependencyType,
     },
     prelude::*,
 };

@@ -17,11 +17,9 @@ use std::marker::PhantomData;
 
 use crate::{
     any,
-    app::{
-        map::{AddedComponentId, DependencyType},
-        registrar::DynComponentImpl,
-    },
+    app::registrar::DynComponentImpl,
     component::{ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf},
+    dependency::{AddedComponentId, DependencyType},
     prelude::*,
 };
 use async_trait::async_trait;

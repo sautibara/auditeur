@@ -40,11 +40,11 @@ use std::marker::PhantomData;
 
 use crate::{
     any,
-    app::map::Dependency,
     component::{
         ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
     },
+    dependency::Dependency,
     input::CloneIn,
     prelude::*,
 };
