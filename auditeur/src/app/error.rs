@@ -1,3 +1,46 @@
+//! A shared list of errors held in the [`App`].
+//!
+//! If errors occur that do not directly get returned to the caller, they'll automatically go to
+//! the error list. This includes, but is not limited to, errors occurred during
+//! [adding](super::AppComponentsMut::add),
+//! [lazily loading](crate::component::registry::Loader::on_load),
+//! and [unloading](crate::component::registry::Loaded::unload) components, errors that
+//! occur in [resources](crate::component::resource), and calls to [`AppErrorsMut::add`].
+//!
+//! # Examples
+//!
+//! ```
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! // [`AppComponentsMut::add`] attempts to add as many components as possible,
+//! // so it doesn't early-return if an error occurs, and instead sends it to the error list.
+//!
+//! #[resource("test:resource")]
+//! #[pure_resource]
+//! #[create(default)]
+//! struct Resource;
+//!
+//! // Consider an app with a single resource.
+//! let mut app = App::builder().with::<Resource>(()).spawn();
+//!
+//! // It shouldn't have any errors yet - this is all normal for now.
+//! assert!(app.errors().get().await.is_empty());
+//!
+//! // But if we try to add the resource again,
+//! app.components_mut()
+//!     .add(Children::new().with::<Resource>(()))
+//!     .await;
+//! // an error should occur due to a name collision.
+//! let errors = app.errors().get().await;
+//! assert!((errors.iter()).any(|error| matches!(error, auditeur::Error::NameCollision { .. })));
+//!
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -192,27 +235,40 @@ impl<'a> AppErrorsMut<'a> {
     }
 }
 
+/// An error that occurred in the [`App`].
 #[derive(Error, Debug)]
 pub enum Error {
+    /// An [`anyhow::Error`] was produced in the component with the id `id`.
+    ///
+    /// This primarily comes from calls to [`AppErrors::wrap`].
     #[error("component '{id}' had an error: {error:?}")]
     FromComponent {
         id: ComponentId,
         #[source]
         error: anyhow::Error,
     },
+    /// A component with the id `id` was attempted to be added to the app, but a component with
+    /// that id already existed.
     #[error("attempted to add '{id}' to the app, but that component already exists")]
     NameCollision { id: ComponentId },
-    #[error("attempted to load '{id}' to the app, but one of its dependencies depends on it")]
-    DependencyLoop { id: ComponentId },
-    #[error("attempted to Get resource '{id}', but it doesn't implement GetRef")]
-    ResourceNoGetRef { id: NamespacedId },
+    // TODO: actually produce this error.
+    // /// A component with the id `id` was attempted to be loaded, but one of its dependencies
+    // /// depends on it.
+    // #[error("attempted to load '{id}' to the app, but one of its dependencies depends on it")]
+    // DependencyLoop { id: ComponentId },
+    /// A component with the id `id` attempted to downcast an [`Any`](crate::any::Any) value that
+    /// should never fail, but it did fail.
     #[error("attempted to get '{id}' from the app, but the downcast failed")]
     DowncastFailed { id: ComponentId },
+    /// A component with the id of `child` was attempted to be added to the app, but its parent
+    /// component with the id `parent` was not found.
     #[error("attempted to add '{child}' to the app, but its parent '{parent}' was not found")]
     ParentNotFound {
         child: ComponentId,
         parent: ComponentId,
     },
+    /// A component with the id `dependent` attempted to load the component with the id
+    /// `dependency`, but that component was not found.
     #[error(
         "attempted to get '{dependency}' with dependent '{dependent}', but that dependency was not found"
     )]
@@ -220,6 +276,8 @@ pub enum Error {
         dependency: ComponentId,
         dependent: ComponentId,
     },
+    /// A component with the id `dependent` attempted to load the component with the id
+    /// `dependency`, but the dependent component was not found.
     #[error(
         "attempted to get '{dependency}' with dependent '{dependent}', but that dependent was not found"
     )]
@@ -227,11 +285,14 @@ pub enum Error {
         dependency: ComponentId,
         dependent: ComponentId,
     },
+    /// A component with the id `component` was attempted to be added to the app, but its
+    /// registry was not found.
     #[error(
         "attempted to add '{component}' to the app, but its registry '{}' was not found",
         component.registry
     )]
     RegistryNotFound { component: ComponentId },
+    /// The request `request` was made in the app, but that request didn't make sense.
     #[error("attemped to request the app to {request}, but the request was invalid")]
     InvalidRequest { request: RequestAction },
 }

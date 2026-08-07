@@ -436,15 +436,14 @@ impl<'a> AppResourcesMut<'a> {
     /// # Errors
     ///
     /// - Propagated from [`AppComponentsMut::get`](crate::app::AppComponentsMut::get)
+    #[allow(clippy::missing_panics_doc)]
     pub async fn get<R: Resource + GetRef>(self) -> Result<Get<R>, Error> {
         let dependency = (self.app.components_mut())
             .get::<Resources, _>(
                 ComponentIdPath::Static(R::id()),
                 async move |loaded, app| {
-                    let reference = loaded.get(app).await?;
-                    let reference = reference.ok_or_else(|| Error::ResourceNoGetRef {
-                        id: R::id().to_owned(),
-                    })?;
+                    let reference = (loaded.get(app).await?)
+                        .expect("this should never return None because `R` implements GetRef");
                     let reference: Box<R::Ref> =
                         crate::any::downcast(reference).map_err(|_| Error::DowncastFailed {
                             id: ComponentId::within::<Resources, R>(),

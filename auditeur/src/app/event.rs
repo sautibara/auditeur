@@ -1,3 +1,48 @@
+//! Events that occur within an [`App`].
+//!
+//! # Examples
+//!
+//! ```
+//! use auditeur::app::event::ComponentLifecycle;
+//!
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! #[resource("test:resource")]
+//! #[pure_resource]
+//! #[create(default)]
+//! struct Resource;
+//!
+//! let mut app = App::builder().spawn();
+//!
+//! // With an event listener, we could listen to events that happen in the app.
+//! let mut events = app.get_event_listener().await?;
+//!
+//! // For example, if we add a component to the app,
+//! app.components_mut()
+//!     .add(Children::new().with::<Resource>(()))
+//!     .await;
+//!
+//! // we should be able to see that in the event list.
+//! loop {
+//!     if let auditeur::app::Event::Component { id, lifecycle } = events.listen().await
+//!         && id == Resource::component_id()
+//!         && lifecycle == ComponentLifecycle::Add
+//!     {
+//!         break;
+//!     }
+//! }
+//!
+//! // Note that [`Event`]s are backed by [`listen`]. This means that event listeners can only
+//! // see events that happen after they're obtained.
+//!
+//! drop(events);
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+
 use std::{fmt::Debug, sync::Arc};
 
 use tokio::sync::broadcast;
@@ -8,6 +53,13 @@ use crate::{
     prelude::*,
 };
 
+/// An event that occurs within the [`App`].
+///
+/// This is added as a [`ListenMessage`](crate::component::listen::ListenMessage) to the app, so a
+/// listener can be obtained through
+/// [`AppListenMut::listener`](crate::component::listen::AppListenMut::listener).
+/// Additionally, if an [`AppFuture`](super::AppFuture) is needed, it can be obtained through
+/// [`App::get_event_listener`].
 #[derive(Clone, Debug)]
 #[listen_message("auditeur:registry_event")]
 #[non_exhaustive]

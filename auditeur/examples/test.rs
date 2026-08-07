@@ -1,4 +1,4 @@
-use auditeur::app::map::{DependencyType, ListenerId, RequestSet};
+use auditeur::app::event::ComponentLifecycle;
 
 use auditeur::prelude::*;
 use auditeur::*;
@@ -10,36 +10,28 @@ async fn main() -> Result<(), auditeur::Error> {
     #[create(default)]
     struct Resource;
 
-    let mut app = App::builder().with::<Resource>(()).spawn();
+    let mut app = App::builder().spawn();
 
-    // App handles' default dependency type is usually [`DependencyType::Unremovable`],
-    // but the handle returned by [`AppBuilder::spawn`]'s default is [`DependencyType::Transient`].
-    assert_eq!(app.dependent().dependency_type(), DependencyType::Transient);
+    // With an event listener, we could listen to events that happen in the app.
+    let mut events = app.get_event_listener().await?;
 
-    // Using [`AppDependentMut`], we could change the dependency type.
-    let mut with_dependent = app.dependent_mut().with_ty(DependencyType::Unremovable);
-
-    // Now, if we get a dependency to [`Resource`],
-    let dependency = with_dependent
-        .components_mut()
-        .load(Resource::component_id())
-        .await?;
-    // its dependency type will be [`DependencyType::Unremovable`].
-    assert_eq!(dependency.info().ty, DependencyType::Unremovable);
-
-    // And if we request [`Resource`]'s removal,
-    drop(with_dependent);
+    // For example, if we add a component to the app,
     app.components_mut()
-        .request(RequestSet::remove(Resource::component_id()))
+        .add(Children::new().with::<Resource>(()))
         .await;
-    // the request will propagate to the app, since it's `dependency`'s dependent.
-    let map = app.map().get().await;
-    assert!(
-        !map.listeners[&ListenerId::deactivate_component(app.dependent().app_id())]
-            .requests
-            .is_empty()
-    );
 
-    drop(dependency);
+    // we should be able to see that in the event list.
+    loop {
+        if let auditeur::app::Event::Component { id, lifecycle } = events.listen().await
+            && id == Resource::component_id()
+            && lifecycle == ComponentLifecycle::Add
+        {
+            break;
+        }
+    }
+
+    // Note that [`Event`]s are backed by [`listen`]. This means that event listeners can only
+    // see events that happen after they're obtained.
+
     auditeur::test::finish(app, false).await
 }
