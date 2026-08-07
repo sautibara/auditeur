@@ -1,5 +1,4 @@
-//! [`Component`](super::Component)s that can provide [tasks](Runner) to be run and/or
-//! [handles](Get) to their state.
+//! [`Component`]s that can provide [tasks](Runner) to be run and/or [handles](Get) to their state.
 //!
 //! [`Resource`]s are [`Identified`] by a specific [`NamespacedId`] that uniquely represents them.
 //! If they are a [`Listener`] or [`Watcher`], they may also run code in the main async loop, and
@@ -48,7 +47,7 @@ pub mod listener;
 pub mod pure;
 pub mod watcher;
 
-/// Components that can provide [tasks](Runner) to be run and/or [handles](Get) to their state.
+/// [`Component`]s that can provide [tasks](Runner) to be run and/or [handles](Get) to their state.
 ///
 /// See the [module documentation](self) for more information.
 pub trait Resource:

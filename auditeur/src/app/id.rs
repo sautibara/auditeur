@@ -1,8 +1,32 @@
+//! Identifiers returned from the [`App`] with special guarantees.
+//!
+//! When methods from this crate return identifiers from within this module, they guarantee that
+//! the identifiers' guarantees are valid right when the identifier is returned. For example, if
+//! an [`AddedComponentId`] is returned from a [`Map`](super::map::Map), the consumer can know
+//! that the component was added to the app when the map was obtained. Note that this guarantee
+//! doesn't extend beyond the time in which the identifier was obtained; keeping an
+//! [`AddedComponentId`] alive will not keep the component added.
+//!
+//! Identifiers related to components include:
+//! - [`AddedComponentId`],
+//! - [`LoadedComponentId`],
+//!     - [`LoadIndex`],
+//!
+//! Identifiers related to dependencies include:
+//! - [`DependencyId`],
+//! - [`AddedDependencyId`],
+//! - [`LoadedDependencyId`],
+//!     - [`DependencyLoads`],
+//! - [`DependencyPart`],
+//!
+//! Identifiers related to registries include:
+//! - [`LoadedRegistryId`],
+
 use std::{
     borrow::Borrow,
     fmt::{Debug, Display},
     hash::Hash,
-    ops::{AddAssign, Deref, SubAssign},
+    ops::Deref,
 };
 
 use crate::{
@@ -10,6 +34,11 @@ use crate::{
     prelude::*,
 };
 
+/// An specifically indexed load, mostly used when relating to components.
+///
+/// If obtained from the app, it is guaranteed that this load is active.
+///
+/// See [`LoadedComponentId`] or [`LoadedDependencyId`] for more information.
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct LoadIndex(pub(crate) usize);
 
@@ -19,12 +48,9 @@ impl Display for LoadIndex {
     }
 }
 
-/// An id of a component that is guaranteed to be currently added in the map when returned by it.
+/// A [`Component`] that is currently added.
 ///
-/// Note that this guarantee is only valid at the exact moment that the id is obtained from the
-/// map - keeping this id alive doesn't keep the component added.
-// WARN: Users of the library should not be able to give these to prove that a component is added
-// - it should only be used as a guarantee within the library.
+/// See [`LoadedComponentId`] for a component that is also loaded.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct AddedComponentId(pub ComponentId);
 
@@ -82,6 +108,9 @@ impl From<ComponentId> for AddedComponentId {
 
 pub(crate) type RegistryId = &'static NamespacedIdRef;
 
+/// A [`Registry`](crate::component::registry::Registry) that is currently loaded.
+///
+/// This means that the registry has components added to it.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct LoadedRegistryId(pub RegistryId);
 
@@ -101,9 +130,14 @@ impl Deref for LoadedRegistryId {
     }
 }
 
-/// An id of a specifically numbered load of a component.
+/// A [`Component`] that is currently loaded, with a specific index.
 ///
-/// This has the same guarantees as [`AddedComponentId`].
+/// If a component is gets unloaded and then loaded again immediately afterwards, there's a chance
+/// that it doesn't completely unload before the load begins. This means that there could be
+/// multiple loads of a component active at a single time. Load indicies are used to separate the
+/// different loads of a component.
+///
+/// See [`AddedComponentId`] for a component that is added but may not be loaded.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct LoadedComponentId {
     pub component: AddedComponentId,
@@ -130,7 +164,11 @@ impl Deref for LoadedComponentId {
     }
 }
 
-/// An id of a dependency that may or may not be added to the map yet.
+/// A [`Dependency`] that may or may not be added.
+///
+/// This doesn't come with any guarantees.
+///
+/// See [`AddedDependencyId`] for a dependency that was added to the app.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct DependencyId {
     pub dependent: ComponentId,
@@ -143,6 +181,10 @@ impl Display for DependencyId {
     }
 }
 
+/// A [`Dependency`] that is currently added.
+///
+/// See [`DependencyId`] for a dependency that may or may not be added, or [`LoadedDependencyId`]
+/// for a dependency that is loaded.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct AddedDependencyId {
     pub dependent: AddedComponentId,
@@ -165,13 +207,16 @@ impl AddedDependencyId {
     }
 }
 
+/// [Load indicies](LoadIndex) for the dependency and dependent of a [`Dependency`].
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub struct DependencyLoads {
     pub dependent: LoadIndex,
     pub dependency: LoadIndex,
 }
 
-/// An id of a loaded dependency in the map.
+/// A [`Dependency`] that is currently loaded.
+///
+/// See [`AddedDependencyId`] for a dependency that is added but may not be loaded.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct LoadedDependencyId {
     pub id: AddedDependencyId,
@@ -215,63 +260,15 @@ impl Display for LoadedDependencyId {
     }
 }
 
-/// An id of a part of a loaded dependency in the map.
+/// A [`Dependency`] that is loaded, plus a single [`DependencyType`].
 ///
 /// A single dependency may be made up of multiple parts - multiple [`Dependency`] handles -
 /// that all have separate [types](DependencyType). The dependency is only considered removed
 /// if all parts are dropped.
+///
+/// See [`LoadedDependencyId`] for a dependency that is loaded with no extra type.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct DependencyPart {
     pub id: LoadedDependencyId,
     pub ty: DependencyType,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct DependencyTypeCounts {
-    pub unremovable: usize,
-    pub removable: usize,
-    pub transient: usize,
-    pub weak: usize,
-}
-
-impl DependencyTypeCounts {
-    pub(crate) const fn is_zero(&self) -> bool {
-        self.unremovable == 0 && self.removable == 0 && self.transient == 0 && self.weak == 0
-    }
-
-    pub(crate) const fn effective_type(&self) -> DependencyType {
-        if self.unremovable > 0 {
-            DependencyType::Unremovable
-        } else if self.removable > 0 {
-            DependencyType::Removable
-        } else if self.transient > 0 {
-            DependencyType::Transient
-        } else if self.weak > 0 {
-            DependencyType::Weak
-        } else {
-            DependencyType::Transient
-        }
-    }
-}
-
-impl AddAssign<DependencyType> for DependencyTypeCounts {
-    fn add_assign(&mut self, ty: DependencyType) {
-        match ty {
-            DependencyType::Unremovable => self.unremovable += 1,
-            DependencyType::Removable => self.removable += 1,
-            DependencyType::Transient => self.transient += 1,
-            DependencyType::Weak => self.weak += 1,
-        }
-    }
-}
-
-impl SubAssign<DependencyType> for DependencyTypeCounts {
-    fn sub_assign(&mut self, ty: DependencyType) {
-        match ty {
-            DependencyType::Unremovable => self.unremovable = self.unremovable.saturating_sub(1),
-            DependencyType::Removable => self.removable = self.removable.saturating_sub(1),
-            DependencyType::Transient => self.transient = self.transient.saturating_sub(1),
-            DependencyType::Weak => self.weak = self.weak.saturating_sub(1),
-        }
-    }
 }

@@ -1,7 +1,10 @@
+//! A snapshot of the current state of the [`App`].
+
 use std::{
     collections::HashSet,
     fmt::{Debug, Display},
     hash::Hash,
+    ops::{AddAssign, SubAssign},
     sync::Arc,
     time::Duration,
 };
@@ -17,8 +20,7 @@ use crate::{
         event::{DependencyLifecycle, Event},
         id::{
             AddedComponentId, AddedDependencyId, DependencyId, DependencyLoads, DependencyPart,
-            DependencyTypeCounts, LoadIndex, LoadedComponentId, LoadedDependencyId,
-            LoadedRegistryId, RegistryId,
+            LoadIndex, LoadedComponentId, LoadedDependencyId, LoadedRegistryId, RegistryId,
         },
         registrar::ErasedComponent,
     },
@@ -28,6 +30,11 @@ use crate::{
 
 use super::event::ComponentLifecycle;
 
+/// A snapshot of the current state of the [`App`].
+///
+/// These values are cheaply cloneable due to the use of [immutable collections](im).
+///
+/// See the [module documentation](self) for more information.
 #[derive(Default, Clone, Debug)]
 pub struct Map {
     pub components: im::HashMap<AddedComponentId, MapComponent>,
@@ -46,6 +53,65 @@ pub struct MapComponent {
 #[derive(Clone, Debug, Default)]
 pub struct MapDependency {
     pub loads: im::HashMap<DependencyLoads, DependencyTypeCounts>,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct Listener {
+    pub blocking: im::HashSet<ListenerId>,
+    pub blocked_on: im::HashSet<ListenerId>,
+
+    pub requests: im::HashSet<Request>,
+    pub sticky: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct DependencyTypeCounts {
+    pub unremovable: usize,
+    pub removable: usize,
+    pub transient: usize,
+    pub weak: usize,
+}
+
+impl DependencyTypeCounts {
+    pub(crate) const fn is_zero(&self) -> bool {
+        self.unremovable == 0 && self.removable == 0 && self.transient == 0 && self.weak == 0
+    }
+
+    pub(crate) const fn effective_type(&self) -> DependencyType {
+        if self.unremovable > 0 {
+            DependencyType::Unremovable
+        } else if self.removable > 0 {
+            DependencyType::Removable
+        } else if self.transient > 0 {
+            DependencyType::Transient
+        } else if self.weak > 0 {
+            DependencyType::Weak
+        } else {
+            DependencyType::Transient
+        }
+    }
+}
+
+impl AddAssign<DependencyType> for DependencyTypeCounts {
+    fn add_assign(&mut self, ty: DependencyType) {
+        match ty {
+            DependencyType::Unremovable => self.unremovable += 1,
+            DependencyType::Removable => self.removable += 1,
+            DependencyType::Transient => self.transient += 1,
+            DependencyType::Weak => self.weak += 1,
+        }
+    }
+}
+
+impl SubAssign<DependencyType> for DependencyTypeCounts {
+    fn sub_assign(&mut self, ty: DependencyType) {
+        match ty {
+            DependencyType::Unremovable => self.unremovable = self.unremovable.saturating_sub(1),
+            DependencyType::Removable => self.removable = self.removable.saturating_sub(1),
+            DependencyType::Transient => self.transient = self.transient.saturating_sub(1),
+            DependencyType::Weak => self.weak = self.weak.saturating_sub(1),
+        }
+    }
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
@@ -168,15 +234,6 @@ impl DependencyStateChange {
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum RegistryStateChange {
     Remove,
-}
-
-#[derive(Clone, Default, Debug)]
-pub struct Listener {
-    pub blocking: im::HashSet<ListenerId>,
-    pub blocked_on: im::HashSet<ListenerId>,
-
-    pub requests: im::HashSet<Request>,
-    pub sticky: bool,
 }
 
 #[derive(Clone, Copy)]

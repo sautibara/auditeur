@@ -1,8 +1,7 @@
 #![allow(private_interfaces, private_bounds)]
 //! The backend of the library; the way that components interact.
 //!
-//! All interactions between [`Component`](crate::component::Component)s start with an [`App`]
-//! handle. With one, one could:
+//! All interactions between [`Component`]s start with an [`App`] handle. With one, one could:
 //! - add, load, and remove components using [`App::components_mut`],
 //! - access the current state of the app using  [`App::map`],
 //! - wholly exit the app using [`App::exit`],

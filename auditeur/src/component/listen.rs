@@ -1,5 +1,4 @@
-//! [`Component`](super::Component)s that provide [broadcast](mod@broadcast)-style message streams
-//! to the app.
+//! [`Component`]s that provide [broadcast](mod@broadcast)-style message streams to the app.
 //!
 //! # Examples
 //!
@@ -97,8 +96,7 @@ use crate::{
     prelude::*,
 };
 
-/// [`Component`](super::Component)s that provide [broadcast](mod@broadcast)-style message streams
-/// to the app.
+/// [`Component`]s that provide [broadcast](mod@broadcast)-style message streams to the app.
 ///
 /// This can be automatically implemented using the
 /// [`#[listen_message]`](macro@crate::listen_message) macro.

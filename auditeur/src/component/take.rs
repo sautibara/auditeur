@@ -1,5 +1,4 @@
-//! [`Component`](super::Component)s that provide [mpmc](mod@flume)-style message streams to the
-//! app.
+//! [`Component`]s that provide [mpmc](mod@flume)-style message streams to the app.
 //!
 //! ```
 //! use auditeur::prelude::*;
@@ -48,8 +47,7 @@ use crate::{
     prelude::*,
 };
 
-/// [`Component`](super::Component)s that provide [mpmc](mod@flume)-style message streams to the
-/// app.
+/// [`Component`]s that provide [mpmc](mod@flume)-style message streams to the app.
 ///
 /// This can be automatically implemented using the
 /// [`#[take_message]`](macro@crate::take_message) macro.

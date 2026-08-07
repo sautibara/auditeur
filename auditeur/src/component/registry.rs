@@ -1,5 +1,4 @@
-//! Groupings of [`Identified`] values that can be added as [`Component`](super::Component)s to an
-//! [`App`].
+//! Groupings of [`Identified`] values that can be added as [`Component`]s to an [`App`].
 //!
 //! Components are [loaded](Loader::load) on demand when other components
 //! [`get`](crate::app::AppComponentsMut::get) them. When all dependents release their
@@ -44,8 +43,7 @@ impl<R: Registry> Register<R> for Registries {
     }
 }
 
-/// Groupings of [`Identified`] values that can be added as [`Component`](super::Component)s to an
-/// [`App`].
+/// Groupings of [`Identified`] values that can be added as [`Component`]s to an [`App`].
 ///
 /// See the [module documentation](self) for more information.
 pub trait Registry: IdentifiedType + 'static {
@@ -61,7 +59,7 @@ pub trait Registry: IdentifiedType + 'static {
     }
 }
 
-/// A value that can load a specific erased [`Component`](super::Component) on demand.
+/// A value that can load a specific erased [`Component`] on demand.
 ///
 /// The generic parameter `L` represents the loader of the [`Registry`] this loader is loading
 /// for. It will most likely be [`Self`], but can be [`ErasedLoader`] if they're being used. See
@@ -97,8 +95,7 @@ pub trait Loader<L: Loader<Loaded = Self::Loaded> = Self>:
     }
 }
 
-/// An erased [`Component`](super::Component) that has been loaded in a [`Registry`], ready
-/// to be used.
+/// An erased [`Component`] that has been loaded in a [`Registry`], ready to be used.
 pub trait Loaded: any::Any + Sized + Send + 'static {
     /// Unloads the underlying component using an app handle.
     ///

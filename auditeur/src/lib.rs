@@ -91,6 +91,9 @@ pub mod prelude {
     pub use anyhow;
     pub use anyhow::Result;
     pub use std::ops::ControlFlow;
+
+    #[cfg(doc)]
+    pub use crate::component::Component;
 }
 
 pub use app::App;

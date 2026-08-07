@@ -1,4 +1,4 @@
-//! A [`Component`](super::Component) that only has [`Children`].
+//! A [`Component`] that only has [`Children`].
 //!
 //! # Examples
 //!
@@ -47,7 +47,7 @@ macro_rules! new_bundle {
     };
 }
 
-/// A [`Component`](super::Component) that only has [`Children`].
+/// A [`Component`] that only has [`Children`].
 ///
 /// See the [module documentation](self) for more information.
 pub struct Bundle {
