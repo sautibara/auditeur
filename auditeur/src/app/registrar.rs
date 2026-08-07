@@ -8,13 +8,12 @@ use crate::{
     any,
     app::{
         AddedComponentId, AppComponentsMut, AppFn, AppFnComponentsMut, AppMutFnOnce, AppMutFuture,
-        OneshotSender,
+        OneshotSender, id::LoadedComponentId,
     },
     component::{
         ComponentIdPath, IdentifiedComponent, Register,
         registry::{Loaded, Loader, LoaderCallback, Registry},
     },
-    dependency::{Dependency, LoadedComponentId},
     prelude::*,
 };
 

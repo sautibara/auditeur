@@ -48,9 +48,11 @@ use std::{fmt::Debug, sync::Arc};
 use tokio::sync::broadcast;
 
 use crate::{
-    app::map::{ListenerId, Request},
+    app::{
+        id::DependencyId,
+        map::{ListenerId, Request},
+    },
     component::HeapComponentId,
-    dependency::DependencyId,
     prelude::*,
 };
 
@@ -79,8 +81,7 @@ pub enum Event {
         id: DependencyId,
         lifecycle: DependencyLifecycle,
     },
-    /// The app is requesting for a [removable](crate::dependency::DependencyType::Removable)
-    /// dependency to be removed.
+    /// The app is requesting for a [removable](DependencyType::Removable) dependency to be removed.
     RequestDependencyRemoval { id: DependencyId },
     /// A new listener is blocking a request.
     ///

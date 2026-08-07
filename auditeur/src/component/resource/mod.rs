@@ -37,7 +37,6 @@ use crate::{
         },
         resource::get::{DynGetRefLoader, Get, GetRef, MaybeGetRef},
     },
-    dependency::{Dependency, DependencyType},
     prelude::*,
 };
 

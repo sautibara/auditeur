@@ -211,10 +211,12 @@ use futures::FutureExt;
 use tokio::sync::broadcast;
 use tracing::debug;
 
+use crate::app::map::DependencyHandle;
 use crate::{
     app::{
         error::Errors,
         event::FlushRequest,
+        id::{AddedComponentId, DependencyPart, LoadedComponentId, LoadedDependencyId},
         map::{Channels, Map, RequestSet, Waiter},
         registrar::Registrar,
     },
@@ -228,16 +230,13 @@ use crate::{
         resource::{AppFnResourcesMut, AppResourcesMut, Resources},
         take::{AppTakeMut, TakeMessages},
     },
-    dependency::{
-        AddedComponentId, Dependency, DependencyHandle, DependencyPart, DependencyType,
-        LoadedComponentId, LoadedDependencyId,
-    },
     input::CloneIn,
     prelude::*,
 };
 
 pub mod error;
 pub mod event;
+pub mod id;
 pub mod map;
 pub(crate) mod registrar;
 
@@ -269,10 +268,10 @@ pub struct App {
 }
 
 #[derive(Debug)]
-pub(crate) struct HandleData {
-    pub(crate) method_sender: flume::Sender<Method>,
-    pub(crate) dependency: Dependency<()>,
-    pub(crate) new_dependency_type: DependencyType,
+struct HandleData {
+    method_sender: flume::Sender<Method>,
+    dependency: Dependency<()>,
+    new_dependency_type: DependencyType,
 }
 
 #[derive(Debug)]
@@ -283,7 +282,7 @@ enum Inner {
 
 /// The actual shared state of the app.
 #[derive(Debug)]
-pub(crate) struct Owned {
+struct Owned {
     registrar: Registrar,
     errors: Errors,
     map: Map,
@@ -1177,5 +1176,164 @@ impl HandleData {
             dependency: Dependency::clone_in_owned(&self.dependency, owned, &self.method_sender),
             new_dependency_type: self.new_dependency_type,
         }
+    }
+}
+
+/// A value that keeps a dependency alive as long as it lives.
+///
+/// Values from other components will typically be wrapped in this type to keep the other component
+/// alive. A dependency is incremented when a value of this type is created and decremented when it
+/// is dropped. Only when all individual dependency parts are dropped will the whole dependency be
+/// removed in the app.
+#[derive(Debug)]
+pub struct Dependency<T> {
+    pub(super) value: T,
+    pub(super) handle: map::DependencyHandle,
+}
+
+impl<T> Dependency<T> {
+    pub const fn info_of(this: &Self) -> &DependencyPart {
+        &this.handle.id
+    }
+}
+
+impl Dependency<()> {
+    #[must_use]
+    pub const fn info(&self) -> &DependencyPart {
+        Self::info_of(self)
+    }
+
+    pub(crate) fn insert<T>(self, value: T) -> Dependency<T> {
+        Dependency {
+            value,
+            handle: self.handle,
+        }
+    }
+}
+
+impl<T: Send> Dependency<T> {
+    pub async fn clone_with<U: Send>(
+        this: &Self,
+        app: &mut App,
+        func: impl AsyncFnOnce(&T, &mut App) -> U + Send,
+    ) -> Dependency<U>
+    where
+        T: Sync,
+    {
+        let dependency = app
+            .components_mut()
+            .increment_dependency(this.handle.id.clone())
+            .await;
+        let value = func(&this.value, app).await;
+        Dependency {
+            value,
+            handle: dependency.handle,
+        }
+    }
+
+    fn clone_with_owned<U: Send>(
+        this: &Self,
+        owned: &mut Owned,
+        sender: &flume::Sender<crate::app::Method>,
+        func: impl FnOnce(&T, &mut Owned) -> U + Send,
+    ) -> Dependency<U> {
+        let dependency = owned.increment_dependency(this.handle.id.clone(), sender);
+        let value = func(&this.value, owned);
+        Dependency {
+            value,
+            handle: dependency.handle,
+        }
+    }
+
+    fn clone_in_owned(
+        this: &Self,
+        owned: &mut Owned,
+        sender: &flume::Sender<crate::app::Method>,
+    ) -> Self
+    where
+        T: Clone,
+    {
+        Self::clone_with_owned(this, owned, sender, |val, _| val.clone())
+    }
+
+    pub(crate) fn release_unsafe(this: &mut Self) {
+        this.handle.release_unsafe();
+    }
+
+    /// Drops this dependency using a specific app handle.
+    ///
+    /// This can be more efficient than the default drop implementation, but only if the app handle
+    /// is the owned app handle. Otherwise, it will do the same exact thing as the automatic drop.
+    ///
+    /// # Panics
+    ///
+    /// - If `app` is not the app that this dependency was obtained in.
+    pub fn drop_in(this: Self, app: &mut App) -> impl AppMutFuture<'_, Output = ()> {
+        drop(this.value);
+        this.handle.drop_in(app)
+    }
+
+    /// Drops this dependency in an owned app.
+    ///
+    /// # Panics
+    ///
+    /// - Potential panic if `owned` is not the app that this dependency was obtained in.
+    fn drop_in_owned(this: Self, owned: &mut Owned, sender: &flume::Sender<crate::app::Method>) {
+        drop(this.value);
+        this.handle.drop_in_owned(owned, sender);
+    }
+}
+
+impl<T> Deref for Dependency<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T> DerefMut for Dependency<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<T: CloneIn> CloneIn for Dependency<T> {
+    async fn clone_in(&self, app: &mut App) -> Self
+    where
+        Self: Sized,
+    {
+        Self::clone_with(self, app, async |inner, app| inner.clone_in(app).await).await
+    }
+}
+
+/// A value that determines if a [`Dependency`] can be removed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DependencyType {
+    /// The dependency cannot be removed. If this dependency is requested to be removed, the request
+    /// will propagate to the dependent.
+    Unremovable,
+    /// The dependency can be removed, but the app has to ask. The request will not propagate to
+    /// the dependent, and instead an [`Event::RequestDependencyRemoval`] will be sent.
+    Removable,
+    /// The dependency is short-lived and will be removed automatically without the app asking. The
+    /// request will not propagate to the dependent.
+    Transient,
+    /// The dependency should not keep the depended-on component alive. Instead, this dependency
+    /// is expected to automatically be removed when the **depended-on component** is unloaded.
+    ///
+    /// Note: Don't use this unless you know what you're doing. It's very rare that you don't want
+    /// to keep the depended-on component alive. Additionally, the depended-on component has to
+    /// know about the dependency, which is even more rare. Instead, use [`Self::Transient`] as a
+    /// good default.
+    Weak,
+}
+
+impl DependencyType {
+    /// Returns `true` if the dependency type is [`Weak`].
+    ///
+    /// [`Weak`]: DependencyType::Weak
+    #[must_use]
+    pub const fn is_weak(&self) -> bool {
+        matches!(self, Self::Weak)
     }
 }

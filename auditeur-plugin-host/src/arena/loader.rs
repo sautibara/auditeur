@@ -12,7 +12,6 @@ use auditeur_plugin::{
             map::{ComponentStateChange, ListenerId, RequestAction, RequestSet},
         },
         component::ComponentIdPath,
-        dependency::DependencyType,
     },
     prelude::*,
 };

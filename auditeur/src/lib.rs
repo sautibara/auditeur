@@ -3,7 +3,6 @@
 
 pub mod app;
 pub mod component;
-pub mod dependency;
 pub mod input;
 #[cfg(any(doc, feature = "path-any"))]
 pub mod path_any;
@@ -60,7 +59,7 @@ pub mod prelude {
     pub use crate::component::IdentifiedComponentType as _;
     pub use crate::component::IdentifiedType as _;
     pub use crate::{
-        app::{App, AppFn},
+        app::{App, AppFn, Dependency, DependencyType},
         component::{
             Children, ComponentId,
             bundle::Bundle,
@@ -72,7 +71,6 @@ pub mod prelude {
             },
             take::Giver,
         },
-        dependency::Dependency,
         input::{Create, CreateDerive, Input},
         macros::{
             CloneIn, Input, create, identified, listen_message, listener, pure_resource, resource,

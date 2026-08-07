@@ -15,14 +15,14 @@ use crate::{
         AppComponentsMut, AppFn, AppFnComponentsMut, AppFnMap, AppFnOnce, AppFuture, AppMap,
         AppMutFnOnce, AppMutFuture, OneshotSender, Owned,
         event::{DependencyLifecycle, Event},
+        id::{
+            AddedComponentId, AddedDependencyId, DependencyId, DependencyLoads, DependencyPart,
+            DependencyTypeCounts, LoadIndex, LoadedComponentId, LoadedDependencyId,
+            LoadedRegistryId, RegistryId,
+        },
         registrar::ErasedComponent,
     },
     component::{Child, IdentifiedComponentType, registry::Registries},
-    dependency::{
-        AddedComponentId, AddedDependencyId, Dependency, DependencyHandle, DependencyId,
-        DependencyLoads, DependencyPart, DependencyType, DependencyTypeCounts, LoadIndex,
-        LoadedComponentId, LoadedDependencyId, LoadedRegistryId, RegistryId,
-    },
     prelude::*,
 };
 
@@ -962,6 +962,105 @@ impl FromIterator<RequestAction> for RequestSet {
         Self {
             set: hashbrown::HashSet::from_iter(iter),
         }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct DependencyHandle {
+    pub(super) id: DependencyPart,
+    // The sender is wrapped in an option to ensure that the dependency decrement happens exactly
+    // once.
+    sender: Option<flume::Sender<crate::app::Method>>,
+}
+
+impl DependencyHandle {
+    const fn new(id: DependencyPart, sender: flume::Sender<crate::app::Method>) -> Self {
+        Self {
+            id,
+            sender: Some(sender),
+        }
+    }
+
+    /// Returns a dependency handle *that doesn't keep any dependency alive*.
+    pub(super) fn empty_unsafe() -> Self {
+        Self {
+            id: DependencyPart {
+                // NOTE: the dependent and dependency don't matter, since nothing will be sent
+                id: LoadedDependencyId {
+                    id: AddedDependencyId {
+                        dependent: AddedComponentId(App::component_id()),
+                        dependency: AddedComponentId(App::component_id()),
+                    },
+                    loads: DependencyLoads {
+                        dependent: LoadIndex(0),
+                        dependency: LoadIndex(0),
+                    },
+                },
+                ty: DependencyType::Weak,
+            },
+            sender: None,
+        }
+    }
+
+    pub(super) fn release_unsafe(&mut self) {
+        // If drop_in is called, the sender will be None, so we should ignore the drop.
+        let Some(sender) = self.sender.take() else {
+            return;
+        };
+
+        let event = crate::app::Method::Map(crate::app::map::Method::DecrementDependency {
+            id: self.id.clone(),
+        });
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(sender.into_send_async(event));
+        } else {
+            let _ = sender.send(event);
+        }
+    }
+
+    /// Drops this dependency using a specific app handle.
+    ///
+    /// This can be more efficient than the default drop implementation, but only if the app handle
+    /// is the owned app handle. Otherwise, it will do the same exact thing as the automatic drop.
+    ///
+    /// # Panics
+    ///
+    /// - If `app` is not the app that this dependency was obtained in.
+    pub(super) fn drop_in(mut self, app: &mut App) -> impl AppMutFuture<'_, Output = ()> {
+        let Some(sender) = self.sender.take() else {
+            panic!("drop_in takes ownership of self, so the sender should only be taken once")
+        };
+
+        assert!(
+            sender.same_channel(&app.handle.method_sender),
+            "dependency should be dropped in the app it came from"
+        );
+
+        app.components_mut().decrement_dependency(self.id.clone())
+    }
+
+    /// Drops this dependency in an owned app.
+    ///
+    /// # Panics
+    ///
+    /// - Potential panic if `owned` is not the app that this dependency was obtained in.
+    pub(super) fn drop_in_owned(
+        mut self,
+        owned: &mut Owned,
+        sender: &flume::Sender<crate::app::Method>,
+    ) {
+        self.sender
+            .take()
+            .expect("drop_in takes ownership of self, so the sender should only be taken once");
+
+        owned.decrement_dependency(&self.id, sender);
+    }
+}
+
+impl Drop for DependencyHandle {
+    fn drop(&mut self) {
+        self.release_unsafe();
     }
 }
 

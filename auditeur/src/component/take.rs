@@ -44,7 +44,6 @@ use crate::{
         ComponentIdPath, IdentifiedComponent, IdentifiedType, Register, RegistryOf,
         registry::{ErasedLoader, Loaded, Loader, Registries, Registry},
     },
-    dependency::Dependency,
     input::CloneIn,
     prelude::*,
 };

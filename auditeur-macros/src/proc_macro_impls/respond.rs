@@ -376,7 +376,7 @@ impl Config<'_> {
         tokens.extend(quote! {
             #doc_vis
             pub struct #connection_ident {
-                dependency: #auditeur::dependency::Dependency<()>,
+                dependency: #auditeur::app::Dependency<()>,
                 giver: #auditeur::component::take::Giver<#query_ident>,
                 #(#field_idents: #field_types,)*
             }
