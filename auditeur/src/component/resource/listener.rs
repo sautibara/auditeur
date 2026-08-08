@@ -1,4 +1,84 @@
-#![doc = include_str!("listener_docs.md")]
+//! A [`Resource`] that is made up of many concurrently-run [event streams](Stream).
+//!
+//! Use [`#[listener]`](macro@crate::listener) to create one of these resources.
+//!
+//! # Streams
+//!
+//! [`Listener`]s are broken up into [`Stream`]s of events. Each stream is run concurrently, all
+//! waiting for new events at the same time(see [`Stream::wait`]). Once a stream receives an
+//! event, it obtains mutable access to the listener and handles the event (see
+//! [`Stream::handle`] ). After handling it, it yields control back to the main loop so that other
+//! streams can wait  for events as well.
+//!
+//! For example, the [`Listen`] trait provides [`ListenStream`]: which allows listening to a
+//! [`ListenMessage`] stream shared between all other resources (a broadcast).
+//!
+//! However, since [`Listen`] is a broadcast, it can't form a message channel to send a response
+//! back to the original sender. For this case, you can instead use [`Take`], which in turn
+//! provides [`TakeStream`]. This trait allows you to send messages that only a single listener
+//! can see, providing a mechanism for forming one-to-one conversations. For example,
+//! [`#[respond]` ] uses `Take` to allow other resources to call methods with return values on a
+//! listener.
+//!
+//! # Examples
+//!
+//! ```
+//! use std::time::Duration;
+//!
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! // [`Listener`]s are resources that primarily "listen" to message streams.
+//!
+//! // Here's a simple [`ListenMessage`],
+//! #[derive(Clone, Debug)]
+//! #[listen_message("test:exit")]
+//! struct Exit;
+//!
+//! // and a listener that listens to that message.
+//! #[listener(listen(Exit))] // (take note of the `listen(Exit)` part!)
+//! #[resource("test:exit_listener")]
+//! #[create(default)]
+//! struct ExitListener {
+//!     #[create(input)]
+//!     app: App,
+//! }
+//!
+//! impl Listen<Exit> for ExitListener {
+//!     // When the listener hears an [`Exit`] message,
+//!     async fn on(&mut self, _: Exit) -> Result<()> {
+//!         // it exits the app.
+//!         self.app.exit().await;
+//!         Ok(())
+//!     }
+//! }
+//!
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! let mut app = App::builder()
+//!     .with::<Exit>(())
+//!     .with::<ExitListener>(())
+//!     .spawn();
+//!
+//! // Now, if we make sure that the listener is loaded (and thus listening),
+//! let load = app
+//!     .components_mut()
+//!     .load(ExitListener::component_id())
+//!     .await?;
+//!
+//! // we could send an exit message,
+//! let sender = app.listen_mut().shouter::<Exit>().await?;
+//! sender.shout(Exit);
+//!
+//! // and the app will exit.
+//! drop((sender, load));
+//! auditeur::test::finish(app, false).await
+//!
+//! // Note that if we didn't make sure the listener was already loaded, there would be a chance
+//! // that it wouldn't see the message due to [`ListenMessage`]s using broadcast channels.
+//! # }
+//! ```
 
 use std::{convert::Infallible, marker::PhantomData, pin::Pin};
 
@@ -18,7 +98,9 @@ use bevy_utils_proc_macros::all_tuples;
 use futures::Future;
 use tokio::select;
 
-#[doc = include_str!("listener_docs.md")]
+/// A [`Resource`] that is made up of many concurrently-run [event streams](Stream).
+///
+/// See the [module documentation](self) for more information.
 pub trait Listener: Resource {
     /// The list of [`Stream`]s, starting with either [`Unbiased`] or [`Biased`].
     type Streams: StreamList<Self>;
