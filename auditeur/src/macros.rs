@@ -324,6 +324,9 @@ pub use auditeur_macros::watcher;
 /// ```
 pub use auditeur_macros::create;
 
+/// Automatically provides an implementation of [`Input`](trait@Input).
+///
+/// This simply uses the [`Input`](trait@Input) implementations of each field.
 pub use auditeur_macros::Input;
 
 /// Automatically provides an implementation of
@@ -337,6 +340,10 @@ pub use auditeur_macros::Input;
 pub use auditeur_macros::MaybeGetRef;
 
 /// Automatically provides an implementation of [`CloneIn`](crate::input::CloneIn).
+///
+/// This uses specialization for each field to either use the field's
+/// [`CloneIn`](crate::input::CloneIn) implementation or its [`Clone`] implementation,
+/// whichever exists.
 pub use auditeur_macros::CloneIn;
 
 /// Automatically provides an implementation of [`PathAny`](crate::path_any::PathAny) by

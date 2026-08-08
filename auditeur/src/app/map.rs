@@ -1,4 +1,105 @@
 //! A snapshot of the current state of the [`App`].
+//!
+//! See the [`Map`] type for more information.
+//!
+//! ## Examples
+//!
+//! ```
+//! use auditeur::app::id::DependencyId;
+//!
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! #[resource("test:resource")]
+//! #[pure_resource]
+//! #[create(default)]
+//! struct Resource;
+//!
+//! let mut app = App::builder().with::<Resource>(()).spawn();
+//!
+//! // With the map, we can access all the data that the app tracks for components & dependencies.
+//! let map_1 = app.map().get().await;
+//!
+//! // We could check if components are added or loaded.
+//! assert!(map_1.is_added(&Resource::component_id()));
+//! assert!(!map_1.is_loaded(&Resource::component_id()));
+//!
+//! // And, if we have a dependency in the app,
+//! let dependency = app.components_mut().load(Resource::component_id()).await?;
+//!
+//! // we could also see that it's added and loaded.
+//! let map_2 = app.map().get().await;
+//! assert!(map_2.dependency_is_added(&DependencyId {
+//!     dependency: Resource::component_id(),
+//!     dependent: App::component_id(),
+//! }));
+//! assert!(!map_2.dependency_loads(&dependency.info().id).is_zero());
+//!
+//! // Notice that to see the dependency in the map, we had to access it a second time.
+//! // This is because maps only contain the state from when they were accessed.
+//! assert!(!map_1.dependency_is_added(&dependency.info().id.id));
+//!
+//! drop(dependency);
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
+//!
+//! # Listeners
+//!
+//! The map also contains a map of [listeners](Listener) to [map events](ListenerId). These are
+//! events that are waiting for other events to occur before they could occur themselves. For
+//! example, if a component is added, its removal event will wait for its unload event to occur
+//! before occurring itself. Through this bookkeeping, the map gains the ability to figure out when
+//! events should occur in constant time.
+//!
+//! This system is also how [requests](AppComponentsMut::request) and [waiters](Waiter) work.
+//! In a request, the map simply goes through the map of event listeners to determine which events
+//! are blocking the request from occurring. From this, it does what is necessary to make the event
+//! occur in the future, such as requesting for dependencies to be removed.
+//!
+//! ## Examples
+//!
+//! ```
+//! use auditeur::app::map::{ListenerId, ComponentStateChange};
+//!
+//! use auditeur::prelude::*;
+//! # use auditeur::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), auditeur::Error> {
+//! // With the map, we could also determine what events are blocking on other events.
+//!
+//! #[resource("test:resource")]
+//! #[pure_resource]
+//! #[create(default)]
+//! struct Resource;
+//!
+//! // Consider a map with an added and loaded resource.
+//! let mut app = App::builder().with::<Resource>(()).spawn();
+//! let dependency = app.components_mut().load(Resource::component_id()).await?;
+//!
+//! let map = app.map().get().await;
+//!
+//! // First, let's ensure that the component is added and loaded.
+//! assert!(map.is_added(&Resource::component_id()));
+//! assert!(map.is_loaded(&Resource::component_id()));
+//!
+//! // Now, if we access the listener for the removal of the component,
+//! let listener = ListenerId::remove_component(Resource::component_id());
+//! let listener = &map.listeners[&listener];
+//!
+//! // we could see that it's being blocked on the component's unload.
+//! assert!(listener.blocked_on.iter().any(|id| {
+//!     id.as_unload_component()
+//!         .is_some_and(|id| **id == Resource::component_id())
+//! }));
+//!
+//! drop(dependency);
+//! auditeur::test::finish(app, false).await
+//! # }
+//! ```
 
 use std::{
     collections::HashSet,
@@ -36,35 +137,69 @@ use super::event::ComponentLifecycle;
 ///
 /// See the [module documentation](self) for more information.
 #[derive(Default, Clone, Debug)]
+#[non_exhaustive]
 pub struct Map {
+    /// The added [`Component`]s in the app.
     pub components: imbl::HashMap<AddedComponentId, MapComponent>,
+    /// The added [dependencies](Dependency) in the app.
     pub dependencies: imbl::HashMap<AddedDependencyId, MapDependency>,
 
+    /// The [listeners](self#listeners) that are currently active in the app.
     pub listeners: imbl::HashMap<ListenerId, Listener>,
 }
 
+/// A snapshot of the current state of a [`Component`].
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct MapComponent {
+    /// The parent of the component.
     pub parent: Option<AddedComponentId>,
+    /// The current loads of this component.
+    ///
+    /// See [`LoadIndex`] for more information.
     pub loads: imbl::HashSet<LoadIndex>,
+    /// The current load index for this component.
+    ///
+    /// This index may not be in use yet; if the component is not loaded yet, this is the next
+    /// index that will be used. Check it against the `loads` field to check if the component
+    /// is currently loaded.
     pub load_index: LoadIndex,
 }
 
+/// A snapshot of the current state of a [`Dependency`].
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct MapDependency {
+    /// The current laods of this dependency.
+    ///
+    /// This is indexed by the [load indicies](LoadIndex) of the
+    /// [dependency](field@DependencyId::dependency) and
+    /// [dependent](field@DependencyId::dependent)  components of the dependency.
     pub loads: imbl::HashMap<DependencyLoads, DependencyTypeCounts>,
 }
 
+/// A snapshot of an [event](self#listeners), what it blocks, and what's blocking it.
 #[derive(Clone, Default, Debug)]
+#[non_exhaustive]
 pub struct Listener {
+    /// The set of events that this event is preventing from occurring.
     pub blocking: imbl::HashSet<ListenerId>,
+    /// The set of events that are preventing this event from occurring.
     pub blocked_on: imbl::HashSet<ListenerId>,
 
+    /// Any individual [`Request`]s for this event to occur.
     pub requests: imbl::HashSet<Request>,
+    /// `true` if this event has something that's preventing it from occurring - other than other
+    /// events.
+    ///
+    /// For example, [component removal](ListenerId::remove_component) is blocked until it's
+    /// requested.
     pub sticky: bool,
 }
 
+/// Holds counts for each individual [`DependencyType`] in a [`Dependency`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub struct DependencyTypeCounts {
     pub unremovable: usize,
     pub removable: usize,
@@ -73,7 +208,11 @@ pub struct DependencyTypeCounts {
 }
 
 impl DependencyTypeCounts {
-    pub(crate) const fn is_zero(&self) -> bool {
+    /// Returns `true` if all counts are `0`.
+    ///
+    /// This will never be `true` for counts obtained from a loaded dependency.
+    #[must_use]
+    pub const fn is_zero(&self) -> bool {
         self.unremovable == 0 && self.removable == 0 && self.transient == 0 && self.weak == 0
     }
 
@@ -114,7 +253,9 @@ impl SubAssign<DependencyType> for DependencyTypeCounts {
     }
 }
 
+/// An [event](self#listeners) that can occur in an [`App`].
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum ListenerId {
     Component {
         id: AddedComponentId,
@@ -182,8 +323,79 @@ impl ListenerId {
             change: RegistryStateChange::Remove,
         }
     }
+
+    #[must_use]
+    pub fn as_deactivate_component(&self) -> Option<LoadedComponentId> {
+        if let Self::Component { id, change } = self
+            && let ComponentStateChange::Deactivate(index) = change
+        {
+            Some(LoadedComponentId {
+                component: id.clone(),
+                index: *index,
+            })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn as_unload_component(&self) -> Option<LoadedComponentId> {
+        if let Self::Component { id, change } = self
+            && let ComponentStateChange::Unload(index) = change
+        {
+            Some(LoadedComponentId {
+                component: id.clone(),
+                index: *index,
+            })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn as_remove_component(&self) -> Option<&AddedComponentId> {
+        if let Self::Component { id, change } = self
+            && matches!(change, ComponentStateChange::Remove)
+        {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn as_weaken_dependency(&self) -> Option<&LoadedDependencyId> {
+        if let Self::Dependency { id, change } = self
+            && matches!(change, DependencyStateChange::Weaken)
+        {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn as_remove_dependency(&self) -> Option<&LoadedDependencyId> {
+        if let Self::Dependency { id, change } = self
+            && matches!(change, DependencyStateChange::Remove)
+        {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn as_remove_registry(&self) -> Option<&LoadedRegistryId> {
+        if let Self::Registry { id, .. } = self {
+            Some(id)
+        } else {
+            None
+        }
+    }
 }
 
+/// An [event](self#listeners) that can occur to a [`Component`].
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum ComponentStateChange {
     Deactivate(LoadIndex),
@@ -209,6 +421,7 @@ impl ComponentStateChange {
     }
 }
 
+/// An [event](self#listeners) that can occur to a [`Dependency`].
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum DependencyStateChange {
     Remove,
@@ -231,6 +444,8 @@ impl DependencyStateChange {
     }
 }
 
+/// An [event](self#listeners) that can occur to a
+/// [`Registry`](crate::component::registry::Registry).
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum RegistryStateChange {
     Remove,
@@ -919,14 +1134,20 @@ impl Map {
     /// Returns `true` if a component with the id `id` was added to the app at the time the map was
     /// obtained.
     #[must_use]
-    pub fn is_added(&self, id: &ComponentId) -> bool {
+    pub fn is_added<K>(&self, id: &K) -> bool
+    where
+        K: Hash + equivalent::Equivalent<AddedComponentId>,
+    {
         self.components.contains_key(id)
     }
 
     /// Returns `true` if a component with the id `id` was loaded in the app at the time the map was
     /// obtained.
     #[must_use]
-    pub fn is_loaded(&self, id: &ComponentId) -> bool {
+    pub fn is_loaded<K>(&self, id: &K) -> bool
+    where
+        K: Hash + equivalent::Equivalent<AddedComponentId>,
+    {
         self.components
             .get(id)
             .is_some_and(|component| !component.loads.is_empty())
@@ -935,10 +1156,38 @@ impl Map {
     /// Returns `Some(parent)` if there is a component with the id `id` in the map and it has a
     /// parent, or `None` otherwise.
     #[must_use]
-    pub fn parent_of(&self, id: &ComponentId) -> Option<&AddedComponentId> {
+    pub fn parent_of<K>(&self, id: &K) -> Option<&AddedComponentId>
+    where
+        K: Hash + equivalent::Equivalent<AddedComponentId>,
+    {
         self.components
             .get(id)
             .and_then(|component| component.parent.as_ref())
+    }
+
+    /// Returns `true` if a dependency with the id `id` was added to the app at the time the map
+    /// was obtained.
+    #[must_use]
+    pub fn dependency_is_added<K>(&self, id: &K) -> bool
+    where
+        K: Hash + equivalent::Equivalent<AddedDependencyId>,
+    {
+        self.dependencies.contains_key(id)
+    }
+
+    /// Returns the [`DependencyTypeCounts`] of a loaded dependency if existed in the app at the
+    /// time the map was obtained, or [`DependencyTypeCounts::default`] if the dependency was not
+    /// loaded.
+    ///
+    /// [`DependencyTypeCounts::is_zero`] will never be true of the returned counts if the
+    /// dependency was loaded.
+    #[must_use]
+    pub fn dependency_loads(&self, id: &LoadedDependencyId) -> DependencyTypeCounts {
+        self.dependencies
+            .get(&id.id)
+            .and_then(|dependency| dependency.loads.get(&id.loads))
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -1711,27 +1960,32 @@ pub(crate) fn request_channel() -> (Request, Waiter) {
     (releaser, waiter)
 }
 
+/// An [event](self#listeners) that a caller can wait for, obtained from an [`App`].
 pub struct Waiter {
     receiver: oneshot::Receiver<()>,
     request: Request,
 }
 
 impl Waiter {
+    /// Waits for the event to occur.
     pub async fn wait(self) {
         let _ = self.receiver.await;
     }
 
+    /// Returns `true` if the event has already finished.
     #[must_use]
     pub fn is_ready(&self) -> bool {
         !self.receiver.is_empty()
     }
 
+    /// Returns the [`Request`] that this is waiting for.
     #[must_use]
     pub const fn request(&self) -> &Request {
         &self.request
     }
 }
 
+/// An [event](self#listeners) that is being [waited](Waiter) on, obtained from an [`App`].
 #[derive(Clone)]
 pub struct Request {
     sender: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,

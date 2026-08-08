@@ -271,7 +271,7 @@ pub fn ident(string: TokenStream) -> TokenStream {
     id.to_token_stream().into()
 }
 
-#[proc_macro_derive(Input, attributes(custom_generics))]
+#[proc_macro_derive(Input)]
 pub fn derive_input(item: TokenStream) -> TokenStream {
     let strct = parse_macro_input!(item as ItemStruct);
     proc_macro_impls::derive_input(&strct).into()

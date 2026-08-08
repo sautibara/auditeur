@@ -29,6 +29,8 @@ use std::{
     ops::Deref,
 };
 
+use equivalent::Equivalent;
+
 use crate::{
     component::{ComponentIdPath, registry::Registries},
     prelude::*,
@@ -166,12 +168,17 @@ impl Deref for LoadedComponentId {
 
 /// A [`Dependency`] that may or may not be added.
 ///
-/// This doesn't come with any guarantees.
+/// When returned by the app, this doesn't come with any guarantees, unlike the other types in this
+/// module.
 ///
 /// See [`AddedDependencyId`] for a dependency that was added to the app.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct DependencyId {
+    /// The component that "owns" the dependency; the component that is keeping the dependent
+    /// alive.
     pub dependent: ComponentId,
+    /// The component that is being depended on in the dependency; the component that is being
+    /// kept alive.
     pub dependency: ComponentId,
 }
 
@@ -204,6 +211,12 @@ impl AddedDependencyId {
             dependent: self.dependent.into_id(),
             dependency: self.dependency.into_id(),
         }
+    }
+}
+
+impl Equivalent<AddedDependencyId> for DependencyId {
+    fn equivalent(&self, key: &AddedDependencyId) -> bool {
+        self.dependency == *key.dependency && self.dependent == *key.dependent
     }
 }
 
