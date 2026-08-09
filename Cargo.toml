@@ -9,6 +9,7 @@ members = [
   "auditeur-plugin-export",
   "namespaced-id/namespaced-id",
   "namespaced-id/namespaced-id-macros",
+  "namespaced-id/namespaced-id-core",
 ]
 resolver = "2"
 
