@@ -222,7 +222,7 @@ use crate::{
     component::{
         HasChildren, IdentifiedComponent, IdentifiedComponentType, Register, RegistryOf,
         bundle::Bundles,
-        listen::{self, AppListenMut, ListenMessages, Listener},
+        listen::{AppListenMut, ListenMessages, Listener},
         registry::{
             ErasedLoader, Loaded, Loader, LoaderCallback, LoaderCallbacks, Registries, Registry,
         },
@@ -326,8 +326,7 @@ impl App {
     }
 }
 
-/// Methods relating to builtin components:
-/// [`Resource`](crate::component::resource::Resource)s,
+/// Methods relating to builtin components: [`Resource`]s,
 /// [`ListenMessage`](crate::component::listen::ListenMessage)s, and
 /// [`TakeMessage`](crate::component::take::TakeMessage)s.
 impl App {
@@ -1093,7 +1092,7 @@ impl Owned {
 
         // The event sender dependency.
         let event_channel = ErasedComponent::from_loader::<ListenMessages>(ErasedLoader::new(
-            listen::PersistentChannelLoader::new(self.event_sender.clone()),
+            crate::component::listen::PersistentChannelLoader::new(self.event_sender.clone()),
         ));
         let event_id = self.add_child_validated(event_channel, Some(app_id.clone()), sender)?;
         let event_loaded_id = self.map.load_component(
@@ -1184,6 +1183,9 @@ impl HandleData {
 /// alive. A dependency is incremented when a value of this type is created and decremented when it
 /// is dropped. Only when all individual dependency parts are dropped will the whole dependency be
 /// removed in the app.
+///
+/// Many types wrap dependencies, such as [`Get`], the channels of
+/// [listen](crate::component::listen) and [take](crate::component::take), and even [`App`].
 #[derive(Debug)]
 pub struct Dependency<T> {
     pub(super) value: T,

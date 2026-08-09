@@ -8,6 +8,7 @@ pub struct Signature<'a> {
     pub asyncness: Option<bool>,
     pub receiver: Option<TokenStream>,
     pub output: Option<TokenStream>,
+    pub constness: Option<bool>,
 }
 
 impl<'a> Signature<'a> {
@@ -18,6 +19,7 @@ impl<'a> Signature<'a> {
             asyncness: None,
             receiver: None,
             output: None,
+            constness: None,
         }
     }
 
@@ -41,12 +43,27 @@ impl<'a> Signature<'a> {
             ..self
         }
     }
+
+    pub fn constness(self, constness: bool) -> Self {
+        Self {
+            constness: Some(constness),
+            ..self
+        }
+    }
 }
 
 impl ToTokens for Signature<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.vis.to_tokens(tokens);
-        self.sig.constness.to_tokens(tokens);
+
+        if let Some(constness) = self.constness {
+            if constness {
+                Token![const](Span::call_site()).to_tokens(tokens);
+            }
+        } else {
+            self.sig.constness.to_tokens(tokens);
+        }
+
         if let Some(asyncness) = self.asyncness {
             if asyncness {
                 Token![async](Span::call_site()).to_tokens(tokens);
@@ -54,6 +71,7 @@ impl ToTokens for Signature<'_> {
         } else {
             self.sig.asyncness.to_tokens(tokens);
         }
+
         self.sig.unsafety.to_tokens(tokens);
         self.sig.abi.to_tokens(tokens);
         self.sig.fn_token.to_tokens(tokens);

@@ -196,6 +196,9 @@ impl<L: Listen<M>, M: ListenMessage> Stream<L> for ListenStream<M> {
 }
 
 /// A [`Listener`] that wants to [take](Taker::take) messages of type `M`.
+///
+/// If a listener adds a [`TakeStream`] to its streams, the stream will automatically add the
+/// message as a child of the resource.
 pub trait Take<M: TakeMessage>: Listener {
     fn on(&mut self, message: M) -> impl Future<Output = anyhow::Result<()>> + Send;
 }

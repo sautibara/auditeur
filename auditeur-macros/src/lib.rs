@@ -422,13 +422,18 @@ pub fn watcher(attr: TokenStream, item: TokenStream) -> TokenStream {
         let item: Item = syn::parse(item)?;
         let (ident, generics, _) = extract_item_values(&item)?;
 
-        Ok(proc_macro_impls::get_runner_with(
+        let get_runner_with = proc_macro_impls::get_runner_with(
             ident,
             generics,
             &quote! {
                 #auditeur::component::resource::watcher::WatcherMethod
             },
-        ))
+        );
+
+        Ok(quote! {
+            #get_runner_with
+            #item
+        })
     }
 
     watcher_attr(attr, item)

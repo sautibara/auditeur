@@ -712,6 +712,7 @@ impl<'a> MethodConfig<'a> {
                 -> impl ::std::future::Future<Output = #output> + Send + 'static
             })
             .asyncness(false)
+            .constness(false)
             .receiver(quote! { &self });
 
         let args = (self.method.sig.inputs.iter())
