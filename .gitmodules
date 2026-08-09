@@ -25,3 +25,6 @@
 [submodule "deps/rubicon"]
 	path = deps/rubicon
 	url = git@github.com:sautibara/rubicon.git
+[submodule "namespaced-id"]
+    path = namespaced-id
+    url = git@github.com:sautibara/namespaced-id.git
