@@ -2,7 +2,7 @@ use proc_macro2::Span;
 use quote::{ToTokens, quote_spanned};
 use syn::{LitStr, parse::Parse};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NamespacedId(LitStr);
 
 impl NamespacedId {

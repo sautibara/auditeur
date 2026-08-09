@@ -107,7 +107,7 @@ impl<L: Loader> IdentifiedComponent for DynComponentImpl<L> {
 
 #[async_trait::async_trait]
 impl<L: Loader> DynComponent for DynComponentImpl<L> {
-    async fn get(&mut self, app: &mut App) -> Result<&mut (dyn any::Any + Send), Error> {
+    async fn get(&mut self, app: &mut App) -> Result<&'life0 mut (dyn any::Any + Send), Error> {
         self.get_loaded(app)
             .await
             .map(|reference| reference as &mut (dyn any::Any + Send))

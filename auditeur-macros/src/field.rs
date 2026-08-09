@@ -20,7 +20,6 @@ fn parse_ident(input: ParseStream, expected_ident: &str) -> syn::Result<Ident> {
     }
 }
 
-#[derive(Debug)]
 pub struct NameValue<T> {
     pub ident: Ident,
     pub eq: syn::token::Eq,
@@ -96,7 +95,6 @@ impl<T: Parse + ToTokens> ToTokens for NameValueArray<T> {
     }
 }
 
-#[derive(Debug)]
 pub struct List<T> {
     pub ident: Ident,
     pub parens: Paren,
@@ -169,7 +167,7 @@ impl<'a, T> IntoIterator for &'a mut List<T> {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Clone)]
 pub struct Comma<T> {
     pub value: T,
     pub comma: Option<syn::token::Comma>,
