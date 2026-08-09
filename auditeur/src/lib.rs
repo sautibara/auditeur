@@ -1,3 +1,9 @@
+//! # Auditeur
+//!
+//! [![crates.io](https://img.shields.io/crates/v/auditeur.svg)](https://crates.io/crates/auditeur)
+//! [![docs.rs](https://docs.rs/auditeur/badge.svg)](https://docs.rs/auditeur)
+//! [![License](https://img.shields.io/crates/l/auditeur)](https://github.com/sautibara/auditeur)
+//!
 //! An application framework for Rust with focuses on developer experience, flexibility, and
 //! modularity.
 //!
@@ -6,9 +12,9 @@
 //! It's not required to use the application framework, but it is meant to be an easy-to-fit
 //! addition for applications who want to use it.
 //!
-//! # Quick Start
+//! ## Quick Start
 //!
-//! ## Resources
+//! ### Resources
 //!
 //! This library is primarily built around [`Resource`]s: types that provide asynchronous tasks to
 //! be run globally, communicating to each other by sending and receiving messages. Each resource
@@ -58,7 +64,7 @@
 //! # }
 //! ```
 //!
-//! ## Messages and Dependencies
+//! ### Messages and Dependencies
 //!
 //! Resources can communicate with each other using
 //! [`ListenMessage`](crate::component::listen::ListenMessage)s and
@@ -134,7 +140,7 @@
 //! # }
 //! ```
 //!
-//! ## Respond
+//! ### Respond
 //!
 //! [`Resource`]s can also provide [handles](component::resource::get) for other resources to use,
 //! who can be created based on data owned by the resource. A common way to create one of these
