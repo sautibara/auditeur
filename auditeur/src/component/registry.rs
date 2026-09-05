@@ -477,7 +477,9 @@ trait DynLoader<D: Loaded>: IdentifiedComponent + Send + Sync {
 #[async_trait]
 impl<D: Loaded, L: Loader<ErasedLoader<D>, Loaded = D>> DynLoader<D> for L {
     async fn load_dyn(&self, app: &mut App) -> Result<D, Error> {
-        <Self as Loader<ErasedLoader<D>>>::load(self, app).await
+        let fut = <Self as Loader<ErasedLoader<D>>>::load(self, app);
+        // SAFETY: [`Loader::load`] is `: Send`
+        unsafe { crate::UnsafeAssertSend::new(fut) }.await
     }
 
     fn on_add_dyn(&self) -> BoxedCallback<ErasedLoader<D>, ()> {

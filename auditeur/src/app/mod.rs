@@ -1186,7 +1186,7 @@ impl HandleData {
 ///
 /// Many types wrap dependencies, such as [`Get`], the channels of
 /// [listen](crate::component::listen) and [take](crate::component::take), and even [`App`].
-#[derive(Debug)]
+#[derive(Debug, crate::Any)]
 pub struct Dependency<T> {
     pub(super) value: T,
     pub(super) handle: map::DependencyHandle,

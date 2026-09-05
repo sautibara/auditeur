@@ -102,10 +102,7 @@ use crate::{
 /// [`#[listen_message]`](macro@crate::listen_message) macro.
 ///
 /// See the [module documentation](self) for more information.
-pub trait ListenMessage:
-    IdentifiedType + Clone + any::AnyConst + Send + Sync + Sized + 'static
-{
-}
+pub trait ListenMessage: IdentifiedType + Clone + any::AnyConst + Send + Sized + 'static {}
 
 /// The sending half of a [`ListenMessage`] channel.
 pub struct Shouter<M: ListenMessage> {
@@ -141,6 +138,24 @@ impl<M: ListenMessage> CloneIn for Shouter<M> {
 impl<M: ListenMessage> Input for Shouter<M> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         app.listen_mut().shouter().await
+    }
+}
+
+#[allow(clippy::used_underscore_items)]
+mod shouter_send_sync_impls {
+    use super::{ListenMessage, Shouter};
+    use crate::app::Dependency;
+    use tokio::sync::broadcast;
+
+    // Automatically implement [`Send`] and [`Sync`] to bypass trait recursion limits.
+    // SAFETY: Since M is [`Send`], [`broadcast::Sender`] is [`Send`] and [`Sync`].
+    unsafe impl<M: ListenMessage> Send for Shouter<M> {}
+    unsafe impl<M: ListenMessage> Sync for Shouter<M> {}
+
+    const fn _check_bound<T: Sync>(_: &T) {}
+    const fn _validate_fields<M: ListenMessage>(x: &Shouter<M>) {
+        let Shouter { sender } = x;
+        _check_bound::<Dependency<broadcast::Sender<M>>>(sender);
     }
 }
 
@@ -199,6 +214,24 @@ impl<M: ListenMessage> Input for Listener<M> {
     }
 }
 
+#[allow(clippy::used_underscore_items)]
+mod listener_send_sync_impls {
+    use super::{ListenMessage, Listener};
+    use crate::app::Dependency;
+    use tokio::sync::broadcast;
+
+    // Automatically implement [`Send`] and [`Sync`] to bypass trait recursion limits.
+    // SAFETY: Since M is [`Send`], [`broadcast::Receiver`] is [`Send`] and [`Sync`].
+    unsafe impl<M: ListenMessage> Send for Listener<M> {}
+    unsafe impl<M: ListenMessage> Sync for Listener<M> {}
+
+    const fn _check_bound<T: Sync>(_: &T) {}
+    const fn _validate_fields<M: ListenMessage>(x: &Listener<M>) {
+        let Listener { receiver } = x;
+        _check_bound::<Dependency<broadcast::Receiver<M>>>(receiver);
+    }
+}
+
 /// The [`Registry`] for [`ListenMessage`]s.
 ///
 /// This is automatically added to every [`App`].
@@ -222,7 +255,7 @@ impl<M: ListenMessage> Register<M> for ListenMessages {
 }
 
 struct ListenLoader<M: ListenMessage> {
-    pd: PhantomData<M>,
+    pd: PhantomData<fn() -> M>,
 }
 
 impl<M: ListenMessage> ListenLoader<M> {

@@ -181,6 +181,7 @@
 //! # }
 //! ```
 
+use std::borrow::Borrow;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::ops::Deref;
@@ -320,6 +321,12 @@ impl Deref for ComponentIdPath {
             Self::Shared(shared) => shared,
             Self::Static(stat) => stat,
         }
+    }
+}
+
+impl Borrow<NamespacedIdRef> for ComponentIdPath {
+    fn borrow(&self) -> &NamespacedIdRef {
+        self
     }
 }
 

@@ -331,3 +331,31 @@ pub use app::error::Error;
 
 #[cfg(doc)]
 use prelude::*;
+
+pub struct UnsafeAssertSend<T>(T);
+impl<T> UnsafeAssertSend<T> {
+    /// # Safety
+    ///
+    /// - Callers must guarantee that `value` does actually implement [`Send`].
+    const unsafe fn new(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<F: Future> Future for UnsafeAssertSend<F> {
+    type Output = F::Output;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let reference = unsafe { std::pin::Pin::into_inner_unchecked(self) };
+        let pin = unsafe { std::pin::Pin::new_unchecked(&mut reference.0) };
+        pin.poll(cx)
+    }
+}
+
+// This is used to bypass trait recursion limits;
+// adding a [`Send`] bound to `T` would defeat the purpose.
+#[allow(clippy::non_send_fields_in_send_ty)]
+// SAFETY: Guaranteed by the caller in [`Self::new`].
+unsafe impl<T> Send for UnsafeAssertSend<T> {}

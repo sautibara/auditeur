@@ -286,7 +286,11 @@ impl<'a> AppComponentsMut<'a> {
     pub async fn get<R: Registry, T>(
         self,
         id: ComponentIdPath,
-        func: impl AsyncFnOnce(&mut R::Loaded, &mut App) -> Result<T, Error>,
+        func: impl for<'b, 'c> AsyncFnOnce<
+            (&'b mut R::Loaded, &'c mut App),
+            Output = Result<T, Error>,
+            CallOnceFuture: Send,
+        > + Send,
     ) -> Result<Dependency<T>, Error>
     where
         T: Send + 'static,
@@ -296,13 +300,15 @@ impl<'a> AppComponentsMut<'a> {
             component: id,
         };
 
-        self.get_inner(id.clone(), async move |reference, app| {
+        let get = self.get_inner(id.clone(), async move |reference, app| {
             let reference = reference
                 .downcast_mut()
                 .ok_or_else(|| Error::DowncastFailed { id })?;
             func(reference, app).await
-        })
-        .await
+        });
+
+        // SAFETY: [`Self::get_inner`] has a [`Send`] bound.
+        unsafe { crate::UnsafeAssertSend::new(get) }.await
     }
 
     /// Ensures a component is loaded by getting a dependency to it.
@@ -318,48 +324,56 @@ impl<'a> AppComponentsMut<'a> {
         self.get_inner(id, async |_, _| Ok(())).await
     }
 
-    async fn get_inner<T>(
+    // We're using `impl Future` for the [`Send`] bound.
+    #[expect(clippy::manual_async_fn)]
+    fn get_inner<T>(
         self,
         id: ComponentId,
         // WARN: The 'b lifetime will always be 'static, but for some reason the compiler gets
         // angry if we don't include it. I have no idea why.
-        func: impl for<'b> AsyncFnOnce(&mut (dyn any::Any + Send + 'b), &mut App) -> Result<T, Error>,
-    ) -> Result<Dependency<T>, Error>
+        func: impl for<'b, 'c, 'd> AsyncFnOnce<
+            (&'c mut (dyn any::Any + Send + 'b), &'d mut App),
+            Output = Result<T, Error>,
+            CallOnceFuture: Send,
+        > + Send,
+    ) -> impl Future<Output = Result<Dependency<T>, Error>> + Send
     where
         T: Send + 'static,
     {
-        let dependent = self.app.dependent().dependent_id();
-        let ty = self.app.dependent().dependency_type();
-        let dependency = (self.app.components_mut())
-            .try_increment_dependency(id, dependent, ty)
-            .await?;
+        async move {
+            let dependent = self.app.dependent().dependent_id();
+            let ty = self.app.dependent().dependency_type();
+            let dependency = (self.app.components_mut())
+                .try_increment_dependency(id, dependent, ty)
+                .await?;
 
-        // First take the erased component from the registrar.
-        let dependency = self.app.components_mut().borrow(dependency).await;
+            // First take the erased component from the registrar.
+            let dependency = self.app.components_mut().borrow(dependency).await;
 
-        // Then get the values from the dependency necessary to modify the app's dependent.
-        let dependency_id = Dependency::info_of(&dependency).id.dependency();
-        let ty = Dependency::info_of(&dependency).ty;
+            // Then get the values from the dependency necessary to modify the app's dependent.
+            let dependency_id = Dependency::info_of(&dependency).id.dependency();
+            let ty = Dependency::info_of(&dependency).ty;
 
-        let component = dependency.value;
-        let handle = dependency.handle;
+            let component = dependency.value;
+            let handle = dependency.handle;
 
-        // Then initialize the dependency with with a map that has the dependency as the dependent.
-        //
-        // This means that dependencies of the dependency have the correct dependent.
-        let mut app = (self.app.dependent_mut())
-            .with_ty(ty)
-            .with_dependent_inner(dependency_id)
-            .await;
-        let value = component
-            .modify(async |component| {
-                let reference = component.object.get(&mut app).await?;
-                func(reference, &mut app).await
-            })
-            .await?;
+            // Then initialize the dependency with with a map that has the dependency as the dependent.
+            //
+            // This means that dependencies of the dependency have the correct dependent.
+            let mut app = (self.app.dependent_mut())
+                .with_ty(ty)
+                .with_dependent_inner(dependency_id)
+                .await;
+            let value = component
+                .modify(async |component| {
+                    let reference = component.object.get(&mut app).await?;
+                    func(reference, &mut app).await
+                })
+                .await?;
 
-        // And wrap the component back up in the dependency.
-        Ok(Dependency { value, handle })
+            // And wrap the component back up in the dependency.
+            Ok(Dependency { value, handle })
+        }
     }
 
     /// Loads a component lazily, ensuring that (if it loads) it will stay loaded as long as the

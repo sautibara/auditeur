@@ -83,6 +83,23 @@ impl<M: TakeMessage> Input for Giver<M> {
     }
 }
 
+#[allow(clippy::used_underscore_items)]
+mod giver_send_sync_impls {
+    use super::{Giver, TakeMessage};
+    use crate::app::Dependency;
+
+    // Automatically implement [`Send`] and [`Sync`] to bypass trait recursion limits.
+    // SAFETY: Since M is [`Send`], [`flume::Receiver`] is [`Send`] and [`Sync`].
+    unsafe impl<M: TakeMessage> Send for Giver<M> {}
+    unsafe impl<M: TakeMessage> Sync for Giver<M> {}
+
+    const fn _check_bound<T: Sync>(_: &T) {}
+    const fn _validate_fields<M: TakeMessage>(x: &Giver<M>) {
+        let Giver { sender } = x;
+        _check_bound::<Dependency<flume::Sender<M>>>(sender);
+    }
+}
+
 /// The receiving half of a [`TakeMessage`] channel.
 pub struct Taker<M: TakeMessage> {
     receiver: Dependency<flume::Receiver<M>>,
@@ -117,6 +134,23 @@ impl<M: TakeMessage> CloneIn for Taker<M> {
 impl<M: TakeMessage> Input for Taker<M> {
     async fn create(app: &mut App) -> Result<Self, Error> {
         app.take_mut().taker().await
+    }
+}
+
+#[allow(clippy::used_underscore_items)]
+mod taker_send_sync_impls {
+    use super::{TakeMessage, Taker};
+    use crate::app::Dependency;
+
+    // Automatically implement [`Send`] and [`Sync`] to bypass trait recursion limits.
+    // SAFETY: Since M is [`Send`], [`flume::Receiver`] is [`Send`] and [`Sync`].
+    unsafe impl<M: TakeMessage> Send for Taker<M> {}
+    unsafe impl<M: TakeMessage> Sync for Taker<M> {}
+
+    const fn _check_bound<T: Sync>(_: &T) {}
+    const fn _validate_fields<M: TakeMessage>(x: &Taker<M>) {
+        let Taker { receiver } = x;
+        _check_bound::<Dependency<flume::Receiver<M>>>(receiver);
     }
 }
 

@@ -114,7 +114,6 @@ pub trait CreateDerive: CreateDeriveTypes {
 /// Values that can be cloned using an [`App`] handle.
 pub trait CloneIn: Send + Sync + Sized {
     /// Creates a clone of `self` using the app handle `app`.
-    #[must_use]
     fn clone_in(&self, app: &mut App) -> impl Future<Output = Self> + Send;
 }
 

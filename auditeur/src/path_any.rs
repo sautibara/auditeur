@@ -301,12 +301,14 @@ mod externals {
         implement_path_any_external!(Arc, <T: 'static + PathAnyConst>);
     }
 
-    mod tokio_sync_mutex {
+    mod tokio_sync {
         use super::PathAnyConst;
         use auditeur_macros::implement_path_any_external;
         use tokio::sync::Mutex;
+        use tokio::sync::RwLock;
 
         implement_path_any_external!(Mutex, <T: 'static + PathAnyConst>);
+        implement_path_any_external!(RwLock, <T: 'static + PathAnyConst>);
     }
 
     mod std_option {
