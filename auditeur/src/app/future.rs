@@ -391,8 +391,10 @@ app_future_def! {
                 owned_fn: |this, owned, handle| {
                     let Then { before, after } = this;
 
-                    let before: @AppFnOnceImpl<_, _, _, _, _> = before.into_inner().into();
-                    let before_val = (before.owned_fn)(before.source, owned, handle);
+                    let @AppFnOnceImpl { source, owned_fn, handle_fn, .. } =
+                        before.into_inner().into();
+                    let before_val = owned_fn(source, owned, handle);
+                    drop(handle_fn);
 
                     let after: @AppFnOnceImpl<_, _, _, _, _> = after.into_inner().into();
                     let after_val = (after.owned_fn)(after.source, owned, handle);
